@@ -1,116 +1,103 @@
-"""Evaluation Module for Institutional Reinforcement Learning Systems.
+"""Evaluation Module for Institutional Reinforcement Learning Trading Systems.
 
 This module provides deterministic evaluation capabilities (`evaluate`) for a
-trained `QLearningAgent` operating within a `SyntheticMarketEnv`. It forces
-pure exploitation mode (`epsilon = 0.0`), tracks institutional trading metrics,
-and outputs a summary report.
+trained `QLearningAgent` operating within a `RealMarketEnv`. It forces
+pure exploitation mode (`epsilon = 0.0`), tracks cumulative returns of the agent
+and a Buy & Hold baseline, and plots the performance comparison.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 import sys
-from typing import Any
-
-import numpy as np
 
 # Ensure project root is accessible on sys.path for robust module execution
 _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+import matplotlib.pyplot as plt
 from src.ql_agent import QLearningAgent
-from src.synthetic_market import SyntheticMarketEnv
+from src.real_market import RealMarketEnv
+from src.train import train
 
 
-def evaluate(
+def evaluate_agent(
     agent: QLearningAgent,
-    env: SyntheticMarketEnv,
-) -> dict[str, float]:
+    env: RealMarketEnv,
+) -> tuple[list[float], list[float]]:
     """Evaluates a trained Q-learning agent in a deterministic exploitation mode.
 
     Sets agent exploration probability `epsilon` to 0.0 and executes a full
-    episode in `env`. Computes cumulative Profit-and-Loss (PnL), total active
-    trading steps executed, and the percentage of active trades with positive PnL.
+    episode in `env` tracking the cumulative return of the agent and Buy & Hold.
 
     Parameters
     ----------
     agent : QLearningAgent
         The trained Q-learning agent to evaluate.
-    env : SyntheticMarketEnv
-        The market environment instance for evaluation.
+    env : RealMarketEnv
+        The real market environment instance for evaluation.
 
     Returns
     -------
-    dict[str, float]
-        Dictionary containing:
-            - "total_pnl": Cumulative PnL achieved over the episode.
-            - "total_trades": Total number of active trade exposures executed.
-            - "win_rate": Percentage of active trades yielding positive PnL.
+    tuple[list[float], list[float]]
+        A tuple containing:
+            - agent_cumulative: Cumulative returns of the agent.
+            - buy_and_hold_cumulative: Cumulative returns of Buy & Hold.
     """
     # Force purely deterministic exploitation mode
     agent.epsilon = 0.0
+    agent.returns_history.clear()
 
-    initial_state: dict[str, Any] = env.reset()
-    price_history: list[float] = [float(initial_state["price"])] * 4
+    state = env.reset()
+    initial_price: float = float(env.current_price)
 
-    total_pnl: float = 0.0
-    total_trades: int = 0
-    winning_trades: int = 0
+    agent_cumulative: list[float] = [0.0]
+    buy_and_hold_cumulative: list[float] = [0.0]
+    current_agent_return: float = 0.0
+
     done: bool = False
-
     while not done:
-        prev_position: int = env.position
-        state_index: int = agent.get_state_index(price_history)
-        action: int = agent.choose_action(state_index)
+        prev_price = float(env.current_price)
+        action: int = agent.choose_action(state)
 
-        next_state_dict, reward, done = env.step(action)
-
-        price_change: float = float(next_state_dict["price"]) - price_history[-1]
+        next_state, reward, done, _ = env.step(action)
+        price_change = float(env.current_price) - prev_price
         agent.update_volatility(price_change)
 
-        price_history.append(float(next_state_dict["price"]))
-        price_history = price_history[-4:]
+        state = next_state
+        current_agent_return += reward
+        agent_cumulative.append(current_agent_return)
+        buy_and_hold_cumulative.append(float(env.current_price) - initial_price)
 
-        total_pnl += reward
+    return agent_cumulative, buy_and_hold_cumulative
 
-        # Track trade execution metrics whenever an active position was held
-        if prev_position != 0:
-            total_trades += 1
-            if reward > 0.0:
-                winning_trades += 1
 
-    win_rate: float = (
-        (winning_trades / total_trades) * 100.0 if total_trades > 0 else 0.0
-    )
+def main() -> None:
+    """Orchestrates agent training, evaluation, and chart generation."""
+    print("=== Training Agent on Real Market Data ===")
+    trained_agent, _ = train(episodes=2000, steps=1000, seed=42)
 
-    metrics: dict[str, float] = {
-        "total_pnl": float(total_pnl),
-        "total_trades": float(total_trades),
-        "win_rate": float(win_rate),
-    }
+    print("=== Evaluating Agent against Buy & Hold Baseline ===")
+    eval_env = RealMarketEnv(ticker="ETH-USD", period="1mo", interval="15m")
+    agent_cumulative, buy_and_hold = evaluate_agent(trained_agent, eval_env)
 
-    print("==================================================")
-    print("        QLearningAgent Evaluation Summary         ")
-    print("==================================================")
-    print(f"Total Cumulative PnL : {metrics['total_pnl']:+14.2f}")
-    print(f"Total Trades Executed: {int(metrics['total_trades']):14d}")
-    print(f"Win Rate             : {metrics['win_rate']:13.2f}%")
-    print("==================================================")
+    print("=== Generating Performance Chart ===")
+    plt.figure(figsize=(12, 6))
+    plt.plot(agent_cumulative, label="Q-Learning Agent (Epsilon = 0.0)", color="blue", linewidth=1.5)
+    plt.plot(buy_and_hold, label="Buy & Hold Baseline", color="orange", linewidth=1.5)
+    plt.title("Out-of-Sample Performance: Q-Learning Agent vs. Buy & Hold (ETH-USD)")
+    plt.xlabel("Step Index")
+    plt.ylabel("Cumulative Absolute Return (ETH-USD Price Difference)")
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.6)
 
-    return metrics
+    # Save to the root directory as oos_performance.png
+    output_path = Path(_project_root) / "oos_performance.png"
+    plt.savefig(str(output_path), dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"Evaluation Complete. Performance chart saved to: {output_path}")
 
 
 if __name__ == "__main__":
-    print("=== Institutional QLearningAgent Evaluation ===")
-
-    eval_env = SyntheticMarketEnv(steps=1000, seed=42)
-    eval_agent = QLearningAgent()
-
-    # Mock a trained agent's Q-table favoring trend-following actions
-    # States 0-3 (mostly non-positive returns) -> Action 0 (Short)
-    # States 4-7 (mostly positive returns)     -> Action 2 (Long)
-    eval_agent.q_table[0:4, 0] = 1.0
-    eval_agent.q_table[4:8, 2] = 1.0
-
-    evaluate(agent=eval_agent, env=eval_env)
+    main()

@@ -11,17 +11,18 @@ volatile market regimes when transaction costs are present.
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
+import pickle
 import numpy as np
 
 
 class QLearningAgent:
     """Tabular Q-Learning Agent for financial market trading environments.
 
-    Discretizes a rolling window of recent price returns into a binary index
-    representing the market state and learns an optimal trading policy over a
-    discrete action space using Temporal Difference (TD) Q-learning. Includes
-    a dynamic, volatility-adjusted Expected Value (EV) threshold filter to
-    eliminate low-margin trades.
+    Uses a dictionary-based Q-table to support multi-dimensional state spaces
+    and learns an optimal trading policy over a discrete action space using
+    Temporal Difference (TD) Q-learning. Includes a dynamic, volatility-adjusted
+    Expected Value (EV) threshold filter to eliminate low-margin trades.
 
     Parameters
     ----------
@@ -61,11 +62,43 @@ class QLearningAgent:
         self.ev_threshold = float(ev_threshold)
         self.vol_sensitivity = float(vol_sensitivity)
 
-        # Q-Table initialized to zeros with shape (8, 3):
-        # 8 discrete states (2^3 binary lookback returns), 3 discrete actions (0=Short, 1=Flat, 2=Long)
-        self.q_table = np.zeros((8, 3), dtype=np.float64)
+        # Dictionary-based Q-table mapping state string keys to Action-Value numpy arrays
+        self.q_table: dict[str, np.ndarray] = {}
         self.current_position: int = 1  # 0: Short, 1: Flat, 2: Long
         self.returns_history: list[float] = []
+
+    def _state_to_key(self, state: tuple[int, ...]) -> str:
+        """Converts a state tuple to a string key for the Q-table dictionary.
+
+        Parameters
+        ----------
+        state : tuple[int, ...]
+            6-element or 7-element state tuple.
+
+        Returns
+        -------
+        str
+            String key representation of the state.
+        """
+        return "_".join(str(s) for s in state)
+
+    def _get_q_values(self, state: tuple[int, ...]) -> np.ndarray:
+        """Helper to retrieve or initialize action Q-values for a given state.
+
+        Parameters
+        ----------
+        state : tuple[int, ...]
+            6-element or 7-element state tuple.
+
+        Returns
+        -------
+        np.ndarray
+            1D array of shape (3,) representing Q-values for each action.
+        """
+        key = self._state_to_key(state)
+        if key not in self.q_table:
+            self.q_table[key] = np.zeros(3, dtype=np.float64)
+        return self.q_table[key]
 
     def update_volatility(self, current_return: float) -> None:
         """Appends the latest asset return to the rolling history window (`returns_history`).
@@ -81,45 +114,7 @@ class QLearningAgent:
         if len(self.returns_history) > 10:
             self.returns_history = self.returns_history[-10:]
 
-    def get_state_index(self, price_history: list[Any]) -> int:
-        """Computes a discrete state index (0 to 7) from recent price history.
-
-        Calculates 3 sequential returns from the last 4 prices in `price_history`,
-        converts each return sign (positive=1, non-positive=0) to a binary bit,
-        and packs the 3 bits into a base-2 integer index.
-
-        Parameters
-        ----------
-        price_history : list
-            Sequence containing historical prices. Must have length >= 4.
-
-        Returns
-        -------
-        int
-            Integer state index in the range [0, 7].
-
-        Raises
-        ------
-        ValueError
-            If `price_history` contains fewer than 4 elements or invalid values.
-        """
-        try:
-            if len(price_history) < 4:
-                raise ValueError(
-                    f"price_history must contain at least 4 prices to compute 3 sequential returns, got {len(price_history)}."
-                )
-            window = [float(p) for p in price_history[-4:]]
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "price_history must be a sequence of at least 4 numerical prices."
-            ) from exc
-
-        returns = [window[i] - window[i - 1] for i in range(1, 4)]
-        bits = [1 if r > 0.0 else 0 for r in returns]
-        state_index = (bits[0] << 2) | (bits[1] << 1) | bits[2]
-        return state_index
-
-    def choose_action(self, state_index: int) -> int:
+    def choose_action(self, state: tuple[int, ...]) -> int:
         """Selects an action using an epsilon-greedy policy with dynamic EV threshold filtering.
 
         If exploring, returns a uniformly random action and updates `current_position`.
@@ -133,8 +128,8 @@ class QLearningAgent:
 
         Parameters
         ----------
-        state_index : int
-            Discrete state index in the range [0, 7].
+        state : tuple[int, ...]
+            State tuple.
 
         Returns
         -------
@@ -144,15 +139,15 @@ class QLearningAgent:
         Raises
         ------
         ValueError
-            If `state_index` is outside valid bounds [0, 7].
+            If `state` is not a valid state tuple.
         """
-        if not (0 <= state_index < self.q_table.shape[0]):
+        if not isinstance(state, tuple) or len(state) not in (6, 7):
             raise ValueError(
-                f"state_index must be an integer in [0, 7], got {state_index}."
+                f"state must be a 6 or 7-element tuple, got {state}."
             )
 
         if np.random.random() < self.epsilon:
-            action = int(np.random.randint(0, self.q_table.shape[1]))
+            action = int(np.random.randint(0, 3))
             self.current_position = action
             return action
 
@@ -167,12 +162,15 @@ class QLearningAgent:
             self.ev_threshold * (1.0 + self.vol_sensitivity * volatility)
         )
 
+        # Get Q-values for the current state
+        q_values = self._get_q_values(state)
+
         # 3. If exploiting, identify the action with the maximum Q-value for the current state
-        best_action = int(np.argmax(self.q_table[state_index]))
-        q_max = float(self.q_table[state_index, best_action])
+        best_action = int(np.argmax(q_values))
+        q_max = float(q_values[best_action])
 
         # 4. Compare Q_max of the new action against Q_current of self.current_position
-        q_current = float(self.q_table[state_index, self.current_position])
+        q_current = float(q_values[self.current_position])
 
         # 5. If (Q_max - Q_current) > dynamic_ev, update self.current_position to the new action and return it
         if (q_max - q_current) > dynamic_ev:
@@ -183,7 +181,11 @@ class QLearningAgent:
         return self.current_position
 
     def learn(
-        self, state: int, action: int, reward: float, next_state: int
+        self,
+        state: tuple[int, ...],
+        action: int,
+        reward: float,
+        next_state: tuple[int, ...],
     ) -> None:
         """Updates the Q-table using the standard Temporal Difference (TD) learning rule.
 
@@ -191,33 +193,36 @@ class QLearningAgent:
 
         Parameters
         ----------
-        state : int
-            Current state index in [0, 7].
+        state : tuple[int, ...]
+            Current state tuple.
         action : int
             Action executed in [0, 2].
         reward : float
             Observed reward signal.
-        next_state : int
-            Resulting state index in [0, 7].
+        next_state : tuple[int, ...]
+            Resulting state tuple.
 
         Raises
         ------
         ValueError
-            If state, action, or next_state indices are out of bounds.
+            If state, action, or next_state inputs are invalid.
         """
-        if not (0 <= state < self.q_table.shape[0]):
-            raise ValueError(f"state must be in [0, 7], got {state}.")
-        if not (0 <= action < self.q_table.shape[1]):
+        if not isinstance(state, tuple) or len(state) not in (6, 7):
+            raise ValueError(f"state must be a 6 or 7-element tuple, got {state}.")
+        if not (0 <= action < 3):
             raise ValueError(f"action must be in [0, 2], got {action}.")
-        if not (0 <= next_state < self.q_table.shape[0]):
-            raise ValueError(f"next_state must be in [0, 7], got {next_state}.")
+        if not isinstance(next_state, tuple) or len(next_state) not in (6, 7):
+            raise ValueError(f"next_state must be a 6 or 7-element tuple, got {next_state}.")
 
-        current_q = self.q_table[state, action]
-        max_next_q = np.max(self.q_table[next_state])
+        q_values = self._get_q_values(state)
+        next_q_values = self._get_q_values(next_state)
+
+        current_q = q_values[action]
+        max_next_q = np.max(next_q_values)
         td_target = float(reward) + self.gamma * max_next_q
         td_error = td_target - current_q
 
-        self.q_table[state, action] += self.alpha * td_error
+        q_values[action] += self.alpha * td_error
 
     def decay_epsilon(self) -> float:
         """Decays exploration probability epsilon multiplicatively toward min_epsilon.
@@ -229,6 +234,51 @@ class QLearningAgent:
         """
         self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
         return self.epsilon
+
+    def save(self, filepath: str | Path) -> None:
+        """Saves the agent's Q-table dictionary to disk using pickle.
+
+        Parameters
+        ----------
+        filepath : str | Path
+            Destination path where the Q-table (`q_table`) should be saved.
+        """
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self.q_table, f)
+
+    def load(self, filepath: str | Path) -> None:
+        """Loads a saved Q-table dictionary from disk using pickle.
+
+        Parameters
+        ----------
+        filepath : str | Path
+            Path to the saved Q-table (`.pkl`) file.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the specified checkpoint file does not exist.
+        ValueError
+            If the loaded object is not a dictionary.
+        """
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found at: {path}")
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected dictionary Q-table, got {type(data)}.")
+        self.q_table = data
+
+    def save_checkpoint(self, filepath: str | Path) -> None:
+        """Alias for `save` to persist the Q-table checkpoint to disk."""
+        self.save(filepath)
+
+    def load_checkpoint(self, filepath: str | Path) -> None:
+        """Alias for `load` to load a Q-table checkpoint from disk."""
+        self.load(filepath)
 
 
 if __name__ == "__main__":
@@ -243,14 +293,12 @@ if __name__ == "__main__":
         vol_sensitivity=2.0,
     )
     print(
-        f"Initialized Q-Table shape: {agent.q_table.shape} | "
+        f"Initialized Q-Table keys count: {len(agent.q_table)} | "
         f"Initial Position Index: {agent.current_position}"
     )
 
-    # Test state discretization
-    prices = [100.0, 101.5, 99.0, 102.0]
-    state = agent.get_state_index(prices)
-    print(f"Price history: {prices} -> Computed State Index: {state} (expected 5)")
+    # Test 6D state representation
+    state = (1, 0, 1, 0, 2, 1)
 
     # Test action selection (random exploration)
     action = agent.choose_action(state)
@@ -262,8 +310,11 @@ if __name__ == "__main__":
     # Test dynamic EV threshold filtering in exploitation mode (epsilon=0.0)
     agent.epsilon = 0.0
     agent.current_position = 1  # Flat
-    agent.q_table[state, 1] = 1.0   # Q-value for Flat
-    agent.q_table[state, 2] = 1.25  # Q-value for Long (+0.25 improvement)
+    
+    # Set Q-values for the state
+    q_vals = agent._get_q_values(state)
+    q_vals[1] = 1.0   # Q-value for Flat
+    q_vals[2] = 1.25  # Q-value for Long (+0.25 improvement)
 
     # Case 1: Low history count (< 5 items) -> volatility = 0.0 -> dynamic_ev = 0.15
     action_low_hist = agent.choose_action(state)
@@ -285,18 +336,18 @@ if __name__ == "__main__":
     )
 
     # Test Q-table update via TD learning
-    next_prices = [101.5, 99.0, 102.0, 103.0]
-    next_state = agent.get_state_index(next_prices)
+    next_state = (1, 1, 0, 1, 1, 0)
     reward = 2.5
 
-    print(f"\nQ-Table row {state} before learn: {agent.q_table[state]}")
+    state_key = agent._state_to_key(state)
+    print(f"\nQ-Table row key '{state_key}' before learn: {agent._get_q_values(state)}")
     agent.learn(state=state, action=action_high_vol, reward=reward, next_state=next_state)
-    print(f"Q-Table row {state} after learn:  {agent.q_table[state]}")
+    print(f"Q-Table row key '{state_key}' after learn:  {agent._get_q_values(state)}")
     agent.decay_epsilon()
     print(f"Updated epsilon: {agent.epsilon:.4f}")
 
-    # Test error handling on insufficient price history
+    # Test error handling on invalid state shape
     try:
-        agent.get_state_index([100.0, 101.0, 102.0])
+        agent.choose_action((1, 0, 1))
     except ValueError as err:
-        print(f"\nCaught expected ValueError for short list: {err}")
+        print(f"\nCaught expected ValueError for short state tuple: {err}")
