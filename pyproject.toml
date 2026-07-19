@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-rl"
+version = "0.1.0"
+description = "Deep-RL cryptocurrency research and live-paper-trading platform (experimental research software; no profit guarantee)"
+requires-python = ">=3.11"
+dependencies = [
+    # Pinned direct runtime deps. One documented responsibility each — see docs/DECISIONS.md ADR-002.
+    "numpy==2.4.6",          # numerical arrays
+    "pandas==3.0.3",         # single dataframe approach for the execution path
+    "pyarrow==24.0.0",       # Parquet storage
+    "requests==2.34.2",      # public Binance REST client
+    "websockets==16.1",      # finalized live kline stream
+    "pydantic-settings==2.14.2",  # typed configuration
+]
+
+[project.optional-dependencies]
+rl = [
+    "gymnasium==1.3.1",           # trading environment interface
+    "stable-baselines3==2.8.0",   # PPO
+    "torch==2.10.0",              # neural networks (CUDA 12.x build installed locally)
+]
+gate = [
+    "lightgbm==4.6.0",            # optional supervised Alpha Gate
+    "scikit-learn==1.8.1",        # metrics/calibration for the gate
+]
+dashboard = [
+    "streamlit==1.59.2",          # session-aware ledger dashboard
+]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.15.22",
+    "mypy==2.3.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning:dateutil.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+files = ["src/obsidian_rl"]
+python_version = "3.11"
+disallow_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pandas.*", "pyarrow.*", "gymnasium.*", "stable_baselines3.*",
+    "torch.*", "lightgbm.*", "sklearn.*", "websockets.*", "streamlit.*",
+]
+ignore_missing_imports = true
