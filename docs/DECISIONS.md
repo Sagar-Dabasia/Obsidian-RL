@@ -27,3 +27,16 @@ scale-free and clipped upstream, avoiding a fitted-preprocessing leakage surface
 Measured throughput (20k steps, 8 envs, 64x64 MLP): CPU 2316 steps/s vs CUDA 791 steps/s
 — per SB3 guidance, small-MLP PPO is env/CPU-bound, so training commands use CPU for this
 architecture; the GPU stays available for larger networks.
+
+## ADR-005: Alpha Gate not retained (2026-07-19)
+LightGBM gate (corrected executable-net-return labels, h=16, purged chronological ES
+split, text-format artifact) evaluated over the 5 walk-forward folds: gating PPO left
+mean net return unchanged (−0.6% vs −0.7%) with marginal DD reduction; gate-direct −8.5%.
+Retention criterion not met → disabled by default; module kept as research tooling
+(src/obsidian_rl/gate, strategies/gated.py).
+
+## ADR-006: Live execution price = open of the next candle (2026-07-19)
+On a finalized candle t (WS `k.x == true`), the decision executes at the open of candle
+t+1, read from the first WS event of the forming candle — a fixed, already-traded price
+after decision time, identical to `open[t+1]` used offline. This makes replay/live
+parity provable (tests in tests/test_paper_trader.py).
