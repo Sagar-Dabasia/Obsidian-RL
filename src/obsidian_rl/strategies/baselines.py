@@ -130,7 +130,9 @@ class CooldownMomentum:
                 self._position = 1.0
             elif mom < -self.enter_threshold:
                 self._position = -1.0
-        elif (self._position > 0 and mom < -self.exit_threshold) or (self._position < 0 and mom > self.exit_threshold):
+        elif (self._position > 0 and mom < -self.exit_threshold) or (
+            self._position < 0 and mom > self.exit_threshold
+        ):
             self._position = 0.0
             self._cooldown_left = self.cooldown
         return self._position
