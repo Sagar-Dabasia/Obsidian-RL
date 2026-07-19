@@ -16,3 +16,11 @@ One Binance integration: hand-rolled public REST + websocket client behind an in
 (python-binance rejected: pulls auth surface we must never use).
 
 ## ADR-003: Market product (Phase 1) — see docs/adr/ADR-003-market-product.md
+
+## ADR-004: PyTorch CUDA install (2026-07-19)
+torch 2.11.0+cu128 installed from https://download.pytorch.org/whl/cu128 into .venv
+(PyPI torch is CPU-only on Windows, so it is not listed in pyproject deps; reinstall with
+`.venv\Scripts\python -m pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128`).
+Verified: RTX 4060 Laptop GPU, 8187 MB, CUDA 12.8 available. gymnasium==1.3.0,
+stable-baselines3==2.9.0. VecNormalize deliberately not used: all features are
+scale-free and clipped upstream, avoiding a fitted-preprocessing leakage surface.
