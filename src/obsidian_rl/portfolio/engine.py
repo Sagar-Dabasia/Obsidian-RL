@@ -136,10 +136,18 @@ class PortfolioEngine:
         delta_qty = target_qty - s.qty
         traded_notional = abs(delta_qty) * price
 
+        # The no-trade band exists to stop cost-decay churn on NONZERO targets. A
+        # requested full close (approved == 0 with an open position) must always
+        # execute — otherwise liquidate() could silently leave a residual position.
+        is_close_request = approved == 0.0 and s.qty != 0.0
         current_exposure = s.exposure(price)
-        skip = delta_qty != 0.0 and (
-            traded_notional < self.config.min_trade_notional
-            or abs(approved - current_exposure) < self.config.exposure_tolerance
+        skip = (
+            delta_qty != 0.0
+            and not is_close_request
+            and (
+                traded_notional < self.config.min_trade_notional
+                or abs(approved - current_exposure) < self.config.exposure_tolerance
+            )
         )
         if skip and not force_flat:
             result = ExecutionResult(

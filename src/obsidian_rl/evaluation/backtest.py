@@ -80,14 +80,21 @@ def run_backtest(
     cost_model: CostModel | None = None,
     allowed_targets: tuple[float, ...] = DEFAULT_TARGETS,
     funding_rates: pd.DataFrame | None = None,
+    signal_delay: int = 0,
 ) -> BacktestResult:
     """Run one chronological pass. `candles` must be a validated canonical frame.
 
     funding_rates: optional frame with columns (funding_time_ms, funding_rate); events
     are applied at the first candle whose span contains the funding timestamp.
+
+    signal_delay: execution-delay sensitivity knob. With delay d, the policy acts on the
+    market features of candle t-d (portfolio state stays current) while still executing
+    at open[t+1] — i.e. the information-to-execution lag grows by d candles.
     """
-    if len(candles) <= WARMUP_ROWS + 1:
-        raise ValueError(f"need more than {WARMUP_ROWS + 1} candles, got {len(candles)}")
+    if signal_delay < 0:
+        raise ValueError("signal_delay must be >= 0")
+    if len(candles) <= WARMUP_ROWS + 1 + signal_delay:
+        raise ValueError(f"need more than {WARMUP_ROWS + 1 + signal_delay} candles")
 
     engine = PortfolioEngine(portfolio_config or PortfolioConfig(), cost_model or CostModel())
     tracker = PortfolioFeatureTracker()
@@ -111,10 +118,10 @@ def run_backtest(
     records: list[tuple[int, float, float, float, float]] = []
     n_decisions = 0
 
-    for t in range(WARMUP_ROWS, len(candles) - 1):
+    for t in range(WARMUP_ROWS + signal_delay, len(candles) - 1):
         mark = close_px[t]
         obs_port = tracker.observe(engine, mark)
-        proposed = strategy.propose(feats[t], obs_port)
+        proposed = strategy.propose(feats[t - signal_delay], obs_port)
         target = snap_target(float(proposed), allowed_targets)
 
         exec_price = open_px[t + 1]

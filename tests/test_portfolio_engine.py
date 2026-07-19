@@ -215,3 +215,25 @@ def test_min_trade_notional_skips_dust() -> None:
 def test_leverage_config_rejected() -> None:
     with pytest.raises(ValueError):
         PortfolioConfig(max_abs_exposure=2.0)
+
+
+def test_liquidate_executes_even_below_min_notional() -> None:
+    """Regression (review finding): a close must bypass the no-trade band."""
+    eng = make_engine(min_trade_notional=10.0)
+    eng.rebalance(0.5, 100.0)  # qty 50
+    # price collapses so position notional (50*0.15=7.5) is below min notional
+    r = eng.liquidate(0.15)
+    assert eng.state.qty == 0.0
+    assert r.delta_qty == pytest.approx(-50.0)
+
+
+def test_close_executes_even_within_exposure_tolerance() -> None:
+    """Regression (review finding): |exposure| < tolerance must not make a position
+    unclosable when the target is exactly flat."""
+    eng = make_engine()
+    eng.rebalance(0.5, 100.0)  # qty 50
+    # price 1.0: equity ~ 5046, exposure = 50/5046 ~ 0.0099 < tolerance 0.01
+    assert abs(eng.state.exposure(1.0)) < eng.config.exposure_tolerance
+    r = eng.rebalance(0.0, 1.0)
+    assert eng.state.qty == 0.0
+    assert r.delta_qty == pytest.approx(-50.0)
