@@ -2,7 +2,7 @@
 
 - [x] Audit legacy system (docs/AUDIT.md)
 - [x] P0 Security + foundation: .env untracked, .gitignore fixed, pyproject, tooling, legacy/ quarantined
-- [ ] P1 Market-product ADR (USD-M perp BTCUSDT vs spot) — verify Binance docs
+- [x] P1 Market-product ADR (USD-M perp BTCUSDT vs spot) — verify Binance docs
 - [ ] P2 Historical data layer: Parquet, validation, incremental update, CLI
 - [ ] P3 Portfolio engine + cost model + SQLite ledger + hand-calculated tests
 - [ ] P4 Causal feature/label pipeline, versioned schema, parity tests
