@@ -114,6 +114,121 @@ def cmd_train(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_walk_forward(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from obsidian_rl.evaluation.walkforward import (
+        evaluate_strategies_on_slice,
+        make_folds,
+        save_results,
+        slice_candles,
+        summarize,
+    )
+    from obsidian_rl.portfolio.costs import CostModel
+    from obsidian_rl.strategies.baselines import default_baselines
+
+    settings = get_settings()
+    candles = _load_range(args.data_start, None)
+    holdout_ms = _parse_utc_date(args.holdout_start)
+    folds = make_folds(
+        _parse_utc_date(args.data_start),
+        holdout_ms,
+        train_days=args.train_days,
+        val_days=args.val_days,
+        step_days=args.step_days,
+    )
+    seeds = [int(s) for s in args.seeds.split(",")] if not args.skip_ppo else []
+    cost_model = CostModel()
+    all_rows = []
+    for fold in folds:
+        val = slice_candles(candles, fold.val_start_ms, fold.val_end_ms)
+        strategies: list[tuple[str, object, int | None]] = [
+            (b.strategy_id, b, None)  # type: ignore[attr-defined]
+            for b in default_baselines()
+        ]
+        for seed in seeds:
+            from obsidian_rl.strategies.ppo_policy import PpoPolicyStrategy
+            from obsidian_rl.training.ppo import TrainConfig, train_ppo
+
+            train = slice_candles(candles, fold.train_start_ms, fold.train_end_ms)
+            cfg = TrainConfig(
+                total_timesteps=args.timesteps,
+                n_envs=args.n_envs,
+                seed=seed,
+                device=args.device,
+                costs=cost_model,
+            )
+            result = train_ppo(
+                train,
+                val,
+                cfg,
+                settings.models_dir,
+                model_id=f"wf-f{fold.fold_id}-s{seed}-{args.timesteps}",
+            )
+            strategies.append(
+                (
+                    f"ppo-{args.timesteps}",
+                    PpoPolicyStrategy.from_dir(result.record.model_dir),
+                    seed,
+                )
+            )
+        rows = evaluate_strategies_on_slice(
+            val,
+            strategies,  # type: ignore[arg-type]
+            fold_id=fold.fold_id,
+            cost_model=cost_model,
+        )
+        all_rows.extend(rows)
+        print(f"fold {fold.fold_id} done: {len(rows)} evaluations")
+    path = save_results(
+        all_rows,
+        Path("artifacts/walkforward"),
+        extra={"folds": len(folds), "seeds": seeds, "timesteps": args.timesteps},
+    )
+    print(f"results: {path}")
+    print(summarize(all_rows).to_string())
+    return 0
+
+
+def cmd_holdout(args: argparse.Namespace) -> int:
+    """Run the final untouched holdout ONCE for one selected model."""
+    from pathlib import Path
+
+    from obsidian_rl.evaluation.walkforward import (
+        evaluate_strategies_on_slice,
+        save_results,
+        slice_candles,
+        summarize,
+    )
+    from obsidian_rl.portfolio.costs import CostModel
+    from obsidian_rl.strategies.baselines import default_baselines
+    from obsidian_rl.strategies.ppo_policy import PpoPolicyStrategy
+
+    candles = _load_range(args.holdout_start, args.end)
+    holdout = slice_candles(
+        candles,
+        _parse_utc_date(args.holdout_start),
+        _parse_utc_date(args.end) if args.end else 2**62,
+    )
+    strategies: list[tuple[str, object, int | None]] = [
+        (b.strategy_id, b, None)  # type: ignore[attr-defined]
+        for b in default_baselines()
+    ]
+    if args.model_dir:
+        strat = PpoPolicyStrategy.from_dir(Path(args.model_dir))
+        strategies.append((strat.strategy_id, strat, None))
+    rows = evaluate_strategies_on_slice(
+        holdout,
+        strategies,  # type: ignore[arg-type]
+        fold_id=-1,
+        cost_model=CostModel(),
+    )
+    path = save_results(rows, Path("artifacts/holdout"), extra={"model_dir": args.model_dir})
+    print(f"results: {path}")
+    print(summarize(rows).to_string())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="obsidian_rl",
@@ -150,6 +265,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     p.set_defaults(func=cmd_train)
+
+    p = sub.add_parser("walk-forward", help="walk-forward evaluation of PPO vs baselines")
+    p.add_argument("--data-start", default="2020-01-01")
+    p.add_argument("--holdout-start", default="2025-07-01", help="folds never touch this period")
+    p.add_argument("--train-days", type=int, default=720)
+    p.add_argument("--val-days", type=int, default=180)
+    p.add_argument("--step-days", type=int, default=270)
+    p.add_argument("--seeds", default="42,43,44")
+    p.add_argument("--timesteps", type=int, default=150_000)
+    p.add_argument("--n-envs", type=int, default=8)
+    p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    p.add_argument("--skip-ppo", action="store_true", help="baselines only")
+    p.set_defaults(func=cmd_walk_forward)
+
+    p = sub.add_parser("holdout", help="run the untouched final holdout ONCE for one model")
+    p.add_argument("--holdout-start", default="2025-07-01")
+    p.add_argument("--end", default=None)
+    p.add_argument("--model-dir", default=None, help="validated model registry directory")
+    p.set_defaults(func=cmd_holdout)
 
     return parser
 
