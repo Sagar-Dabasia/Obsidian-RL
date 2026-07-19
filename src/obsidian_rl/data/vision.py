@@ -94,9 +94,7 @@ class VisionBulkSource:
         self._timeout = timeout_s
         self._download = downloader
 
-    def fetch_month(
-        self, symbol: str, interval: str, year: int, month: int
-    ) -> pd.DataFrame | None:
+    def fetch_month(self, symbol: str, interval: str, year: int, month: int) -> pd.DataFrame | None:
         """Fetch one month. None if the month is not published (404). Raises on any failure."""
         url = monthly_zip_url(self._base, symbol, interval, year, month)
         payload = self._download(url, self._session, self._timeout)

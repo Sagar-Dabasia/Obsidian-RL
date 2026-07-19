@@ -28,8 +28,10 @@ def _month_range(start_ms: int, end_ms: int) -> list[tuple[int, int]]:
     end = datetime.fromtimestamp(end_ms / 1000, tz=UTC)
     while cur <= end:
         months.append((cur.year, cur.month))
-        cur = cur.replace(year=cur.year + 1, month=1) if cur.month == 12 else cur.replace(
-            month=cur.month + 1
+        cur = (
+            cur.replace(year=cur.year + 1, month=1)
+            if cur.month == 12
+            else cur.replace(month=cur.month + 1)
         )
     return months
 
@@ -59,9 +61,7 @@ def initial_download(
     for year, month in _month_range(start_ms, end):
         frame = bulk.fetch_month(settings.symbol, settings.interval, year, month)
         if frame is None:
-            unpublished_from = int(
-                datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000
-            )
+            unpublished_from = int(datetime(year, month, 1, tzinfo=UTC).timestamp() * 1000)
             logger.info("vision month %04d-%02d not published; switching to REST", year, month)
             break
         frame = frame[(frame["open_time"] >= start_ms) & (frame["open_time"] <= end)]

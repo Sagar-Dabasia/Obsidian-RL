@@ -85,7 +85,9 @@ class BinanceFuturesRest:
                         f"klines request failed: HTTP {resp.status_code}: {resp.text[:200]}"
                     )
             self._sleep(min(2.0**attempt, 30.0))
-        raise DataFetchError(f"klines request failed after {self._max_retries} retries: {last_error}")
+        raise DataFetchError(
+            f"klines request failed after {self._max_retries} retries: {last_error}"
+        )
 
     def fetch_klines(
         self, symbol: str, interval: str, start_ms: int, end_ms: int | None = None
