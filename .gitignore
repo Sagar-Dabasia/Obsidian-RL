@@ -21,12 +21,12 @@ venv/
 htmlcov/
 
 # Data, models, runtime artifacts - local only
-data/
-artifacts/
-models/
-checkpoints/
-runs/
-tb_logs/
+/data/
+/artifacts/
+/models/
+/checkpoints/
+/runs/
+/tb_logs/
 *.pkl
 *.joblib
 *.zip
