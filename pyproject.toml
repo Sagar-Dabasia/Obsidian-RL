@@ -26,8 +26,8 @@ rl = [
     # on Windows, so it is deliberately not listed here.
 ]
 gate = [
-    "lightgbm==4.6.0",            # optional supervised Alpha Gate
-    "scikit-learn==1.8.1",        # metrics/calibration for the gate
+    "lightgbm==4.7.0",            # optional supervised Alpha Gate
+    "scikit-learn==1.9.0",        # metrics/calibration for the gate
 ]
 dashboard = [
     "streamlit==1.59.2",          # session-aware ledger dashboard
