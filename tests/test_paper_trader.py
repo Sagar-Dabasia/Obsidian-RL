@@ -1,0 +1,156 @@
+"""Live-paper trader tests: replay/backtest parity, idempotency, gaps, restart recovery,
+fail-flat, websocket event parsing."""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from obsidian_rl.evaluation.backtest import run_backtest
+from obsidian_rl.features.observation import PortfolioObs
+from obsidian_rl.features.pipeline import WARMUP_ROWS
+from obsidian_rl.ledger.ledger import Ledger
+from obsidian_rl.live.paper_trader import CandleSequenceError, PaperTrader, replay_candles
+from obsidian_rl.live.stream import parse_kline_event
+from obsidian_rl.portfolio.costs import CostModel
+from obsidian_rl.strategies.baselines import ThresholdMomentum
+from tests.conftest import make_candles
+
+CM = CostModel(taker_fee=0.001, half_spread=0.0005, slippage=0.0005)
+
+
+def make_trader(tmp_path: Path, run_suffix: str = "a") -> tuple[PaperTrader, Ledger, str]:
+    ledger = Ledger(tmp_path / "ledger.sqlite3")
+    run = ledger.start_run("threshold-momentum", "replay", 10_000.0, {})
+    trader = PaperTrader(
+        ThresholdMomentum(0.002), ledger, run.run_id, cost_model=CM, data_source="replay"
+    )
+    return trader, ledger, run.run_id
+
+
+def test_replay_matches_backtest_exactly(tmp_path: Path) -> None:
+    """THE parity gate: identical candles + strategy => identical accounting."""
+    candles = make_candles(WARMUP_ROWS + 250, seed=5)
+
+    bt = run_backtest(candles, ThresholdMomentum(0.002), cost_model=CM)
+
+    trader, ledger, run_id = make_trader(tmp_path)
+    n = replay_candles(trader, candles)
+    trader.close_session(float(candles["close"].iloc[-1]))
+
+    assert n == bt.n_decisions
+    s = trader.engine.state
+    bs = bt.final_state_summary
+    assert s.net_equity(float(candles["close"].iloc[-1])) == pytest.approx(
+        bs["final_equity"], abs=1e-9
+    )
+    assert s.realized_pnl == pytest.approx(bs["realized_pnl"], abs=1e-9)
+    assert s.fees_paid == pytest.approx(bs["fees"], abs=1e-9)
+    assert s.spread_paid == pytest.approx(bs["spread"], abs=1e-9)
+    assert s.turnover == pytest.approx(bs["turnover"], abs=1e-9)
+    assert s.trade_count == int(bs["trade_count"])
+    assert len(ledger.decisions(run_id)) == n
+
+
+def test_duplicate_candles_ignored(tmp_path: Path) -> None:
+    candles = make_candles(WARMUP_ROWS + 10)
+    trader, ledger, run_id = make_trader(tmp_path)
+    replay_candles(trader, candles)
+    rows_before = len(ledger.decisions(run_id))
+    # feed the last candle again: duplicate must be ignored, no new ledger row
+    last = {c: candles.iloc[-1][c] for c in candles.columns}
+    assert trader.on_finalized_candle(last) is None
+    assert len(ledger.decisions(run_id)) == rows_before
+
+
+def test_gap_raises_for_backfill(tmp_path: Path) -> None:
+    candles = make_candles(WARMUP_ROWS + 10)
+    trader, _, _ = make_trader(tmp_path)
+    replay_candles(trader, candles.iloc[:-3])
+    skipped = {c: candles.iloc[-1][c] for c in candles.columns}  # skips two candles
+    with pytest.raises(CandleSequenceError, match="gap"):
+        trader.on_finalized_candle(skipped)
+
+
+def test_restart_recovery_matches_uninterrupted_run(tmp_path: Path) -> None:
+    candles = make_candles(WARMUP_ROWS + 200, seed=8)
+    split = WARMUP_ROWS + 120
+
+    # uninterrupted reference
+    ref_trader, _, _ = make_trader(tmp_path / "ref")
+    replay_candles(ref_trader, candles)
+
+    # interrupted run: process first part, then restore into a NEW trader
+    ledger_path = tmp_path / "live" / "ledger.sqlite3"
+    ledger = Ledger(ledger_path)
+    run = ledger.start_run("threshold-momentum", "live-paper", 10_000.0, {})
+    t1 = PaperTrader(
+        ThresholdMomentum(0.002), ledger, run.run_id, cost_model=CM, data_source="replay"
+    )
+    replay_candles(t1, candles.iloc[:split])
+    ledger.close()
+
+    ledger2 = Ledger(ledger_path)
+    t2 = PaperTrader(
+        ThresholdMomentum(0.002), ledger2, run.run_id, cost_model=CM, data_source="replay"
+    )
+    state = ledger2.restore_state(run.run_id)
+    assert state is not None
+    t2.restore(state, candles.iloc[:split])
+    # NOTE: replay includes already-processed candles; idempotency must skip them
+    replay_candles(t2, candles)
+
+    price = float(candles["close"].iloc[-1])
+    assert t2.engine.state.net_equity(price) == pytest.approx(
+        ref_trader.engine.state.net_equity(price), rel=1e-6
+    )
+    assert t2.engine.state.qty == pytest.approx(ref_trader.engine.state.qty, rel=1e-6)
+    assert len(ledger2.decisions(run.run_id)) == WARMUP_ROWS + 200 - 1 - WARMUP_ROWS
+
+
+def test_strategy_failure_fails_flat(tmp_path: Path) -> None:
+    class ExplodingStrategy:
+        strategy_id = "exploding"
+
+        def reset(self) -> None:
+            return None
+
+        def propose(self, market_row: np.ndarray, portfolio: PortfolioObs) -> float:
+            raise RuntimeError("model file corrupted")
+
+    ledger = Ledger(tmp_path / "ledger.sqlite3")
+    run = ledger.start_run("exploding", "replay", 10_000.0, {})
+    trader = PaperTrader(ExplodingStrategy(), ledger, run.run_id, cost_model=CM)
+    candles = make_candles(WARMUP_ROWS + 5)
+    replay_candles(trader, candles)
+    assert trader.engine.state.qty == 0.0  # stayed flat, never crashed
+    rows = ledger.decisions(run.run_id)
+    assert all(r["proposed_target"] == 0.0 for r in rows)
+
+
+def test_parse_kline_event_official_payload() -> None:
+    raw = (
+        '{"e":"kline","E":1607443058651,"s":"BTCUSDT","k":{'
+        '"t":1607443020000,"T":1607443079999,"s":"BTCUSDT","i":"1m",'
+        '"f":116467658886,"L":116468012423,"o":"18787.00","c":"18804.04",'
+        '"h":"18804.04","l":"18786.54","v":"197.664","n":543,"x":false,'
+        '"q":"3715253.19494","V":"184.769","Q":"3472925.84746","B":"0"}}'
+    )
+    event = parse_kline_event(raw)
+    assert event is not None
+    assert event.open_time == 1607443020000
+    assert event.is_closed is False
+    assert event.open == 18787.00
+    assert event.trades == 543
+    assert parse_kline_event('{"result":null,"id":1}') is None
+
+
+def test_ledger_survives_full_replay_twice(tmp_path: Path) -> None:
+    candles = make_candles(WARMUP_ROWS + 30)
+    trader, ledger, run_id = make_trader(tmp_path)
+    n1 = replay_candles(trader, candles)
+    rows1 = len(ledger.decisions(run_id))
+    # a second full replay through the same trader adds nothing
+    n2 = replay_candles(trader, candles)
+    assert n2 == 0
+    assert len(ledger.decisions(run_id)) == rows1 == n1

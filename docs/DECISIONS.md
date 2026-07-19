@@ -24,3 +24,6 @@ torch 2.11.0+cu128 installed from https://download.pytorch.org/whl/cu128 into .v
 Verified: RTX 4060 Laptop GPU, 8187 MB, CUDA 12.8 available. gymnasium==1.3.0,
 stable-baselines3==2.9.0. VecNormalize deliberately not used: all features are
 scale-free and clipped upstream, avoiding a fitted-preprocessing leakage surface.
+Measured throughput (20k steps, 8 envs, 64x64 MLP): CPU 2316 steps/s vs CUDA 791 steps/s
+— per SB3 guidance, small-MLP PPO is env/CPU-bound, so training commands use CPU for this
+architecture; the GPU stays available for larger networks.

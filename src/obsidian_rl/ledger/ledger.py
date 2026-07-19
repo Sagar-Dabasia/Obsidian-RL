@@ -229,6 +229,17 @@ class Ledger:
             )
         )
 
+    def recent_decisions(self, run_id: str, limit: int) -> list[sqlite3.Row]:
+        """Most recent `limit` decisions, returned in chronological order."""
+        self._conn.row_factory = sqlite3.Row
+        rows = list(
+            self._conn.execute(
+                "SELECT * FROM decisions WHERE run_id=? ORDER BY candle_open_ms DESC LIMIT ?",
+                (run_id, limit),
+            )
+        )
+        return list(reversed(rows))
+
     def has_processed(self, run_id: str, candle_open_ms: int) -> bool:
         cur = self._conn.execute(
             "SELECT 1 FROM decisions WHERE idempotency_key=?",

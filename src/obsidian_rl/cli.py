@@ -229,6 +229,107 @@ def cmd_holdout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _strategy_from_args(model_dir: str | None) -> tuple[object, str | None]:
+    from pathlib import Path
+
+    from obsidian_rl.strategies.baselines import RegimeFilteredMomentum
+    from obsidian_rl.strategies.ppo_policy import PpoPolicyStrategy
+
+    if model_dir:
+        strat = PpoPolicyStrategy.from_dir(Path(model_dir))
+        return strat, strat.strategy_id.removeprefix("ppo:")
+    return RegimeFilteredMomentum(), None
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Historical replay through the live-paper decision path (same code as live)."""
+    from obsidian_rl.ledger.ledger import Ledger
+    from obsidian_rl.live.paper_trader import PaperTrader, replay_candles
+
+    settings = get_settings()
+    candles = _load_range(args.start, args.end)
+    strategy, model_id = _strategy_from_args(args.model_dir)
+    ledger = Ledger(settings.ledger_path)
+    run = ledger.start_run(
+        getattr(strategy, "strategy_id", "unknown"),
+        "replay",
+        10_000.0,
+        cost_model={},
+        model_id=model_id,
+    )
+    trader = PaperTrader(
+        strategy,  # type: ignore[arg-type]
+        ledger,
+        run.run_id,
+        interval=settings.interval,
+        data_source="replay",
+    )
+    n = replay_candles(trader, candles)
+    last_close = float(candles["close"].iloc[-1])  # type: ignore[index]
+    trader.close_session(last_close)
+    print(
+        json.dumps(
+            {
+                "run_id": run.run_id,
+                "decisions": n,
+                "final_equity": trader.engine.state.net_equity(last_close),
+                "fees": trader.engine.state.fees_paid,
+                "turnover": trader.engine.state.turnover,
+                "trade_count": trader.engine.state.trade_count,
+            },
+            indent=1,
+        )
+    )
+    return 0
+
+
+def cmd_paper_trade(args: argparse.Namespace) -> int:
+    """Live paper trading on finalized websocket candles. NO exchange orders, ever."""
+    import asyncio
+
+    from obsidian_rl.live.runner import LivePaperRunner
+
+    settings = get_settings()
+    strategy, model_id = _strategy_from_args(args.model_dir)
+    runner = LivePaperRunner(
+        settings,
+        strategy,  # type: ignore[arg-type]
+        run_id=args.run_id,
+        model_id=model_id,
+    )
+    print(f"live-paper run {runner.run_id} (SIMULATED paper execution; public data only)")
+    asyncio.run(runner.run())
+    return 0
+
+
+def cmd_candidate_eval(args: argparse.Namespace) -> int:
+    from obsidian_rl.training.promotion import evaluate_candidate
+
+    settings = get_settings()
+    val = _load_range(args.val_start, args.val_end)
+    report = evaluate_candidate(settings.models_dir, args.model_id, val)
+    print(json.dumps(report, indent=1, default=str))
+    return 0 if report["passes"] else 1
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    from obsidian_rl.training.promotion import current_champion, promote
+
+    settings = get_settings()
+    promote(settings.models_dir, args.model_id)
+    print(f"champion is now {current_champion(settings.models_dir)}")
+    return 0
+
+
+def cmd_rollback(args: argparse.Namespace) -> int:
+    from obsidian_rl.training.promotion import rollback
+
+    settings = get_settings()
+    restored = rollback(settings.models_dir)
+    print(f"rolled back; champion is now {restored}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="obsidian_rl",
@@ -284,6 +385,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--end", default=None)
     p.add_argument("--model-dir", default=None, help="validated model registry directory")
     p.set_defaults(func=cmd_holdout)
+
+    p = sub.add_parser("replay", help="historical replay through the live-paper path")
+    p.add_argument("--start", required=True)
+    p.add_argument("--end", default=None)
+    p.add_argument("--model-dir", default=None, help="frozen model dir (default: regime baseline)")
+    p.set_defaults(func=cmd_replay)
+
+    p = sub.add_parser(
+        "paper-trade", help="live paper trading (public data, simulated fills, NO orders)"
+    )
+    p.add_argument("--model-dir", default=None, help="frozen model dir (default: regime baseline)")
+    p.add_argument("--run-id", default=None, help="resume an existing ledger run")
+    p.set_defaults(func=cmd_paper_trade)
+
+    p = sub.add_parser("candidate-eval", help="gate a candidate on a validation period")
+    p.add_argument("--model-id", required=True)
+    p.add_argument("--val-start", required=True)
+    p.add_argument("--val-end", default=None)
+    p.set_defaults(func=cmd_candidate_eval)
+
+    p = sub.add_parser("promote", help="explicitly promote a candidate to champion")
+    p.add_argument("--model-id", required=True)
+    p.set_defaults(func=cmd_promote)
+
+    p = sub.add_parser("rollback", help="restore the previous champion")
+    p.set_defaults(func=cmd_rollback)
 
     return parser
 
