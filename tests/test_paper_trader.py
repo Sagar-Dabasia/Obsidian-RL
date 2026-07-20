@@ -1,6 +1,7 @@
 """Live-paper trader tests: replay/backtest parity, idempotency, gaps, restart recovery,
 fail-flat, websocket event parsing."""
 
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -261,8 +262,67 @@ def test_close_session_persistence_failure(tmp_path: Path, monkeypatch: pytest.M
     def _fail(*args: object, **kwargs: object) -> object:
         raise RuntimeError("db error")
 
-    monkeypatch.setattr(ledger, "record_closure", _fail)
+    monkeypatch.setattr(ledger, "finalize_run", _fail)
+    pre_state = copy.copy(trader.engine.state)
+    pre_pending = copy.copy(trader.pending)
     with pytest.raises(RuntimeError, match="db error"):
         trader.close_session(100.0)
+    assert trader.engine.state == copy.copy(pre_state)
+    assert trader.pending == pre_pending
     run_row = ledger.get_run(run_id)
     assert run_row is not None and run_row["ended_at_ms"] is None
+
+
+def test_close_session_retry_after_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 10)
+    replay_candles(trader, candles)
+
+    orig_finalize = ledger.finalize_run
+    def _fail(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("db error")
+
+    monkeypatch.setattr(ledger, "finalize_run", _fail)
+    with pytest.raises(RuntimeError, match="db error"):
+        trader.close_session(100.0)
+
+    monkeypatch.setattr(ledger, "finalize_run", orig_finalize)
+    trader.close_session(100.0)
+    closure = ledger.get_closure(run_id)
+    assert closure is not None
+    assert closure["position_qty"] == 0.0
+    run_row = ledger.get_run(run_id)
+    assert run_row is not None and run_row["ended_at_ms"] is not None
+
+
+def test_closed_run_restore_and_replay_no_op(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 10)
+    replay_candles(trader, candles)
+    trader.close_session(100.0)
+
+    # Re-instantiate and restore closed run
+    trader2 = PaperTrader(trader.strategy, ledger, run_id)
+    state = ledger.restore_state(run_id)
+    assert state is not None
+    assert state.qty == 0.0
+    trader2.restore(state, candles)
+    assert trader2.pending is None
+
+    n = replay_candles(trader2, candles)
+    assert n == 0
+    assert trader2.pending is None
+    assert trader2.engine.state.qty == 0.0
+
+
+def test_replay_candles_inconsistent_state_raises(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 10)
+    replay_candles(trader, candles)
+
+    # Manually set ended_at_ms without creating a closure
+    ledger._conn.execute("UPDATE runs SET ended_at_ms = 12345 WHERE run_id = ?", (run_id,))
+    ledger._conn.commit()
+
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        replay_candles(trader, candles)

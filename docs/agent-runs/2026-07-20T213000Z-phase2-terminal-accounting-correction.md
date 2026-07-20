@@ -1,4 +1,4 @@
-# Agent Run Report — Phase 2 Correction: Terminal Liquidation and Final Accounting
+# Agent Run Report — Phase 2 Correction: Atomic Terminal Accounting & Live Runner Safeguards
 
 ## Meta
 
@@ -8,7 +8,7 @@
 | **Date (UTC)** | 2026-07-20 |
 | **Branch** | `wip/phase2-terminal-accounting` |
 | **Starting commit** | `9f5d5cadf5eb037fab9891b8656ec40f9b1eb348` |
-| **Task** | Phase 2 Correction: Atomic transaction for `record_closure` & `end_run`, `close_session` fail-flat pre-liquidation preservation, and closed-run consistency guards across `PaperTrader` & `LivePaperRunner` |
+| **Task** | Phase 2 Correction: Atomic transaction for `record_closure` & `end_run`, `close_session` fail-flat pre-liquidation preservation, closed-run consistency guards across `PaperTrader` & `LivePaperRunner` |
 
 ---
 
@@ -20,7 +20,7 @@ git status --short
 (clean at commit 9f5d5cadf5eb037fab9891b8656ec40f9b1eb348)
 ```
 
-**After** (this session, allowed source/test files and docs):
+**After** (allowed production/test files & documentation):
 ```
  M docs/AGENT_RUN_REPORT.md
  M docs/CODEX_HANDOFF.md
@@ -89,11 +89,3 @@ git status --short
 | `.venv\Scripts\python.exe -m pytest tests/test_ledger.py tests/test_paper_trader.py tests/test_live_runner.py -q` | 0 | **30 passed in 0.65s** |
 | `.venv\Scripts\python.exe -m ruff check src/obsidian_rl/ledger/ledger.py src/obsidian_rl/live/paper_trader.py src/obsidian_rl/live/runner.py tests/test_ledger.py tests/test_paper_trader.py tests/test_live_runner.py` | 0 | **All checks passed! (0 errors)** |
 | `.venv\Scripts\python.exe -m mypy src/obsidian_rl/ledger/ledger.py src/obsidian_rl/live/paper_trader.py src/obsidian_rl/live/runner.py tests/test_ledger.py tests/test_paper_trader.py tests/test_live_runner.py` | 0 | **Success: no issues found in 6 source files** |
-
----
-
-## Verdict
-
-**ACCEPTED**
-
-All Phase 2 terminal-accounting corrections (`finalize_run` atomic transaction, `close_session` pre-liquidation state restoration on persistence failure, and closed-run safeguards in `PaperTrader` and `LivePaperRunner`) are implemented and verified by 30 passing tests and zero static errors.

@@ -4,6 +4,7 @@ Idempotency keys make candle processing exactly-once per run; restart recovery r
 portfolio state from the last recorded decision of a run.
 """
 
+import contextlib
 import json
 import sqlite3
 import time
@@ -284,7 +285,34 @@ class Ledger:
         return cur.fetchone() is not None
 
     def restore_state(self, run_id: str) -> PortfolioState | None:
-        """Rebuild PortfolioState from the last recorded decision of a run."""
+        """Rebuild PortfolioState from the last recorded decision or terminal closure of a run."""
+        run_row = self.get_run(run_id)
+        if run_row is None:
+            return None
+        ended_at = run_row["ended_at_ms"]
+        closure_row = self.get_closure(run_id)
+
+        if (closure_row is not None) != (ended_at is not None):
+            msg = (
+                f"inconsistent closure/ended state for run {run_id}: "
+                f"closure={closure_row is not None}, ended={ended_at is not None}"
+            )
+            raise RuntimeError(msg)
+        if closure_row is not None and ended_at is not None:
+            return PortfolioState(
+                cash=closure_row["cash"],
+                qty=closure_row["position_qty"],
+                avg_entry_price=closure_row["avg_entry_price"],
+                realized_pnl=closure_row["realized_pnl_total"],
+                fees_paid=closure_row["fees_total"],
+                spread_paid=closure_row["spread_total"],
+                slippage_paid=closure_row["slippage_total"],
+                funding_paid=closure_row["funding_total"],
+                turnover=closure_row["turnover_total"],
+                trade_count=closure_row["trade_count"],
+                peak_equity=closure_row["peak_equity"],
+            )
+
         row = self.last_decision(run_id)
         if row is None:
             return None
@@ -355,9 +383,113 @@ class Ledger:
                 ),
             )
         except sqlite3.IntegrityError as exc:
-            msg = f"terminal closure already recorded for run {run_id}"
-            raise DuplicateClosureError(msg) from exc
+            if "run_closures" in str(exc) or "run_id" in str(exc) or "UNIQUE" in str(exc).upper():
+                msg = f"terminal closure already recorded for run {run_id}"
+                raise DuplicateClosureError(msg) from exc
+            raise
         self._conn.commit()
+        row = self.get_closure(run_id)
+        assert row is not None
+        return row
+
+    def finalize_run(
+        self,
+        run_id: str,
+        *,
+        terminal_ts_ms: int,
+        mark_price: float,
+        result: ExecutionResult,
+        state: PortfolioState,
+        closure_reason: str = "close_session",
+    ) -> sqlite3.Row:
+        """Atomically record terminal closure and update runs.ended_at_ms inside one transaction."""
+        run_row = self.get_run(run_id)
+        if run_row is None:
+            raise KeyError(f"run {run_id} not found in ledger")
+
+        closure_row = self.get_closure(run_id)
+        ended_at = run_row["ended_at_ms"]
+
+        if (closure_row is not None) != (ended_at is not None):
+            msg = (
+                f"inconsistent closure/ended state for run {run_id}: "
+                f"closure={closure_row is not None}, ended={ended_at is not None}"
+            )
+            raise RuntimeError(msg)
+        if closure_row is not None and ended_at is not None:
+            return closure_row
+
+        created_at = int(time.time() * 1000)
+        in_tx = self._conn.in_transaction
+        if not in_tx:
+            with contextlib.suppress(sqlite3.OperationalError):
+                self._conn.execute("BEGIN")
+
+        try:
+            try:
+                self._conn.execute(
+                    "INSERT INTO run_closures (run_id, terminal_ts_ms, mark_price,"
+                    " proposed_target, approved_target, executed_target, delta_qty,"
+                    " exec_price, traded_notional, fee, spread_cost, slippage_cost,"
+                    " realized_pnl_delta, position_qty, avg_entry_price, cash,"
+                    " unrealized_pnl, net_equity, gross_equity, realized_pnl_total,"
+                    " fees_total, spread_total, slippage_total, funding_total,"
+                    " turnover_total, trade_count, peak_equity, closure_reason, created_at_ms)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        run_id,
+                        terminal_ts_ms,
+                        mark_price,
+                        result.proposed_target,
+                        result.approved_target,
+                        result.executed_target,
+                        result.delta_qty,
+                        result.exec_price,
+                        result.traded_notional,
+                        result.fee,
+                        result.spread_cost,
+                        result.slippage_cost,
+                        result.realized_pnl_delta,
+                        state.qty,
+                        state.avg_entry_price,
+                        state.cash,
+                        state.unrealized_pnl(mark_price),
+                        state.net_equity(mark_price),
+                        state.gross_equity(mark_price),
+                        state.realized_pnl,
+                        state.fees_paid,
+                        state.spread_paid,
+                        state.slippage_paid,
+                        state.funding_paid,
+                        state.turnover,
+                        state.trade_count,
+                        state.peak_equity,
+                        closure_reason,
+                        created_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                exc_str = str(exc).upper()
+                if "RUN_CLOSURES" in exc_str or "RUN_ID" in exc_str or "UNIQUE" in exc_str:
+                    msg = f"terminal closure already recorded for run {run_id}"
+                    raise DuplicateClosureError(msg) from exc
+                raise
+            cur = self._conn.execute(
+                "UPDATE runs SET ended_at_ms = ? WHERE run_id = ? AND ended_at_ms IS NULL",
+                (terminal_ts_ms, run_id),
+            )
+            if cur.rowcount != 1:
+                msg = (
+                    f"failed to update ended_at_ms exactly once for run {run_id} "
+                    f"(rowcount={cur.rowcount})"
+                )
+                raise RuntimeError(msg)
+            self._conn.commit()
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._conn.rollback()
+            raise
+
         row = self.get_closure(run_id)
         assert row is not None
         return row

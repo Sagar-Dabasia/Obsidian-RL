@@ -49,9 +49,19 @@ class LivePaperRunner:
             run_id = run.run_id
             resume = False
         else:
-            resume = self.ledger.get_run(run_id) is not None
-            if not resume:
+            run_info = self.ledger.get_run(run_id)
+            if run_info is None:
                 raise ValueError(f"run {run_id} not found in ledger; cannot resume")
+            ended_at = run_info["ended_at_ms"]
+            closure = self.ledger.get_closure(run_id)
+            if (closure is not None) != (ended_at is not None):
+                msg = (
+                    f"inconsistent closure/ended state for run {run_id}: "
+                    f"closure={closure is not None}, ended={ended_at is not None}"
+                )
+                raise RuntimeError(msg)
+            resume = True
+
         self.run_id = run_id
         self.trader = PaperTrader(
             strategy,
@@ -65,11 +75,30 @@ class LivePaperRunner:
             candles = self.store.read()
             if state is not None and len(candles):
                 self.trader.restore(state, candles)
+            run_info = self.ledger.get_run(run_id)
+            ended_at = run_info["ended_at_ms"] if run_info is not None else None
+            closure = self.ledger.get_closure(run_id)
+            if closure is not None and ended_at is not None:
+                raise ValueError(f"run {run_id} is already closed and cannot be resumed")
             logger.info("resuming run %s", run_id)
 
     # ------------------------------------------------------------------ helpers
+    def _check_not_closed(self) -> None:
+        run_info = self.ledger.get_run(self.run_id)
+        ended_at = run_info["ended_at_ms"] if run_info is not None else None
+        closure = self.ledger.get_closure(self.run_id)
+        if (closure is not None) != (ended_at is not None):
+            msg = (
+                f"inconsistent closure/ended state for run {self.run_id}: "
+                f"closure={closure is not None}, ended={ended_at is not None}"
+            )
+            raise RuntimeError(msg)
+        if closure is not None and ended_at is not None:
+            raise ValueError(f"run {self.run_id} is already closed and cannot be resumed")
+
     def backfill(self, now_ms: int | None = None) -> int:
         """Fetch finalized candles between the trader's last candle and now via REST."""
+        self._check_not_closed()
         now = now_ms if now_ms is not None else int(time.time() * 1000)
         last = self.trader.last_finalized_ms
         if last is None:
@@ -87,6 +116,7 @@ class LivePaperRunner:
 
     def handle_event(self, event: KlineEvent) -> None:
         """Route one websocket kline event through the two-phase protocol."""
+        self._check_not_closed()
         last = self.trader.last_finalized_ms
         # Phase 2: the first event of a new candle carries its (fixed) open price.
         if (
@@ -128,6 +158,7 @@ class LivePaperRunner:
 
     async def run(self) -> None:
         """Consume the stream forever. No orders. No training. Frozen policy only."""
+        self._check_not_closed()
         self.backfill()
         async for event in kline_events(
             self.settings.ws_base_url, self.settings.symbol, self.settings.interval

@@ -175,3 +175,170 @@ def test_record_closure_duplicate(tmp_path: Path) -> None:
             state=eng.state,
         )
     ledger.close()
+
+
+def test_finalize_run_idempotence(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    row1 = ledger.finalize_run(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    assert row1 is not None
+    assert row1["run_id"] == run.run_id
+    row_after = ledger.get_run(run.run_id)
+    assert row_after is not None
+    assert row_after["ended_at_ms"] == 100_000
+
+    row2 = ledger.finalize_run(
+        run.run_id,
+        terminal_ts_ms=200_000,
+        mark_price=200.0,
+        result=res,
+        state=eng.state,
+    )
+    assert row2 is not None
+    assert row2["terminal_ts_ms"] == 100_000
+    assert row2["mark_price"] == 100.0
+    cur = ledger._conn.execute(
+        "SELECT COUNT(*) as cnt FROM run_closures WHERE run_id = ?",
+        (run.run_id,),
+    )
+    assert cur.fetchone()["cnt"] == 1
+    ledger.close()
+
+
+def test_finalize_run_inconsistent_closure_without_ended(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    ledger.record_closure(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        ledger.finalize_run(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+    ledger.close()
+
+
+def test_finalize_run_inconsistent_ended_without_closure(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    ledger._conn.execute("UPDATE runs SET ended_at_ms = ? WHERE run_id = ?", (100_000, run.run_id))
+    ledger._conn.commit()
+
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        ledger.finalize_run(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+    ledger.close()
+
+
+def test_finalize_run_rollback_on_failure(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    # Create a trigger that causes UPDATE on runs to fail
+    ledger._conn.execute(
+        "CREATE TRIGGER fail_runs BEFORE UPDATE ON runs BEGIN "
+        "SELECT RAISE(FAIL, 'update failed'); END;"
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(sqlite3.DatabaseError, match="update failed"):
+        ledger.finalize_run(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+
+    # Verify both closure insertion and ended_at_ms update rolled back
+    assert ledger.get_closure(run.run_id) is None
+    row_rb = ledger.get_run(run.run_id)
+    assert row_rb is not None
+    assert row_rb["ended_at_ms"] is None
+    ledger.close()
+
+
+def test_record_closure_unrelated_integrity_error(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    ledger._conn.execute(
+        "CREATE TRIGGER fail_check BEFORE INSERT ON run_closures BEGIN "
+        "SELECT RAISE(FAIL, 'CHECK constraint failed: positive_cash'); END;"
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        ledger.record_closure(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+    ledger.close()
+
+
+def test_restore_state_consistency_checks(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    # 1. Closure exists without ended_at_ms
+    ledger.record_closure(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        ledger.restore_state(run.run_id)
+
+    # 2. Both exist -> restores cleanly
+    ledger._conn.execute("UPDATE runs SET ended_at_ms = ? WHERE run_id = ?", (100_000, run.run_id))
+    ledger._conn.commit()
+    state = ledger.restore_state(run.run_id)
+    assert state is not None
+    assert state.qty == 0.0
+
+    # 3. ended_at_ms exists without closure
+    run2 = ledger.start_run("s2", "backtest", 10_000.0, {})
+    ledger._conn.execute("UPDATE runs SET ended_at_ms = ? WHERE run_id = ?", (100_000, run2.run_id))
+    ledger._conn.commit()
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        ledger.restore_state(run2.run_id)
+    ledger.close()

@@ -83,6 +83,16 @@ class PaperTrader:
     # ------------------------------------------------------------------ recovery
     def restore(self, state: PortfolioState, buffer_candles: pd.DataFrame) -> None:
         """Rebuild engine, feature buffer, tracker, and any pre-crash pending decision."""
+        run_info = self.ledger.get_run(self.run_id)
+        ended_at = run_info["ended_at_ms"] if run_info is not None else None
+        closure = self.ledger.get_closure(self.run_id)
+        if (closure is not None) != (ended_at is not None):
+            msg = (
+                f"inconsistent closure/ended state for run {self.run_id}: "
+                f"closure={closure is not None}, ended={ended_at is not None}"
+            )
+            raise RuntimeError(msg)
+
         self.engine.state = state
         self.buffer.clear()
         for row in buffer_candles.tail(BUFFER_SIZE).itertuples(index=False):
@@ -105,6 +115,16 @@ class PaperTrader:
             self.tracker.update_after_step(
                 float(row["position_qty"]), float(row["traded_notional"])
             )
+
+        if closure is not None and ended_at is not None:
+            self.pending = None
+            logger.info(
+                "restored closed run %s: qty=%.6f cash=%.2f",
+                self.run_id,
+                state.qty,
+                state.cash,
+            )
+            return
 
         # A decision made for the last buffered candle but never executed (crash between
         # the two phases) is not in the ledger: recompute it so on_next_open resumes it.
@@ -130,6 +150,18 @@ class PaperTrader:
     def on_finalized_candle(self, candle: dict[str, float | int]) -> PendingDecision | None:
         """Ingest one FINALIZED candle; propose a target. Returns None while warming up
         or when the candle is a duplicate."""
+        run_info = self.ledger.get_run(self.run_id)
+        ended_at = run_info["ended_at_ms"] if run_info is not None else None
+        closure = self.ledger.get_closure(self.run_id)
+        if (closure is not None) != (ended_at is not None):
+            msg = (
+                f"inconsistent closure/ended state for run {self.run_id}: "
+                f"closure={closure is not None}, ended={ended_at is not None}"
+            )
+            raise RuntimeError(msg)
+        if closure is not None and ended_at is not None:
+            return None
+
         open_ms = int(candle["open_time"])
         if self.last_finalized_ms is not None:
             if open_ms <= self.last_finalized_ms:
@@ -185,6 +217,19 @@ class PaperTrader:
         """Execute the pending decision at the open of the following candle."""
         if self.pending is None:
             return
+        run_info = self.ledger.get_run(self.run_id)
+        ended_at = run_info["ended_at_ms"] if run_info is not None else None
+        closure = self.ledger.get_closure(self.run_id)
+        if (closure is not None) != (ended_at is not None):
+            msg = (
+                f"inconsistent closure/ended state for run {self.run_id}: "
+                f"closure={closure is not None}, ended={ended_at is not None}"
+            )
+            raise RuntimeError(msg)
+        if closure is not None and ended_at is not None:
+            self.pending = None
+            return
+
         expected = self.pending.candle_open_ms + self.interval_ms
         if next_open_ms != expected:
             raise CandleSequenceError(
@@ -222,6 +267,7 @@ class PaperTrader:
         closure_reason: str = "close_session",
     ) -> None:
         """Terminal liquidation at the given mark and run closure (explicit, logged)."""
+        import copy
         import math
         import time
 
@@ -229,14 +275,21 @@ class PaperTrader:
             raise ValueError(f"invalid mark_price for session closure: {mark_price}")
 
         existing_closure = self.ledger.get_closure(self.run_id)
-        if existing_closure is not None:
-            logger.info("session %s is already closed; no action taken", self.run_id)
+        run_info = self.ledger.get_run(self.run_id)
+        ended_at = run_info["ended_at_ms"] if run_info is not None else None
+
+        if (existing_closure is not None) != (ended_at is not None):
+            msg = (
+                f"inconsistent closure/ended state for run {self.run_id}: "
+                f"closure={existing_closure is not None}, ended={ended_at is not None}"
+            )
+            raise RuntimeError(msg)
+        if existing_closure is not None and ended_at is not None:
+            logger.info("session %s is already closed and ended; no action taken", self.run_id)
             return
 
-        run_info = self.ledger.get_run(self.run_id)
-        if run_info is not None and run_info["ended_at_ms"] is not None:
-            logger.info("session %s is already ended; no action taken", self.run_id)
-            return
+        orig_state = copy.copy(self.engine.state)
+        orig_pending = self.pending
 
         self.pending = None
         if terminal_ts_ms is None:
@@ -249,21 +302,26 @@ class PaperTrader:
                 terminal_ts_ms = int(time.time() * 1000)
 
         result = self.engine.liquidate(mark_price)
-        self.ledger.record_closure(
-            self.run_id,
-            terminal_ts_ms=terminal_ts_ms,
-            mark_price=mark_price,
-            result=result,
-            state=self.engine.state,
-            closure_reason=closure_reason,
-        )
+        try:
+            self.ledger.finalize_run(
+                self.run_id,
+                terminal_ts_ms=terminal_ts_ms,
+                mark_price=mark_price,
+                result=result,
+                state=self.engine.state,
+                closure_reason=closure_reason,
+            )
+        except Exception:
+            self.engine.state = orig_state
+            self.pending = orig_pending
+            raise
+
         logger.info(
             "session closed: liquidated %.6f @ %.2f, final equity %.2f",
             result.delta_qty,
             mark_price,
             self.engine.state.net_equity(mark_price),
         )
-        self.ledger.end_run(self.run_id)
 
 
 def replay_candles(trader: PaperTrader, candles: pd.DataFrame) -> int:
@@ -277,16 +335,28 @@ def replay_candles(trader: PaperTrader, candles: pd.DataFrame) -> int:
     overwritten. (The previous look-ahead ordering lost that carried decision because the
     first on_finalized_candle overwrote `pending` before it executed.)
     """
+    run_info = trader.ledger.get_run(trader.run_id)
+    ended_at = run_info["ended_at_ms"] if run_info is not None else None
+    closure = trader.ledger.get_closure(trader.run_id)
+    if (closure is not None) != (ended_at is not None):
+        msg = (
+            f"inconsistent closure/ended state for run {trader.run_id}: "
+            f"closure={closure is not None}, ended={ended_at is not None}"
+        )
+        raise RuntimeError(msg)
+    if closure is not None and ended_at is not None:
+        return 0
+
     n = 0
-    rows = candles.reset_index(drop=True)
-    for i in range(len(rows)):
-        open_ms = int(rows.at[i, "open_time"])
+    for row in candles.itertuples(index=False):
+        candle = {c: getattr(row, c) for c in CANDLE_COLUMNS}
         if (
             trader.pending is not None
-            and open_ms == trader.pending.candle_open_ms + trader.interval_ms
+            and int(candle["open_time"]) == trader.pending.candle_open_ms + trader.interval_ms
         ):
-            trader.on_next_open(open_ms, float(rows.at[i, "open"]))
+            trader.on_next_open(int(candle["open_time"]), float(candle["open"]))
             n += 1
-        candle = {c: rows.at[i, c] for c in CANDLE_COLUMNS}
-        trader.on_finalized_candle(candle)
+        new_pending = trader.on_finalized_candle(candle)
+        if new_pending is not None:
+            trader.pending = new_pending
     return n
