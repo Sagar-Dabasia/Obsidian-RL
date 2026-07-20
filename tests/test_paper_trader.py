@@ -108,6 +108,46 @@ def test_restart_recovery_matches_uninterrupted_run(tmp_path: Path) -> None:
     assert len(ledger2.decisions(run.run_id)) == WARMUP_ROWS + 200 - 1 - WARMUP_ROWS
 
 
+def test_carried_pending_executes_after_backfill_batch(tmp_path: Path) -> None:
+    """Regression (review, CRITICAL): a decision made for candle c_L, carried into a
+    backfill batch that STARTS at c_{L+1}, must still execute at open[L+1] — not be
+    overwritten by the first on_finalized_candle of the batch."""
+    candles = make_candles(WARMUP_ROWS + 60, seed=8)
+    split = WARMUP_ROWS + 40
+
+    # Uninterrupted reference.
+    ref, _, _ = make_trader(tmp_path / "ref")
+    replay_candles(ref, candles)
+    ref_price = float(candles["close"].iloc[-1])
+
+    # Interrupted: process a prefix, then simulate crash-after-decision by restoring and
+    # feeding the remaining candles as a fresh batch that begins at the execution candle.
+    ledger_path = tmp_path / "live" / "ledger.sqlite3"
+    ledger = Ledger(ledger_path)
+    run = ledger.start_run("threshold-momentum", "live-paper", 10_000.0, {})
+    t1 = PaperTrader(ThresholdMomentum(0.002), ledger, run.run_id, cost_model=CM)
+    replay_candles(t1, candles.iloc[:split])
+    ledger.close()
+
+    ledger2 = Ledger(ledger_path)
+    t2 = PaperTrader(ThresholdMomentum(0.002), ledger2, run.run_id, cost_model=CM)
+    state = ledger2.restore_state(run.run_id)
+    assert state is not None
+    t2.restore(state, candles.iloc[:split])
+    # restore recomputes the pending decision for candle split-1 (never executed by t1)
+    assert t2.pending is not None
+    assert t2.pending.candle_open_ms == int(candles["open_time"].iloc[split - 1])
+    # feed ONLY the remaining candles (a backfill batch beginning at the execution candle)
+    replay_candles(t2, candles.iloc[split:])
+
+    assert t2.engine.state.qty == pytest.approx(ref.engine.state.qty, rel=1e-6)
+    assert t2.engine.state.net_equity(ref_price) == pytest.approx(
+        ref.engine.state.net_equity(ref_price), rel=1e-6
+    )
+    # the carried decision for candle split-1 produced a ledger row (no missing trade)
+    assert ledger2.has_processed(run.run_id, int(candles["open_time"].iloc[split - 1]))
+
+
 def test_strategy_failure_fails_flat(tmp_path: Path) -> None:
     class ExplodingStrategy:
         strategy_id = "exploding"

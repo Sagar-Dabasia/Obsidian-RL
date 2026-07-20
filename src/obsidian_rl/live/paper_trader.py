@@ -230,20 +230,24 @@ class PaperTrader:
 def replay_candles(trader: PaperTrader, candles: pd.DataFrame) -> int:
     """Drive the live-paper decision path over recorded candles. Returns decisions made.
 
-    Executes off trader.pending (not the return value) so a pending decision restored
-    from a pre-crash state is executed at the correct next open as well.
+    Ordering mirrors the live handle_event path EXACTLY: for each row, first execute any
+    pending decision whose execution candle is THIS row (phase 2, at this row's open),
+    THEN ingest the finalized candle (phase 1, which may set a new pending). This means a
+    pending decision carried in from restore() or from a prior backfill batch — whose
+    execution candle is the FIRST row of `candles` — is executed before it can be
+    overwritten. (The previous look-ahead ordering lost that carried decision because the
+    first on_finalized_candle overwrote `pending` before it executed.)
     """
     n = 0
     rows = candles.reset_index(drop=True)
     for i in range(len(rows)):
-        candle = {c: rows.at[i, c] for c in CANDLE_COLUMNS}
-        trader.on_finalized_candle(candle)
-        nxt = i + 1
+        open_ms = int(rows.at[i, "open_time"])
         if (
             trader.pending is not None
-            and nxt < len(rows)
-            and int(rows.at[nxt, "open_time"]) == trader.pending.candle_open_ms + trader.interval_ms
+            and open_ms == trader.pending.candle_open_ms + trader.interval_ms
         ):
-            trader.on_next_open(int(rows.at[nxt, "open_time"]), float(rows.at[nxt, "open"]))
+            trader.on_next_open(open_ms, float(rows.at[i, "open"]))
             n += 1
+        candle = {c: rows.at[i, c] for c in CANDLE_COLUMNS}
+        trader.on_finalized_candle(candle)
     return n

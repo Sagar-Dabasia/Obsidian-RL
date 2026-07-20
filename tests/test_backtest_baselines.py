@@ -127,6 +127,34 @@ def test_funding_events_applied() -> None:
     assert res_without.final_state_summary["funding"] == 0.0
 
 
+def test_funding_not_blocked_by_stale_warmup_event() -> None:
+    """Regression (review): a funding event in the warm-up region must not pin f_idx and
+    silently drop every later in-window event."""
+    candles = make_candles(WARMUP_ROWS + 10)
+    t_inwindow = WARMUP_ROWS + 2
+    funding = pd.DataFrame(
+        {
+            "funding_time_ms": [
+                int(candles["open_time"].iloc[50]) + 1000,  # stale, warm-up region
+                int(candles["open_time"].iloc[t_inwindow]) + 1000,  # in traded window
+            ],
+            "funding_rate": [0.0001, 0.0001],
+        }
+    )
+    res = run_backtest(candles, BuyAndHold(), cost_model=CM, funding_rates=funding)
+    only_inwindow = run_backtest(
+        candles,
+        BuyAndHold(),
+        cost_model=CM,
+        funding_rates=funding.iloc[[1]],
+    )
+    # the stale event must be skipped, and the in-window event still applied
+    assert res.final_state_summary["funding"] > 0
+    assert res.final_state_summary["funding"] == pytest.approx(
+        only_inwindow.final_state_summary["funding"]
+    )
+
+
 def test_trade_stats() -> None:
     stats = trade_stats([10.0, -5.0, 20.0, 0.0, -5.0])
     assert stats["win_rate"] == pytest.approx(0.5)

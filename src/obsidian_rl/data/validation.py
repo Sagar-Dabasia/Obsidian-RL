@@ -80,14 +80,17 @@ def validate_candles(
     if bad_close.any():
         rep.errors.append(f"{int(bad_close.sum())} rows with close_time != open_time+{ms}-1")
 
-    # Gaps (only meaningful when sorted and deduplicated).
+    # Gaps (only meaningful when sorted and deduplicated). Use positional access so a
+    # filtered/holey caller index cannot corrupt gap boundaries or missing counts.
     if ot.is_monotonic_increasing and not rep.n_duplicates and rep.n_rows > 1:
-        deltas = ot.diff().iloc[1:]
-        gap_idx = deltas[deltas != ms].index
-        for i in gap_idx:
-            prev_open = int(ot.loc[i - 1]) if i - 1 in ot.index else int(ot.iloc[0])
-            rep.gaps.append((prev_open, int(ot.loc[i])))
-            rep.n_missing_candles += max(0, int((ot.loc[i] - prev_open) // ms) - 1)
+        ot_pos = ot.reset_index(drop=True)
+        deltas = ot_pos.diff()
+        for pos in range(1, len(ot_pos)):
+            if deltas.iloc[pos] != ms:
+                prev_open = int(ot_pos.iloc[pos - 1])
+                next_open = int(ot_pos.iloc[pos])
+                rep.gaps.append((prev_open, next_open))
+                rep.n_missing_candles += max(0, int((next_open - prev_open) // ms) - 1)
         if rep.gaps and gaps_are_errors:
             rep.errors.append(f"{len(rep.gaps)} gaps ({rep.n_missing_candles} missing candles)")
 

@@ -1,9 +1,12 @@
 # Session handoff
 
-Updated: 2026-07-19 · Branch: `rebuild/deep-rl-platform` (never pushed)
+Updated: 2026-07-20 · Branch: `rebuild/deep-rl-platform` (never pushed)
 
-## State: rebuild COMPLETE (all phases 0-12)
-- 140+ tests green; ruff/mypy/compileall clean. Results: docs/VALIDATION_REPORT.md.
+## State: rebuild COMPLETE (all phases 0-12) + adversarial review pass
+- 146 tests green; ruff/mypy/compileall clean. Results: docs/VALIDATION_REPORT.md.
+- Multi-agent correctness review done (docs/REVIEW.md): 6 confirmed defects fixed with
+  regression tests (funding drop, gap-index, store conflict, CRITICAL carried-pending
+  loss on backfill, double-rollback, no-trade-band close).
 - Data: 2020-01-01→2026-07-19 BTCUSDT 15m in data/ (local, gitignored); update via
   `python -m obsidian_rl.cli data-update`.
 - Champion: `ppo-20260719-200553-seed42` (models/CHAMPION.json; rollback available).

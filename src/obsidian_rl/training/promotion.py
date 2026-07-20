@@ -44,21 +44,31 @@ def current_champion(models_dir: Path) -> str | None:
     return str(model_id) if model_id else None
 
 
-def _write_champion(models_dir: Path, model_id: str | None, action: str) -> None:
-    path = _champion_path(models_dir)
-    data: dict[str, Any] = (
-        json.loads(path.read_text(encoding="utf-8"))
-        if path.exists()
-        else {"model_id": None, "history": []}
-    )
-    data["history"].append(
+def _load_champion_data(path: Path) -> dict[str, Any]:
+    """Load CHAMPION.json, back-filling `lineage` for files written before it existed.
+
+    `lineage` is the undo stack of champions in promotion order (current is last);
+    `history` remains an append-only audit log.
+    """
+    if not path.exists():
+        return {"model_id": None, "lineage": [], "history": []}
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    if "lineage" not in data:
+        # Legacy file (promotes only, no rollbacks yet): the only reliable champion is
+        # the current one, so seed the stack with it.
+        data["lineage"] = [data["model_id"]] if data.get("model_id") else []
+    return data
+
+
+def _write_champion_data(path: Path, data: dict[str, Any], action: str) -> None:
+    data.setdefault("history", []).append(
         {
             "model_id": data.get("model_id"),
-            "replaced_at_utc_ms": int(time.time() * 1000),
+            "lineage": list(data.get("lineage", [])),
+            "changed_at_utc_ms": int(time.time() * 1000),
             "action": action,
         }
     )
-    data["model_id"] = model_id
     path.write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
@@ -125,29 +135,38 @@ def evaluate_candidate(
 def promote(models_dir: Path, model_id: str) -> None:
     """Explicitly promote a validated candidate to champion; retire the old champion."""
     load_record(Path(models_dir) / model_id)  # must validate
-    old = current_champion(models_dir)
+    path = _champion_path(models_dir)
+    data = _load_champion_data(path)
+    old = data.get("model_id")
     if old == model_id:
         return
     if old:
         set_promotion(Path(models_dir) / old, "retired")
     set_promotion(Path(models_dir) / model_id, "champion")
-    _write_champion(models_dir, model_id, action=f"promote:{model_id}")
+    data["model_id"] = model_id
+    data["lineage"] = [*data.get("lineage", []), model_id]  # push onto the undo stack
+    _write_champion_data(path, data, action=f"promote:{model_id}")
 
 
 def rollback(models_dir: Path) -> str:
-    """Restore the most recent previous champion. Returns the restored model_id."""
+    """Pop the current champion off the lineage stack and restore the one beneath it.
+
+    Repeated rollbacks walk strictly further back (C -> B -> A), never bouncing back to
+    an already-abandoned champion. Returns the restored model_id.
+    """
     path = _champion_path(models_dir)
     if not path.exists():
         raise RuntimeError("no champion history to roll back")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    history = [h for h in data.get("history", []) if h.get("model_id")]
-    if not history:
-        raise RuntimeError("no previous champion recorded")
-    previous = str(history[-1]["model_id"])
+    data = _load_champion_data(path)
+    lineage: list[str] = list(data.get("lineage", []))
+    if len(lineage) < 2:
+        raise RuntimeError("no previous champion to roll back to")
+    current = lineage[-1]
+    previous = lineage[-2]
     load_record(Path(models_dir) / previous)  # must still validate
-    current = data.get("model_id")
-    if current:
-        set_promotion(Path(models_dir) / current, "retired")
+    set_promotion(Path(models_dir) / current, "retired")
     set_promotion(Path(models_dir) / previous, "champion")
-    _write_champion(models_dir, previous, action=f"rollback:{previous}")
+    data["model_id"] = previous
+    data["lineage"] = lineage[:-1]  # pop the abandoned champion
+    _write_champion_data(path, data, action=f"rollback:{current}->{previous}")
     return previous

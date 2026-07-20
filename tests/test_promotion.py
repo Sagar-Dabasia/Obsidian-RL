@@ -58,6 +58,32 @@ def test_promote_and_retire(models_with_two_candidates: tuple[Path, str, str]) -
     assert load_record(models_dir / b).metadata["promotion"] == "retired"
 
 
+def test_multi_step_rollback_walks_strictly_back(
+    models_with_two_candidates: tuple[Path, str, str],
+) -> None:
+    """Regression (review): a second rollback must walk further back (C->B->A), never
+    reinstate the just-abandoned champion."""
+    models_dir, a, b = models_with_two_candidates
+    (models_dir / "CHAMPION.json").unlink(missing_ok=True)  # fresh lineage for this test
+    train = make_candles(350, seed=1)
+    evalc = make_candles(250, seed=2, start_ms=int(train["open_time"].iloc[-1]) + 900_000)
+    c = train_ppo(train, evalc, CFG, models_dir, model_id="cand-c").record.model_id
+
+    promote(models_dir, a)
+    promote(models_dir, b)
+    promote(models_dir, c)
+    assert current_champion(models_dir) == c
+
+    assert rollback(models_dir) == b
+    assert current_champion(models_dir) == b
+    assert rollback(models_dir) == a  # must reach A, NOT bounce back to C
+    assert current_champion(models_dir) == a
+    assert load_record(models_dir / c).metadata["promotion"] == "retired"
+
+    with pytest.raises(RuntimeError, match="no previous champion"):
+        rollback(models_dir)  # nothing before A
+
+
 def test_candidate_evaluation_gates(models_with_two_candidates: tuple[Path, str, str]) -> None:
     models_dir, a, _ = models_with_two_candidates
     val = make_candles(WARMUP_ROWS + 200, seed=9)

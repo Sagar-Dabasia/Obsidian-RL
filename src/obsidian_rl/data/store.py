@@ -98,9 +98,18 @@ class CandleStore:
                 rows_new += len(deduped) - len(existing)
                 out = deduped
             else:
-                chunk = chunk.drop_duplicates(subset="open_time").reset_index(drop=True)
-                rows_new += len(chunk)
-                out = chunk
+                chunk = chunk.sort_values("open_time").reset_index(drop=True)
+                dup_all = chunk.duplicated(keep="first")  # identical full rows
+                dup_key = chunk["open_time"].duplicated(keep="first")
+                conflict = dup_key & ~dup_all
+                if conflict.any():
+                    bad = chunk.loc[conflict, "open_time"].head(3).tolist()
+                    raise StoreConflictError(
+                        f"{self.symbol}/{self.interval} {key}: differing rows for open_time {bad}"
+                    )
+                deduped = chunk[~dup_key].reset_index(drop=True)
+                rows_new += len(deduped)
+                out = deduped
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".parquet.tmp")
             out.to_parquet(tmp, index=False)

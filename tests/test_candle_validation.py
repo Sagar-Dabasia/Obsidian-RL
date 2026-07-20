@@ -74,6 +74,19 @@ def test_gap_detected_and_counted(candles_100: pd.DataFrame) -> None:
     assert not strict.ok
 
 
+def test_gap_detection_correct_on_holey_index(candles_100: pd.DataFrame) -> None:
+    """Regression (review): a filtered (non-contiguous) index must not corrupt the gap
+    boundary or missing-candle count."""
+    df = candles_100.drop(index=[8, 9])  # holey index, NOT reset
+    rep = validate_candles(df, "15m")
+    assert rep.ok  # gaps not errors by default
+    assert len(rep.gaps) == 1
+    prev_open, next_open = rep.gaps[0]
+    assert prev_open == int(candles_100["open_time"].iloc[7])
+    assert next_open == int(candles_100["open_time"].iloc[10])
+    assert rep.n_missing_candles == 2
+
+
 def test_unsorted_fails(candles_100: pd.DataFrame) -> None:
     df = candles_100.iloc[::-1].reset_index(drop=True)
     assert not validate_candles(df, "15m").ok

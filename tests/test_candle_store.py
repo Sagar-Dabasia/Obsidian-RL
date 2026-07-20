@@ -51,6 +51,27 @@ def test_conflicting_rows_raise(tmp_path: Path) -> None:
         store.write(tampered, source="tampered")
 
 
+def test_conflict_raised_on_new_partition(tmp_path: Path) -> None:
+    """Regression (review): conflicting rows for the same open_time must raise even when
+    the partition does not yet exist (not be silently dropped by drop_duplicates)."""
+    store = CandleStore(tmp_path, "BTCUSDT", "15m")
+    df = make_candles(10)
+    conflicting = df.iloc[[4]].copy()
+    conflicting.loc[conflicting.index[0], "close"] += 500.0  # same open_time, diff close
+    tampered = pd.concat([df, conflicting], ignore_index=True)
+    with pytest.raises(StoreConflictError):
+        store.write(tampered, source="new-partition-conflict")
+
+
+def test_exact_duplicate_rows_ok_on_new_partition(tmp_path: Path) -> None:
+    store = CandleStore(tmp_path, "BTCUSDT", "15m")
+    df = make_candles(10)
+    dup = pd.concat([df, df.iloc[[4]]], ignore_index=True)  # identical row => dedupe, no raise
+    result = store.write(dup, source="new-partition-dup")
+    assert result.rows_new == 10
+    assert len(store.read()) == 10
+
+
 def test_cross_month_partitioning(tmp_path: Path) -> None:
     store = CandleStore(tmp_path, "BTCUSDT", "15m")
     jan = make_candles(10, start_ms=1_704_067_200_000)  # 2024-01-01 UTC

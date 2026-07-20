@@ -128,11 +128,13 @@ def run_backtest(
         result = engine.rebalance(target, exec_price)
         n_decisions += 1
 
+        # Drop funding events that fall before the first executed candle's span (the
+        # warm-up region, where the book was flat so funding is 0); otherwise a stale
+        # head event would pin f_idx and silently block every later in-window event.
+        while f_idx < len(funding_events) and funding_events[f_idx][0] < open_time[t + 1]:
+            f_idx += 1
         # funding events inside candle t+1's span, applied at its close mark
-        while (
-            f_idx < len(funding_events)
-            and open_time[t + 1] <= funding_events[f_idx][0] <= close_time[t + 1]
-        ):
+        while f_idx < len(funding_events) and funding_events[f_idx][0] <= close_time[t + 1]:
             engine.apply_funding(close_px[t + 1], funding_events[f_idx][1])
             f_idx += 1
 
