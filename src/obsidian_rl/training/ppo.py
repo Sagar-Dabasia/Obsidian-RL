@@ -19,7 +19,13 @@ from obsidian_rl.env.trading_env import RewardConfig, TradingEnv
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig
 from obsidian_rl.training.device import DeviceReport, detect_device
-from obsidian_rl.training.registry import MODEL_FILE, ModelRecord, load_record, register_model
+from obsidian_rl.training.registry import (
+    MODEL_FILE,
+    ModelRecord,
+    load_record,
+    register_model,
+    validate_model_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +111,9 @@ def train_ppo(
     device_report = detect_device(cfg.device)
     logger.info("device: %s", device_report.to_dict())
 
-    model_id = model_id or f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-seed{cfg.seed}"
+    model_id = validate_model_id(
+        model_id or f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-seed{cfg.seed}"
+    )
     model_dir = Path(models_dir) / model_id
     model_dir.mkdir(parents=True, exist_ok=True)
 

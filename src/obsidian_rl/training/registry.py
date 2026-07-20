@@ -90,17 +90,40 @@ def artifact_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _resolve_repo_root(repo_root: Path | None = None) -> Path:
+    target = (
+        Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parent
+    )
+    try:
+        out = subprocess.run(
+            ["git", "-c", "safe.directory=*", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            cwd=target,
+            check=True,
+        )
+        return Path(out.stdout.strip()).resolve()
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise RuntimeError(
+            "Obsidian-RL project source checkout is not inside a Git repository"
+        ) from exc
+
+
 def current_git_commit(repo_root: Path | None = None) -> str | None:
     try:
+        root = _resolve_repo_root(repo_root)
         out = subprocess.run(
             ["git", "-c", "safe.directory=*", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
-            cwd=repo_root,
+            cwd=root,
             check=True,
         )
-        return out.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        commit = out.stdout.strip()
+        if len(commit) != 40 or not all(c in "0123456789abcdef" for c in commit.lower()):
+            raise RuntimeError(f"git commit {commit!r} is not a 40-character hexadecimal string")
+        return commit.lower()
+    except (subprocess.CalledProcessError, FileNotFoundError, RuntimeError):
         return None
 
 
@@ -113,15 +136,16 @@ class GitSourceState:
 
 def get_git_source_state(repo_root: Path | None = None) -> GitSourceState:
     """Check Git HEAD commit and working tree status (`git status --porcelain`)."""
-    commit = current_git_commit(repo_root)
+    root = _resolve_repo_root(repo_root)
+    commit = current_git_commit(root)
     if not commit:
-        return GitSourceState(commit=None, is_clean=False, dirty_paths=[])
+        raise RuntimeError("unable to resolve a valid 40-character commit hash for project source")
     try:
         out = subprocess.run(
             ["git", "-c", "safe.directory=*", "status", "--porcelain"],
             capture_output=True,
             text=True,
-            cwd=repo_root,
+            cwd=root,
             check=True,
         )
         lines = [line.strip() for line in out.stdout.splitlines() if line.strip()]
@@ -135,8 +159,8 @@ def get_git_source_state(repo_root: Path | None = None) -> GitSourceState:
         return GitSourceState(
             commit=commit, is_clean=len(dirty_paths) == 0, dirty_paths=dirty_paths
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return GitSourceState(commit=commit, is_clean=False, dirty_paths=[])
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise RuntimeError("failed to query Git status for project source") from exc
 
 
 def dependency_versions() -> dict[str, str]:
@@ -172,11 +196,17 @@ def register_model(
     artifact = model_dir / MODEL_FILE
     if not artifact.exists():
         raise FileNotFoundError(artifact)
+    git_state = get_git_source_state()
+    if not git_state.is_clean:
+        dirty = ", ".join(git_state.dirty_paths[:5])
+        raise RuntimeError(f"working tree is dirty ({dirty}); refusing to register model")
     metadata: dict[str, Any] = {
         "model_id": model_id,
         "algorithm": algorithm,
         "created_utc_ms": int(time.time() * 1000),
-        "git_commit": current_git_commit(),
+        "git_commit": git_state.commit,
+        "training_source_git_commit": git_state.commit,
+        "training_source_tree_clean": True,
         "dependencies": dependency_versions(),
         "feature_schema": schema_fingerprint(),
         "data": data_info,
@@ -196,27 +226,49 @@ def load_record(model_dir: Path) -> ModelRecord:
     artifact = Path(model_dir) / MODEL_FILE
     if not meta_path.exists():
         raise ModelCompatibilityError(f"no {METADATA_FILE} in {model_dir}; refusing to load")
-    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    try:
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ModelCompatibilityError(f"{METADATA_FILE} is malformed JSON") from exc
+    if not isinstance(metadata, dict):
+        raise ModelCompatibilityError(f"{METADATA_FILE} root must be a JSON object")
     if not artifact.exists():
         raise ModelCompatibilityError(f"artifact missing: {artifact}")
-    actual = artifact_sha256(artifact)
-    if actual != metadata.get("artifact_sha256"):
+
+    raw_id = metadata.get("model_id")
+    if not isinstance(raw_id, str):
+        raise ModelCompatibilityError("metadata model_id must be a string without coercion")
+    try:
+        model_id = validate_model_id(raw_id)
+    except ValueError as exc:
+        raise ModelCompatibilityError(f"metadata model_id is invalid: {exc}") from exc
+    if model_id != Path(model_dir).name:
         raise ModelCompatibilityError(
-            f"checksum mismatch for {artifact}: metadata says "
-            f"{metadata.get('artifact_sha256')}, file is {actual}"
+            f"metadata model_id {model_id!r} does not match directory name {Path(model_dir).name!r}"
         )
-    current = schema_fingerprint()
-    stored = metadata.get("feature_schema", {})
+
+    stored_sha = metadata.get("artifact_sha256")
     if (
-        stored.get("version") != current["version"]
-        or stored.get("observation_dim") != current["observation_dim"]
+        not isinstance(stored_sha, str)
+        or len(stored_sha) != 64
+        or stored_sha != stored_sha.lower()
+        or not all(c in "0123456789abcdef" for c in stored_sha)
     ):
         raise ModelCompatibilityError(
-            f"feature schema mismatch: model has {stored.get('version')}/"
-            f"{stored.get('observation_dim')}, code has {current['version']}/"
-            f"{current['observation_dim']}"
+            "metadata artifact_sha256 must be a valid 64-char lowercase SHA-256"
         )
-    model_id = validate_model_id(str(metadata["model_id"]))
+    actual = artifact_sha256(artifact)
+    if actual != stored_sha:
+        raise ModelCompatibilityError(
+            f"checksum mismatch for {artifact}: metadata says {stored_sha}, file is {actual}"
+        )
+
+    current = schema_fingerprint()
+    stored = metadata.get("feature_schema")
+    if not isinstance(stored, dict) or stored != current:
+        raise ModelCompatibilityError(
+            "feature schema mismatch: metadata feature_schema does not exactly match current schema fingerprint"
+        )
     return ModelRecord(model_id, Path(model_dir), metadata)
 
 

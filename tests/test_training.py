@@ -36,6 +36,28 @@ SMOKE_CFG = TrainConfig(
 )
 
 
+from typing import Iterator
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _mock_clean_git_state_module() -> Iterator[None]:
+    from unittest.mock import patch
+    from obsidian_rl.training.registry import GitSourceState, get_git_source_state as real_get_git_source_state
+
+    clean_state = GitSourceState(commit="a" * 40, is_clean=True, dirty_paths=[])
+
+    def fake_get_git_source_state(path: Path | None = None) -> GitSourceState:
+        if path is not None:
+            return real_get_git_source_state(path)
+        return clean_state
+
+    with (
+        patch("obsidian_rl.training.registry.get_git_source_state", fake_get_git_source_state),
+        patch("obsidian_rl.training.promotion.get_git_source_state", fake_get_git_source_state),
+    ):
+        yield
+
+
 @pytest.fixture(scope="module")
 def trained_model_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     models_dir = tmp_path_factory.mktemp("models")
@@ -172,3 +194,115 @@ def test_ppo_strategy_adapter(trained_model_dir: Path) -> None:
     res = run_backtest(candles, strat, cost_model=CM)
     assert res.n_decisions > 0
     assert np.isfinite(res.final_state_summary["final_equity"])
+
+
+def test_invalid_model_id_path_construction_rejected(tmp_path: Path) -> None:
+    train_candles = make_candles(160, seed=15)
+    eval_candles = make_candles(
+        120, seed=16, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000
+    )
+    models_dir = tmp_path / "safe_models"
+    models_dir.mkdir()
+    invalid_ids = [
+        "../escape",
+        "/abs/path",
+        "foo/bar",
+        "CON",
+    ]
+    for bad_id in invalid_ids:
+        with pytest.raises(ValueError):
+            train_ppo(train_candles, eval_candles, SMOKE_CFG, models_dir, model_id=bad_id)
+    assert not (tmp_path / "escape").exists()
+    assert not (tmp_path / "abs").exists()
+    assert list(models_dir.iterdir()) == []
+
+
+def test_load_record_strict_metadata_checks(trained_model_dir: Path, tmp_path: Path) -> None:
+    import shutil
+
+    meta_path = trained_model_dir / METADATA_FILE
+    original_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    # integer model_id rejected
+    copy_dir = tmp_path / "int_id_model"
+    shutil.copytree(trained_model_dir, copy_dir)
+    meta = dict(original_meta)
+    meta["model_id"] = 12345
+    (copy_dir / METADATA_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="must be a string without coercion"):
+        load_record(copy_dir)
+
+    # directory/metadata ID mismatch rejected
+    copy_dir2 = tmp_path / "mismatch_dir"
+    shutil.copytree(trained_model_dir, copy_dir2)
+    meta = dict(original_meta)
+    meta["model_id"] = "different-id"
+    (copy_dir2 / METADATA_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="does not match directory name"):
+        load_record(copy_dir2)
+
+    # malformed metadata root rejected
+    copy_dir3 = tmp_path / "malformed_root"
+    shutil.copytree(trained_model_dir, copy_dir3)
+    (copy_dir3 / METADATA_FILE).write_text('["not", "an", "object"]', encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="root must be a JSON object"):
+        load_record(copy_dir3)
+
+    # incomplete or reordered feature schema rejected
+    copy_dir4 = tmp_path / "reordered_schema"
+    shutil.copytree(trained_model_dir, copy_dir4)
+    meta = dict(original_meta)
+    meta["model_id"] = copy_dir4.name
+    fs = dict(meta["feature_schema"])
+    fs["market_features"] = list(reversed(fs["market_features"]))
+    meta["feature_schema"] = fs
+    (copy_dir4 / METADATA_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="feature schema mismatch"):
+        load_record(copy_dir4)
+
+    # malformed SHA-256 rejected
+    copy_dir5 = tmp_path / "malformed_sha"
+    shutil.copytree(trained_model_dir, copy_dir5)
+    meta = dict(original_meta)
+    meta["model_id"] = copy_dir5.name
+    meta["artifact_sha256"] = "ABCDEF"
+    (copy_dir5 / METADATA_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="valid 64-char lowercase SHA-256"):
+        load_record(copy_dir5)
+
+
+def test_git_source_root_resolution_in_temp_repos(tmp_path: Path) -> None:
+    import subprocess
+    from obsidian_rl.training.registry import (
+        _resolve_repo_root,
+        current_git_commit,
+        get_git_source_state,
+    )
+
+    repo_dir = tmp_path / "temp_git_repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+    (repo_dir / "file.txt").write_text("hello", encoding="utf-8")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_dir, check=True)
+
+    sub_dir = repo_dir / "sub" / "folder"
+    sub_dir.mkdir(parents=True)
+    assert _resolve_repo_root(sub_dir) == repo_dir.resolve()
+
+    commit = current_git_commit(repo_dir)
+    assert len(commit) == 40
+    assert all(c in "0123456789abcdef" for c in commit.lower())
+
+    state = get_git_source_state(repo_dir)
+    assert state.commit == commit
+    assert state.is_clean is True
+    assert state.dirty_paths == []
+
+    (repo_dir / "file.txt").write_text("modified", encoding="utf-8")
+    dirty_state = get_git_source_state(repo_dir)
+    assert dirty_state.commit == commit
+    assert dirty_state.is_clean is False
+    assert "file.txt" in dirty_state.dirty_paths

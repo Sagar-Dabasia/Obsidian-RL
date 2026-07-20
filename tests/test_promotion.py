@@ -36,6 +36,27 @@ from obsidian_rl.training.registry import (
     register_model,
 )
 from tests.conftest import make_candles
+from typing import Iterator
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _mock_clean_git_state_module() -> Iterator[None]:
+    from unittest.mock import patch
+    from obsidian_rl.training.registry import GitSourceState, get_git_source_state as real_get_git_source_state
+
+    clean_state = GitSourceState(commit="a" * 40, is_clean=True, dirty_paths=[])
+
+    def fake_get_git_source_state(path: Path | None = None) -> GitSourceState:
+        if path is not None:
+            return real_get_git_source_state(path)
+        return clean_state
+
+    with (
+        patch("obsidian_rl.training.registry.get_git_source_state", fake_get_git_source_state),
+        patch("obsidian_rl.training.promotion.get_git_source_state", fake_get_git_source_state),
+    ):
+        yield
+
 
 CM = CostModel(taker_fee=0.001, half_spread=0.0005, slippage=0.0005)
 CFG = TrainConfig(
@@ -154,7 +175,7 @@ def test_candidate_evaluation_gates(models_with_two_candidates: tuple[Path, str,
             a,
             val,
             cost_model=CM,
-            thresholds=PromotionThresholds(max_drawdown_limit=-1.0),
+            thresholds=PromotionThresholds(max_drawdown_limit=0.0),
         )
     assert strict["passes"] is False and strict["failures"]
 
@@ -268,7 +289,7 @@ def test_failed_candidate_cannot_be_promoted(
         models_dir,
         candidate_id,
         validation,
-        thresholds=PromotionThresholds(max_drawdown_limit=-1.0),
+        thresholds=PromotionThresholds(max_drawdown_limit=0.0),
     )
     assert report["passes"] is False
 
@@ -519,7 +540,7 @@ def test_failed_evaluation_produces_immutable_evidence(
         models_dir,
         candidate_id,
         validation,
-        thresholds=PromotionThresholds(max_drawdown_limit=-1.0),
+        thresholds=PromotionThresholds(max_drawdown_limit=0.0),
     )
     assert report["passes"] is False
     assert report["failures"]
@@ -563,6 +584,8 @@ def test_evaluation_report_keys_complete(
         "cost_model",
         "source_git_commit",
         "source_tree_clean",
+        "evaluation_source_git_commit",
+        "evaluation_source_tree_clean",
         "evaluated_at_utc",
         "thresholds",
         "champion_id",
@@ -1141,17 +1164,19 @@ def test_immutable_report_exclusive_creation_collision(
 ) -> None:
     models_dir, candidate_id, validation = evidence_models
     _stub_successful_evaluation(monkeypatch)
-    original_write = promotion_module._write_exclusive_file
-    calls = []
+    fixed_name = "evaluation-v1-9999-collision-hash.json"
+    monkeypatch.setattr(promotion_module, "_report_filename", lambda ts, rh: fixed_name)
 
-    def fake_exclusive_write(path: Path, payload: bytes) -> None:
-        calls.append(path)
-        if len(calls) > 1 and path.exists():
-            raise FileExistsError(f"File exists: {path}")
-        original_write(path, payload)
+    report1 = evaluate_candidate(models_dir, candidate_id, validation)
+    evals_dir = models_dir / candidate_id / "evaluations"
+    report_path = evals_dir / fixed_name
+    assert report_path.is_file()
+    first_bytes = report_path.read_bytes()
 
-    monkeypatch.setattr(promotion_module, "_write_exclusive_file", fake_exclusive_write)
-    evaluate_candidate(models_dir, candidate_id, validation)
+    with pytest.raises((FileExistsError, PromotionEvidenceError)):
+        evaluate_candidate(models_dir, candidate_id, validation)
+
+    assert report_path.read_bytes() == first_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -1255,3 +1280,80 @@ def test_evaluation_lock_prevents_concurrent_evaluations(
         lock2 = promotion_module._evaluation_lock(models_dir, candidate_id)
         with pytest.raises(PromotionEvidenceError, match="already running"), lock2:
             pass
+
+
+def test_promote_commit_mismatch_rejected(
+    evidence_models: tuple[Path, str, pd.DataFrame], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models_dir, candidate_id, validation = evidence_models
+    _write_passing_evidence(models_dir, candidate_id, validation, monkeypatch)
+    monkeypatch.setattr(
+        promotion_module,
+        "get_git_source_state",
+        lambda: GitSourceState(commit="b" * 40, is_clean=True, dirty_paths=[]),
+    )
+    with pytest.raises(PromotionEvidenceError, match="current source commit differs from evaluation source commit"):
+        promote(models_dir, candidate_id)
+
+
+def test_promotion_thresholds_validation() -> None:
+    for name in ("max_drawdown_limit", "min_net_return_vs_flat", "must_not_trail_champion_by"):
+        with pytest.raises(ValueError):
+            PromotionThresholds(**{name: True})
+        with pytest.raises(ValueError):
+            PromotionThresholds(**{name: False})
+        with pytest.raises(ValueError):
+            PromotionThresholds(**{name: float("nan")})
+        with pytest.raises(ValueError):
+            PromotionThresholds(**{name: float("inf")})
+    with pytest.raises(ValueError):
+        PromotionThresholds(max_drawdown_limit=1.5)
+    with pytest.raises(ValueError):
+        PromotionThresholds(must_not_trail_champion_by=-0.1)
+
+
+def test_champion_lock_concurrent_and_error_handling(
+    evidence_models: tuple[Path, str, pd.DataFrame], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models_dir, candidate_id, validation = evidence_models
+    lock = promotion_module._champion_lock(models_dir, timeout_sec=0.1)
+    with lock:
+        lock2 = promotion_module._champion_lock(models_dir, timeout_sec=0.1)
+        with pytest.raises(PromotionEvidenceError, match="already running"), lock2:
+            pass
+
+    with patch("builtins.open", side_effect=PermissionError("no access")):
+        with pytest.raises(PermissionError, match="no access"):
+            with promotion_module._champion_lock(models_dir):
+                pass
+
+
+def test_symlink_containment_checks(
+    evidence_models: tuple[Path, str, pd.DataFrame], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models_dir, candidate_id, validation = evidence_models
+    _write_passing_evidence(models_dir, candidate_id, validation, monkeypatch)
+    ptr_path = _latest_pointer_path(models_dir, candidate_id)
+    _, report_path = promotion_module._load_and_verify_latest_pointer(models_dir, candidate_id)
+
+    sym_ptr = models_dir / candidate_id / "sym_latest.json"
+    try:
+        sym_ptr.symlink_to(ptr_path)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported on this filesystem/user")
+
+    with patch("obsidian_rl.training.promotion._latest_pointer_path", return_value=sym_ptr):
+        with pytest.raises(PromotionEvidenceError, match="must not be a symlink"):
+            promotion_module._load_and_verify_latest_pointer(models_dir, candidate_id)
+
+    sym_report = report_path.parent / "sym_report.json"
+    try:
+        sym_report.symlink_to(report_path)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        ptr_data = json.loads(ptr_path.read_text(encoding="utf-8"))
+        ptr_data["report_filename"] = sym_report.name
+        ptr_path.write_text(json.dumps(ptr_data), encoding="utf-8")
+        with pytest.raises(PromotionEvidenceError, match="must not be a symlink"):
+            promotion_module._load_and_verify_latest_pointer(models_dir, candidate_id)

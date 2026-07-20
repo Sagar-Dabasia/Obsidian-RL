@@ -48,7 +48,7 @@ CHAMPION_FILE = "CHAMPION.json"
 EVALUATIONS_DIR = "evaluations"
 EVALUATION_REPORT_FILE = "evaluation-v1.json"  # kept for legacy detection only
 LATEST_POINTER_FILE = "latest.json"
-EVALUATION_REPORT_SCHEMA_VERSION = 1
+EVALUATION_REPORT_SCHEMA_VERSION = 2
 CHAMPION_SCHEMA_VERSION = 1
 
 _MAX_MODEL_ID_LENGTH = 128  # sanity limit for path-segment validation
@@ -65,6 +65,22 @@ class PromotionThresholds:
     max_drawdown_limit: float = 0.35
     min_net_return_vs_flat: float = -0.05  # cannot lose >5% where flat loses ~0
     must_not_trail_champion_by: float = 0.02  # net-return margin vs current champion
+
+    def __post_init__(self) -> None:
+        for name in ("max_drawdown_limit", "min_net_return_vs_flat", "must_not_trail_champion_by"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"{name}={value!r} must be int or float, not {type(value).__name__}"
+                )
+            if not math.isfinite(value):
+                raise ValueError(f"{name}={value!r} must be finite")
+        if self.max_drawdown_limit < 0 or self.max_drawdown_limit > 1:
+            raise ValueError(f"max_drawdown_limit={self.max_drawdown_limit} must be in [0, 1]")
+        if self.must_not_trail_champion_by < 0:
+            raise ValueError(
+                f"must_not_trail_champion_by={self.must_not_trail_champion_by} must be >= 0"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +121,11 @@ def _load_and_verify_latest_pointer(
 ) -> tuple[dict[str, Any], Path]:
     candidate_id = validate_model_id(candidate_id)
     ptr_path = _latest_pointer_path(models_dir, candidate_id)
+    if ptr_path.is_symlink():
+        raise PromotionEvidenceError("latest.json must not be a symlink")
+    evals_dir = _evaluations_dir(models_dir, candidate_id).resolve()
+    if ptr_path.exists() and ptr_path.resolve() != evals_dir / LATEST_POINTER_FILE:
+        raise PromotionEvidenceError("latest.json escapes candidate evaluations directory")
     if not ptr_path.is_file():
         legacy = Path(models_dir) / candidate_id / EVALUATION_REPORT_FILE
         if legacy.is_file():
@@ -138,9 +159,22 @@ def _load_and_verify_latest_pointer(
     _require_sha256(ptr_data.get("model_artifact_sha256"), "latest.json model_artifact_sha256")
 
     report_path = _evaluations_dir(models_dir, candidate_id) / filename
+    if report_path.is_symlink():
+        raise PromotionEvidenceError("immutable evaluation report must not be a symlink")
     if not report_path.is_file():
         raise PromotionEvidenceError(
             f"immutable report file {filename!r} referenced by latest.json does not exist"
+        )
+    try:
+        resolved_report = report_path.resolve()
+        resolved_report.relative_to(evals_dir)
+    except ValueError as exc:
+        raise PromotionEvidenceError(
+            "resolved evaluation report path escapes candidate evaluations directory"
+        ) from exc
+    if resolved_report.parent != evals_dir:
+        raise PromotionEvidenceError(
+            "resolved evaluation report path is outside candidate evaluations directory"
         )
     return ptr_data, report_path
 
@@ -289,10 +323,10 @@ def _evaluation_lock(
     evals_dir = _evaluations_dir(models_dir, candidate_id)
     evals_dir.mkdir(parents=True, exist_ok=True)
     lock_path = evals_dir / ".eval.lock"
-    start_time = time.time()
+    start_time = time.monotonic()
     token = f"{os.getpid()}-{uuid.uuid4().hex}"
     acquired = False
-    while time.time() - start_time < timeout_sec:
+    while time.monotonic() - start_time < timeout_sec:
         try:
             with open(lock_path, "xb") as fh:
                 fh.write(token.encode("utf-8"))
@@ -302,11 +336,42 @@ def _evaluation_lock(
             break
         except FileExistsError:
             time.sleep(0.05)
-        except OSError:
-            time.sleep(0.05)
     if not acquired:
         raise PromotionEvidenceError(
             f"timed out waiting for evaluation lock on {candidate_id}; already running"
+        )
+    try:
+        yield
+    finally:
+        if acquired and lock_path.exists():
+            try:
+                if lock_path.read_text(encoding="utf-8").strip() == token:
+                    lock_path.unlink()
+            except OSError:
+                pass
+
+
+@contextmanager
+def _champion_lock(models_dir: Path, timeout_sec: float = 10.0) -> Iterator[None]:
+    """Cross-process lock for champion promotion state updates across models_dir."""
+    Path(models_dir).mkdir(parents=True, exist_ok=True)
+    lock_path = Path(models_dir) / ".champion.lock"
+    start_time = time.monotonic()
+    token = f"{os.getpid()}-{uuid.uuid4().hex}"
+    acquired = False
+    while time.monotonic() - start_time < timeout_sec:
+        try:
+            with open(lock_path, "xb") as fh:
+                fh.write(token.encode("utf-8"))
+                fh.flush()
+                os.fsync(fh.fileno())
+            acquired = True
+            break
+        except FileExistsError:
+            time.sleep(0.05)
+    if not acquired:
+        raise PromotionEvidenceError(
+            f"timed out waiting for champion lock on {models_dir}; already running"
         )
     try:
         yield
@@ -335,9 +400,11 @@ def _write_evaluation_report(
         evals_dir = _evaluations_dir(models_dir, candidate_id)
         filename = _report_filename(ts, report_hash)
         report_path = evals_dir / filename
+        if report_path.is_symlink():
+            raise PromotionEvidenceError("immutable evaluation report must not be a symlink")
         _write_exclusive_file(report_path, payload)
 
-        if not report_path.is_file():
+        if not report_path.is_file() or report_path.is_symlink():
             raise PromotionEvidenceError(f"failed to verify created immutable report {filename!r}")
         verify_data = _json_loads_strict(report_path.read_text(encoding="utf-8"), "verify")
         if _compute_report_hash(verify_data) != report_hash:
@@ -352,7 +419,10 @@ def _write_evaluation_report(
             "model_artifact_sha256": report.get("model_artifact_sha256", ""),
         }
         latest_bytes = (_json_dumps(latest_data) + "\n").encode("utf-8")
-        _write_atomically(_latest_pointer_path(models_dir, candidate_id), latest_bytes)
+        ptr_path = _latest_pointer_path(models_dir, candidate_id)
+        if ptr_path.is_symlink():
+            raise PromotionEvidenceError("latest.json must not be a symlink")
+        _write_atomically(ptr_path, latest_bytes)
     return report_path
 
 
@@ -458,9 +528,19 @@ def _validate_evaluation_report(
         _require_finite(val, f"cost_model.{key}")
 
     source_commit = report_data.get("source_git_commit")
-    if not isinstance(source_commit, str) or not source_commit:
-        raise PromotionEvidenceError("evaluation report source Git commit is missing")
-    if report_data.get("source_tree_clean") is not True:
+    eval_commit = report_data.get("evaluation_source_git_commit", source_commit)
+    if (
+        not isinstance(eval_commit, str)
+        or len(eval_commit) != 40
+        or not all(c in "0123456789abcdef" for c in eval_commit.lower())
+    ):
+        raise PromotionEvidenceError(
+            "evaluation report source Git commit is missing or not 40-char hex"
+        )
+    if (
+        report_data.get("source_tree_clean") is not True
+        or report_data.get("evaluation_source_tree_clean", True) is not True
+    ):
         raise PromotionEvidenceError("evaluation report source_tree_clean must be true")
     timestamp = report_data.get("evaluated_at_utc")
     if not isinstance(timestamp, str) or not timestamp.endswith("Z"):
@@ -662,6 +742,23 @@ def _write_champion_atomically(path: Path, data: dict[str, Any], action: str) ->
 # ---------------------------------------------------------------------------
 
 
+def _check_training_provenance(record: Any) -> str:
+    if record.metadata.get("training_source_tree_clean") is not True:
+        raise PromotionEvidenceError(
+            "model metadata lacks clean training provenance (training_source_tree_clean)"
+        )
+    commit = record.metadata.get("training_source_git_commit")
+    if (
+        not isinstance(commit, str)
+        or len(commit) != 40
+        or not all(c in "0123456789abcdef" for c in commit.lower())
+    ):
+        raise PromotionEvidenceError(
+            "model metadata lacks valid 40-char hex training_source_git_commit"
+        )
+    return commit.lower()
+
+
 def evaluate_candidate(
     models_dir: Path,
     candidate_id: str,
@@ -675,9 +772,12 @@ def evaluate_candidate(
 
     candidate_id = validate_model_id(candidate_id)
     thresholds = thresholds or PromotionThresholds()
+    thresholds.__post_init__()
     cost_model = cost_model or CostModel()
+    cost_model.__post_init__()
     candidate_dir = Path(models_dir) / candidate_id
     record = load_record(candidate_dir)  # hard gate: schema + checksum
+    _check_training_provenance(record)
     current_schema = schema_fingerprint()
     if record.metadata.get("feature_schema") != current_schema:
         raise PromotionEvidenceError(
@@ -686,7 +786,7 @@ def evaluate_candidate(
     if val_candles.empty or "open_time" not in val_candles:
         raise ValueError("validation candles must be non-empty and include open_time")
     git_state = get_git_source_state()
-    if not git_state.commit:
+    if not git_state.commit or len(git_state.commit) != 40:
         raise PromotionEvidenceError(
             "unable to resolve source Git commit; refusing to write evidence"
         )
@@ -770,6 +870,8 @@ def evaluate_candidate(
         "cost_model": asdict(cost_model),
         "source_git_commit": git_state.commit,
         "source_tree_clean": git_state.is_clean,
+        "evaluation_source_git_commit": git_state.commit,
+        "evaluation_source_tree_clean": git_state.is_clean,
         "evaluated_at_utc": _utc_timestamp(),
         "thresholds": asdict(thresholds),
         "champion_id": champion_id,
@@ -784,53 +886,64 @@ def evaluate_candidate(
 def promote(models_dir: Path, model_id: str) -> None:
     """Explicitly promote a validated candidate to champion; retire the old champion."""
     model_id = validate_model_id(model_id)
-    candidate_dir = Path(models_dir) / model_id
-    record = load_record(candidate_dir)
-    if record.model_id != model_id:
-        raise PromotionEvidenceError(
-            "candidate metadata model_id does not match the promotion candidate"
+    with _champion_lock(models_dir):
+        candidate_dir = Path(models_dir) / model_id
+        record = load_record(candidate_dir)
+        if record.model_id != model_id:
+            raise PromotionEvidenceError(
+                "candidate metadata model_id does not match the promotion candidate"
+            )
+        _check_training_provenance(record)
+        report = _load_evaluation_report(models_dir, model_id)
+        _validate_evaluation_report(
+            report,
+            candidate_id=model_id,
+            record_feature_schema=record.metadata.get("feature_schema"),
+            artifact_checksum=artifact_sha256(candidate_dir / MODEL_FILE),
         )
-    report = _load_evaluation_report(models_dir, model_id)
-    _validate_evaluation_report(
-        report,
-        candidate_id=model_id,
-        record_feature_schema=record.metadata.get("feature_schema"),
-        artifact_checksum=artifact_sha256(candidate_dir / MODEL_FILE),
-    )
-    path = _champion_path(models_dir)
-    data = _load_champion_data(path, models_dir)
-    old = data.get("model_id")
-    if old == model_id:
-        return
-    if model_id in data.get("lineage", []):
-        raise PromotionEvidenceError(f"candidate {model_id!r} already in champion lineage")
-    data["model_id"] = model_id
-    data["lineage"] = [*data.get("lineage", []), model_id]
-    data["generation"] = data.get("generation", 0) + 1
-    data["model_artifact_sha256"] = artifact_sha256(candidate_dir / MODEL_FILE)
-    _write_champion_atomically(path, data, action=f"promote:{model_id}")
+        current_state = get_git_source_state()
+        if not current_state.is_clean:
+            raise PromotionEvidenceError("working tree is dirty; refusing to promote")
+        eval_commit = report.get("evaluation_source_git_commit", report.get("source_git_commit"))
+        if current_state.commit != eval_commit:
+            raise PromotionEvidenceError(
+                "current source commit differs from evaluation source commit; reevaluation required after code changes"
+            )
+        path = _champion_path(models_dir)
+        data = _load_champion_data(path, models_dir)
+        old = data.get("model_id")
+        if old == model_id:
+            return
+        if model_id in data.get("lineage", []):
+            raise PromotionEvidenceError(f"candidate {model_id!r} already in champion lineage")
+        data["model_id"] = model_id
+        data["lineage"] = [*data.get("lineage", []), model_id]
+        data["generation"] = data.get("generation", 0) + 1
+        data["model_artifact_sha256"] = artifact_sha256(candidate_dir / MODEL_FILE)
+        _write_champion_atomically(path, data, action=f"promote:{model_id}")
 
 
 def rollback(models_dir: Path) -> str:
     """Pop the current champion off the lineage stack and restore the one beneath it."""
-    path = _champion_path(models_dir)
-    if not path.exists():
-        raise RuntimeError("no champion history to roll back")
-    data = _load_champion_data(path, models_dir)
-    lineage: list[str] = list(data.get("lineage", []))
-    if len(lineage) < 2:
-        raise RuntimeError("no previous champion to roll back to")
-    current = lineage[-1]
-    previous = lineage[-2]
-    current = validate_model_id(current)
-    previous = validate_model_id(previous)
-    load_record(Path(models_dir) / current)
-    prev_record = load_record(Path(models_dir) / previous)
-    data["model_id"] = previous
-    data["lineage"] = lineage[:-1]
-    data["generation"] = data.get("generation", 0) + 1
-    data["model_artifact_sha256"] = prev_record.metadata.get("artifact_sha256") or artifact_sha256(
-        Path(models_dir) / previous / MODEL_FILE
-    )
-    _write_champion_atomically(path, data, action=f"rollback:{current}->{previous}")
-    return previous
+    with _champion_lock(models_dir):
+        path = _champion_path(models_dir)
+        if not path.exists():
+            raise RuntimeError("no champion history to roll back")
+        data = _load_champion_data(path, models_dir)
+        lineage: list[str] = list(data.get("lineage", []))
+        if len(lineage) < 2:
+            raise RuntimeError("no previous champion to roll back to")
+        current = lineage[-1]
+        previous = lineage[-2]
+        current = validate_model_id(current)
+        previous = validate_model_id(previous)
+        load_record(Path(models_dir) / current)
+        prev_record = load_record(Path(models_dir) / previous)
+        data["model_id"] = previous
+        data["lineage"] = lineage[:-1]
+        data["generation"] = data.get("generation", 0) + 1
+        data["model_artifact_sha256"] = prev_record.metadata.get("artifact_sha256") or artifact_sha256(
+            Path(models_dir) / previous / MODEL_FILE
+        )
+        _write_champion_atomically(path, data, action=f"rollback:{current}->{previous}")
+        return previous
