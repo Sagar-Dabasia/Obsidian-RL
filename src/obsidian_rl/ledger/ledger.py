@@ -63,11 +63,47 @@ CREATE TABLE IF NOT EXISTS decisions (
     created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_run_candle ON decisions(run_id, candle_open_ms);
+CREATE TABLE IF NOT EXISTS run_closures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id),
+    terminal_ts_ms INTEGER NOT NULL,
+    mark_price REAL NOT NULL,
+    proposed_target REAL NOT NULL,
+    approved_target REAL NOT NULL,
+    executed_target REAL NOT NULL,
+    delta_qty REAL NOT NULL,
+    exec_price REAL NOT NULL,
+    traded_notional REAL NOT NULL,
+    fee REAL NOT NULL,
+    spread_cost REAL NOT NULL,
+    slippage_cost REAL NOT NULL,
+    realized_pnl_delta REAL NOT NULL,
+    position_qty REAL NOT NULL,
+    avg_entry_price REAL NOT NULL,
+    cash REAL NOT NULL,
+    unrealized_pnl REAL NOT NULL,
+    net_equity REAL NOT NULL,
+    gross_equity REAL NOT NULL,
+    realized_pnl_total REAL NOT NULL,
+    fees_total REAL NOT NULL,
+    spread_total REAL NOT NULL,
+    slippage_total REAL NOT NULL,
+    funding_total REAL NOT NULL,
+    turnover_total REAL NOT NULL,
+    trade_count INTEGER NOT NULL,
+    peak_equity REAL NOT NULL,
+    closure_reason TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
 """
 
 
 class DuplicateDecisionError(RuntimeError):
     """The same candle was already processed for this run."""
+
+
+class DuplicateClosureError(RuntimeError):
+    """A terminal closure record already exists for this run."""
 
 
 @dataclass(frozen=True)
@@ -265,3 +301,69 @@ class Ledger:
             trade_count=row["trade_count"],
             peak_equity=row["peak_equity"],
         )
+
+    def record_closure(
+        self,
+        run_id: str,
+        *,
+        terminal_ts_ms: int,
+        mark_price: float,
+        result: ExecutionResult,
+        state: PortfolioState,
+        closure_reason: str = "close_session",
+    ) -> sqlite3.Row:
+        try:
+            self._conn.execute(
+                "INSERT INTO run_closures (run_id, terminal_ts_ms, mark_price,"
+                " proposed_target, approved_target, executed_target, delta_qty,"
+                " exec_price, traded_notional, fee, spread_cost, slippage_cost,"
+                " realized_pnl_delta, position_qty, avg_entry_price, cash,"
+                " unrealized_pnl, net_equity, gross_equity, realized_pnl_total,"
+                " fees_total, spread_total, slippage_total, funding_total,"
+                " turnover_total, trade_count, peak_equity, closure_reason, created_at_ms)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    run_id,
+                    terminal_ts_ms,
+                    mark_price,
+                    result.proposed_target,
+                    result.approved_target,
+                    result.executed_target,
+                    result.delta_qty,
+                    result.exec_price,
+                    result.traded_notional,
+                    result.fee,
+                    result.spread_cost,
+                    result.slippage_cost,
+                    result.realized_pnl_delta,
+                    state.qty,
+                    state.avg_entry_price,
+                    state.cash,
+                    state.unrealized_pnl(mark_price),
+                    state.net_equity(mark_price),
+                    state.gross_equity(mark_price),
+                    state.realized_pnl,
+                    state.fees_paid,
+                    state.spread_paid,
+                    state.slippage_paid,
+                    state.funding_paid,
+                    state.turnover,
+                    state.trade_count,
+                    state.peak_equity,
+                    closure_reason,
+                    int(time.time() * 1000),
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            msg = f"terminal closure already recorded for run {run_id}"
+            raise DuplicateClosureError(msg) from exc
+        self._conn.commit()
+        row = self.get_closure(run_id)
+        assert row is not None
+        return row
+
+    def get_closure(self, run_id: str) -> sqlite3.Row | None:
+        self._conn.row_factory = sqlite3.Row
+        cur = self._conn.execute("SELECT * FROM run_closures WHERE run_id=?", (run_id,))
+        row: sqlite3.Row | None = cur.fetchone()
+        return row

@@ -115,7 +115,7 @@ def run_backtest(
         funding_events.sort()
     f_idx = 0
 
-    records: list[tuple[int, float, float, float, float]] = []
+    records: list[tuple[int, float, float, float, float, bool, str]] = []
     n_decisions = 0
 
     for t in range(WARMUP_ROWS + signal_delay, len(candles) - 1):
@@ -148,12 +148,29 @@ def run_backtest(
                 float(eq),
                 float(engine.state.exposure(close_px[t + 1])),
                 float(engine.state.drawdown(close_px[t + 1])),
+                False,
+                "decision",
             )
         )
 
     engine.liquidate(close_px[-1])
+    engine.mark_to_market(close_px[-1])
+    records.append(
+        (
+            int(close_time[-1]),
+            float(close_px[-1]),
+            float(engine.state.net_equity(close_px[-1])),
+            0.0,
+            float(engine.state.drawdown(close_px[-1])),
+            True,
+            "terminal_liquidation",
+        )
+    )
 
-    curve = pd.DataFrame(records, columns=["open_time", "close", "equity", "exposure", "drawdown"])
+    curve = pd.DataFrame(
+        records,
+        columns=["open_time", "close", "equity", "exposure", "drawdown", "is_terminal", "event"],
+    )
     s = engine.state
     summary = {
         "initial_cash": engine.config.initial_cash,

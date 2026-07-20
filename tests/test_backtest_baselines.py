@@ -73,7 +73,8 @@ def test_all_baselines_run_on_shared_stack() -> None:
         res = run_backtest(candles, strat, cost_model=CM)  # type: ignore[arg-type]
         m = compute_metrics(res.strategy_id, res.equity_curve, res.final_state_summary)
         assert np.isfinite(m.net_return)
-        assert m.n_candles == res.n_decisions
+        extra = 1 if "is_terminal" in res.equity_curve.columns else 0
+        assert m.n_candles == res.n_decisions + extra
 
 
 def test_regime_momentum_goes_long_in_uptrend() -> None:
@@ -150,9 +151,26 @@ def test_funding_not_blocked_by_stale_warmup_event() -> None:
     )
     # the stale event must be skipped, and the in-window event still applied
     assert res.final_state_summary["funding"] > 0
-    assert res.final_state_summary["funding"] == pytest.approx(
-        only_inwindow.final_state_summary["funding"]
+    assert only_inwindow.final_state_summary["funding"] == pytest.approx(
+        res.final_state_summary["funding"]
     )
+
+
+def test_backtest_terminal_liquidation_and_accounting() -> None:
+    candles = make_candles(WARMUP_ROWS + 60, seed=3)
+    res = run_backtest(candles, ThresholdMomentum(0.002), cost_model=CM)
+    curve = res.equity_curve
+    summary = res.final_state_summary
+
+    assert "is_terminal" in curve.columns
+    assert "event" in curve.columns
+    term_row = curve.iloc[-1]
+    assert bool(term_row["is_terminal"]) is True
+    assert term_row["event"] == "terminal_liquidation"
+    assert term_row["exposure"] == 0.0
+    assert term_row["equity"] == pytest.approx(summary["final_equity"], abs=1e-9)
+    assert term_row["open_time"] == int(candles["close_time"].iloc[-1])
+    assert int((~curve["is_terminal"]).sum()) == res.n_decisions
 
 
 def test_trade_stats() -> None:

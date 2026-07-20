@@ -8,6 +8,7 @@ derived from ledger realized-P&L events, which handles direct reversals correctl
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -62,19 +63,67 @@ def run_frame(ledger_path: Path, run_id: str) -> pd.DataFrame:
         ledger.close()
 
 
-def equity_and_drawdown(frame: pd.DataFrame) -> pd.DataFrame:
+def get_run_closure(ledger_path: Path, run_id: str) -> dict[str, Any] | None:
+    ledger = Ledger(ledger_path)
+    try:
+        row = ledger.get_closure(run_id)
+        if row is None:
+            return None
+        return dict(row)
+    finally:
+        ledger.close()
+
+
+def equity_and_drawdown(
+    frame: pd.DataFrame, closure: dict[str, Any] | None = None
+) -> pd.DataFrame:
     """Equity + running-drawdown curves for one session only."""
-    if frame.empty:
+    if frame.empty and closure is None:
         return pd.DataFrame(columns=["candle_open_ms", "net_equity", "drawdown"])
-    out = frame[["candle_open_ms", "net_equity"]].copy()
+    if not frame.empty:
+        out = frame[["candle_open_ms", "net_equity"]].copy()
+    else:
+        out = pd.DataFrame(columns=["candle_open_ms", "net_equity"])
+    if closure is not None:
+        term_row = pd.DataFrame(
+            [
+                {
+                    "candle_open_ms": int(closure["terminal_ts_ms"]),
+                    "net_equity": float(closure["net_equity"]),
+                }
+            ]
+        )
+        out = term_row if out.empty else pd.concat([out, term_row], ignore_index=True)
+    if out.empty:
+        return pd.DataFrame(columns=["candle_open_ms", "net_equity", "drawdown"])
     peak = out["net_equity"].cummax()
     out["drawdown"] = 1.0 - out["net_equity"] / peak
     return out
 
 
-def kpis(frame: pd.DataFrame, initial_cash: float) -> dict[str, float]:
-    if frame.empty:
+def kpis(
+    frame: pd.DataFrame, initial_cash: float, closure: dict[str, Any] | None = None
+) -> dict[str, float]:
+    if frame.empty and closure is None:
         return {}
+    if closure is not None:
+        rejected = float((frame["rejection_reason"].notna()).sum()) if not frame.empty else 0.0
+        return {
+            "position_qty": float(closure["position_qty"]),
+            "executed_target": float(closure["executed_target"]),
+            "cash": float(closure["cash"]),
+            "realized_pnl": float(closure["realized_pnl_total"]),
+            "unrealized_pnl": float(closure["unrealized_pnl"]),
+            "net_equity": float(closure["net_equity"]),
+            "net_return_pct": float(float(closure["net_equity"]) / initial_cash - 1.0) * 100.0,
+            "fees": float(closure["fees_total"]),
+            "spread": float(closure["spread_total"]),
+            "slippage": float(closure["slippage_total"]),
+            "funding": float(closure["funding_total"]),
+            "turnover": float(closure["turnover_total"]),
+            "trade_count": float(closure["trade_count"]),
+            "rejected_actions": rejected,
+        }
     last = frame.iloc[-1]
     return {
         "position_qty": float(last["position_qty"]),
@@ -94,14 +143,30 @@ def kpis(frame: pd.DataFrame, initial_cash: float) -> dict[str, float]:
     }
 
 
-def closed_trade_events(frame: pd.DataFrame) -> pd.DataFrame:
+def closed_trade_events(
+    frame: pd.DataFrame, closure: dict[str, Any] | None = None
+) -> pd.DataFrame:
     """Realized-P&L events (including reversals), not flat-transition inference."""
-    if frame.empty:
-        return pd.DataFrame()
-    events = frame[frame["realized_pnl_delta"] != 0.0]
-    return events[
-        ["candle_open_ms", "exec_price", "delta_qty", "realized_pnl_delta", "position_qty"]
-    ].copy()
+    cols = ["candle_open_ms", "exec_price", "delta_qty", "realized_pnl_delta", "position_qty"]
+    if not frame.empty:
+        events = frame[frame["realized_pnl_delta"] != 0.0]
+        out = events[cols].copy()
+    else:
+        out = pd.DataFrame(columns=cols)
+    if closure is not None and float(closure["realized_pnl_delta"]) != 0.0:
+        term_event = pd.DataFrame(
+            [
+                {
+                    "candle_open_ms": int(closure["terminal_ts_ms"]),
+                    "exec_price": float(closure["exec_price"]),
+                    "delta_qty": float(closure["delta_qty"]),
+                    "realized_pnl_delta": float(closure["realized_pnl_delta"]),
+                    "position_qty": float(closure["position_qty"]),
+                }
+            ]
+        )
+        out = term_event if out.empty else pd.concat([out, term_event], ignore_index=True)
+    return out
 
 
 def warnings_for_run(

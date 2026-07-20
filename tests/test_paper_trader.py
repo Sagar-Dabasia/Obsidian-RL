@@ -41,6 +41,7 @@ def test_replay_matches_backtest_exactly(tmp_path: Path) -> None:
     assert n == bt.n_decisions
     s = trader.engine.state
     bs = bt.final_state_summary
+    assert s.qty == 0.0
     assert s.net_equity(float(candles["close"].iloc[-1])) == pytest.approx(
         bs["final_equity"], abs=1e-9
     )
@@ -50,6 +51,15 @@ def test_replay_matches_backtest_exactly(tmp_path: Path) -> None:
     assert s.turnover == pytest.approx(bs["turnover"], abs=1e-9)
     assert s.trade_count == int(bs["trade_count"])
     assert len(ledger.decisions(run_id)) == n
+
+    closure = ledger.get_closure(run_id)
+    assert closure is not None
+    assert closure["position_qty"] == 0.0
+    assert closure["net_equity"] == pytest.approx(bs["final_equity"], abs=1e-9)
+    assert closure["realized_pnl_total"] == pytest.approx(bs["realized_pnl"], abs=1e-9)
+    assert closure["fees_total"] == pytest.approx(bs["fees"], abs=1e-9)
+    assert closure["turnover_total"] == pytest.approx(bs["turnover"], abs=1e-9)
+    assert closure["trade_count"] == int(bs["trade_count"])
 
 
 def test_duplicate_candles_ignored(tmp_path: Path) -> None:
@@ -194,3 +204,65 @@ def test_ledger_survives_full_replay_twice(tmp_path: Path) -> None:
     n2 = replay_candles(trader, candles)
     assert n2 == 0
     assert len(ledger.decisions(run_id)) == rows1 == n1
+
+
+def test_close_session_idempotence(tmp_path: Path) -> None:
+    candles = make_candles(WARMUP_ROWS + 30)
+    trader, ledger, run_id = make_trader(tmp_path)
+    replay_candles(trader, candles)
+    mark = float(candles["close"].iloc[-1])
+    trader.close_session(mark)
+    fees1 = trader.engine.state.fees_paid
+    trades1 = trader.engine.state.trade_count
+    c1 = dict(ledger.get_closure(run_id))  # type: ignore[arg-type]
+
+    # second call with same or different price must not double-charge or duplicate closure
+    trader.close_session(mark + 10.0)
+    assert trader.engine.state.fees_paid == pytest.approx(fees1)
+    assert trader.engine.state.trade_count == trades1
+    c2 = dict(ledger.get_closure(run_id))  # type: ignore[arg-type]
+    assert c1["terminal_ts_ms"] == c2["terminal_ts_ms"]
+    assert c1["net_equity"] == c2["net_equity"]
+
+
+def test_close_session_invalid_mark_price(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    for bad_price in (float("nan"), float("inf"), -10.0, 0.0):
+        with pytest.raises(ValueError, match="invalid mark_price"):
+            trader.close_session(bad_price)
+    assert ledger.get_closure(run_id) is None
+    run_row = ledger.get_run(run_id)
+    assert run_row is not None
+    assert run_row["ended_at_ms"] is None
+
+
+def test_close_session_already_flat(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 2)
+    replay_candles(trader, candles)
+    # force portfolio flat if not already
+    if trader.engine.state.qty != 0.0:
+        trader.engine.rebalance(0.0, 100.0)
+    assert trader.engine.state.qty == 0.0
+    trader.close_session(100.0)
+    closure = ledger.get_closure(run_id)
+    assert closure is not None
+    assert closure["position_qty"] == 0.0
+    assert closure["fee"] == 0.0
+    assert closure["spread_cost"] == 0.0
+    assert closure["slippage_cost"] == 0.0
+
+
+def test_close_session_persistence_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 10)
+    replay_candles(trader, candles)
+
+    def _fail(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("db error")
+
+    monkeypatch.setattr(ledger, "record_closure", _fail)
+    with pytest.raises(RuntimeError, match="db error"):
+        trader.close_session(100.0)
+    run_row = ledger.get_run(run_id)
+    assert run_row is not None and run_row["ended_at_ms"] is None

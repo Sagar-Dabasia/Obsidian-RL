@@ -214,10 +214,49 @@ class PaperTrader:
             f" [{result.rejection_reason}]" if result.rejection_reason else "",
         )
 
-    def close_session(self, mark_price: float) -> None:
+    def close_session(
+        self,
+        mark_price: float,
+        *,
+        terminal_ts_ms: int | None = None,
+        closure_reason: str = "close_session",
+    ) -> None:
         """Terminal liquidation at the given mark and run closure (explicit, logged)."""
+        import math
+        import time
+
+        if not math.isfinite(mark_price) or mark_price <= 0:
+            raise ValueError(f"invalid mark_price for session closure: {mark_price}")
+
+        existing_closure = self.ledger.get_closure(self.run_id)
+        if existing_closure is not None:
+            logger.info("session %s is already closed; no action taken", self.run_id)
+            return
+
+        run_info = self.ledger.get_run(self.run_id)
+        if run_info is not None and run_info["ended_at_ms"] is not None:
+            logger.info("session %s is already ended; no action taken", self.run_id)
+            return
+
         self.pending = None
+        if terminal_ts_ms is None:
+            last = self.ledger.last_decision(self.run_id)
+            if last is not None:
+                terminal_ts_ms = int(last["candle_close_ms"])
+            elif self.buffer:
+                terminal_ts_ms = int(self.buffer[-1]["close_time"])
+            else:
+                terminal_ts_ms = int(time.time() * 1000)
+
         result = self.engine.liquidate(mark_price)
+        self.ledger.record_closure(
+            self.run_id,
+            terminal_ts_ms=terminal_ts_ms,
+            mark_price=mark_price,
+            result=result,
+            state=self.engine.state,
+            closure_reason=closure_reason,
+        )
         logger.info(
             "session closed: liquidated %.6f @ %.2f, final equity %.2f",
             result.delta_qty,

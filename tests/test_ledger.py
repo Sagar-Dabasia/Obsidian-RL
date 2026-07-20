@@ -1,10 +1,11 @@
 """Ledger tests: idempotency, restart recovery, session separation."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from obsidian_rl.ledger.ledger import DuplicateDecisionError, Ledger
+from obsidian_rl.ledger.ledger import DuplicateClosureError, DuplicateDecisionError, Ledger
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 
@@ -106,3 +107,71 @@ def test_run_metadata_persisted(tmp_path: Path) -> None:
     ledger.end_run(run.run_id)
     row2 = ledger.get_run(run.run_id)
     assert row2 is not None and row2["ended_at_ms"] is not None
+
+
+def test_sqlite_schema_migration(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS runs ("
+        "run_id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL, model_id TEXT, "
+        "mode TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER, "
+        "initial_cash REAL NOT NULL, cost_model_json TEXT NOT NULL, "
+        "config_json TEXT, git_commit TEXT);"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS decisions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), "
+        "idempotency_key TEXT NOT NULL UNIQUE, candle_open_ms INTEGER NOT NULL, "
+        "candle_close_ms INTEGER NOT NULL, decision_ts_ms INTEGER NOT NULL, "
+        "data_source TEXT NOT NULL, proposed_target REAL NOT NULL, approved_target REAL NOT NULL, "
+        "executed_target REAL NOT NULL, delta_qty REAL NOT NULL, exec_price REAL NOT NULL, "
+        "traded_notional REAL NOT NULL, fee REAL NOT NULL, spread_cost REAL NOT NULL, "
+        "slippage_cost REAL NOT NULL, funding REAL NOT NULL DEFAULT 0.0, "
+        "realized_pnl_delta REAL NOT NULL, rejection_reason TEXT, position_qty REAL NOT NULL, "
+        "avg_entry_price REAL NOT NULL, cash REAL NOT NULL, unrealized_pnl REAL NOT NULL, "
+        "net_equity REAL NOT NULL, gross_equity REAL NOT NULL, realized_pnl_total REAL NOT NULL, "
+        "fees_total REAL NOT NULL, spread_total REAL NOT NULL, slippage_total REAL NOT NULL, "
+        "funding_total REAL NOT NULL, turnover_total REAL NOT NULL, trade_count INTEGER NOT NULL, "
+        "peak_equity REAL NOT NULL, created_at_ms INTEGER NOT NULL);"
+    )
+    conn.commit()
+    conn.close()
+
+    ledger = Ledger(path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+    row = ledger.record_closure(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    assert row["run_id"] == run.run_id
+    assert ledger.get_closure(run.run_id) is not None
+    ledger.close()
+
+
+def test_record_closure_duplicate(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+    ledger.record_closure(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    with pytest.raises(DuplicateClosureError):
+        ledger.record_closure(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+    ledger.close()
