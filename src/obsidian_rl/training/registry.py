@@ -193,6 +193,11 @@ def register_model(
     """Finalize a trained model directory with metadata + checksum."""
     model_id = validate_model_id(model_id)
     model_dir = models_dir / model_id
+    meta_path = model_dir / METADATA_FILE
+    if meta_path.exists():
+        raise FileExistsError(
+            f"model {model_id!r} is already registered; {METADATA_FILE} already exists and cannot be overwritten"
+        )
     artifact = model_dir / MODEL_FILE
     if not artifact.exists():
         raise FileNotFoundError(artifact)
@@ -216,7 +221,17 @@ def register_model(
         "artifact_sha256": artifact_sha256(artifact),
         "promotion": "candidate",
     }
-    (model_dir / METADATA_FILE).write_text(json.dumps(metadata, indent=1), encoding="utf-8")
+    payload = json.dumps(metadata, indent=1).encode("utf-8")
+    try:
+        with open(meta_path, "xb") as fh:
+            fh.write(payload)
+            fh.flush()
+            import os
+            os.fsync(fh.fileno())
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"model {model_id!r} is already registered; {METADATA_FILE} already exists and cannot be overwritten"
+        ) from exc
     return ModelRecord(model_id, model_dir, metadata)
 
 

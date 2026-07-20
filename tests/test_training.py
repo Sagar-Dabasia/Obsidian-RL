@@ -306,3 +306,92 @@ def test_git_source_root_resolution_in_temp_repos(tmp_path: Path) -> None:
     assert dirty_state.commit == commit
     assert dirty_state.is_clean is False
     assert "file.txt" in dirty_state.dirty_paths
+
+
+def test_immutable_model_directory_and_registration_protection(
+    trained_model_dir: Path, tmp_path: Path
+) -> None:
+    import shutil
+    from obsidian_rl.training.registry import register_model
+
+    models_dir = tmp_path / "protected_models"
+    models_dir.mkdir()
+    existing_id = "existing-model-v1"
+    existing_dir = models_dir / existing_id
+    shutil.copytree(trained_model_dir, existing_dir)
+    meta_json = json.loads((existing_dir / METADATA_FILE).read_text(encoding="utf-8"))
+    meta_json["model_id"] = existing_id
+    (existing_dir / METADATA_FILE).write_text(json.dumps(meta_json), encoding="utf-8")
+
+    ckpts_dir = existing_dir / "checkpoints"
+    ckpts_dir.mkdir(exist_ok=True)
+    ckpt_file = ckpts_dir / "ckpt_1.zip"
+    ckpt_file.write_bytes(b"dummy-checkpoint-bytes")
+
+    evals_dir = existing_dir / "evaluations"
+    evals_dir.mkdir(exist_ok=True)
+    eval_file = evals_dir / "eval_report.json"
+    eval_file.write_text('{"dummy": "evaluation"}', encoding="utf-8")
+
+    orig_model_bytes = (existing_dir / MODEL_FILE).read_bytes()
+    orig_meta_bytes = (existing_dir / METADATA_FILE).read_bytes()
+    orig_ckpt_bytes = ckpt_file.read_bytes()
+    orig_eval_text = eval_file.read_text(encoding="utf-8")
+    orig_files_set = set(p.relative_to(existing_dir) for p in existing_dir.rglob("*"))
+
+    train_candles = make_candles(160, seed=21)
+    eval_candles = make_candles(
+        120, seed=22, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000
+    )
+    tiny_cfg = replace(SMOKE_CFG, total_timesteps=32, eval_freq=10_000)
+
+    # 1. training with an existing explicit model ID is rejected, existing files unchanged, no new files created
+    with pytest.raises(FileExistsError, match="already exists"):
+        train_ppo(train_candles, eval_candles, tiny_cfg, models_dir, model_id=existing_id)
+
+    assert (existing_dir / MODEL_FILE).read_bytes() == orig_model_bytes
+    assert (existing_dir / METADATA_FILE).read_bytes() == orig_meta_bytes
+    assert ckpt_file.read_bytes() == orig_ckpt_bytes
+    assert eval_file.read_text(encoding="utf-8") == orig_eval_text
+    assert set(p.relative_to(existing_dir) for p in existing_dir.rglob("*")) == orig_files_set
+
+    # 2. direct duplicate register_model is rejected
+    meta = json.loads(orig_meta_bytes.decode("utf-8"))
+    with pytest.raises(FileExistsError, match="already registered|already exists"):
+        register_model(
+            models_dir,
+            existing_id,
+            algorithm="ppo-mlp-discrete5",
+            config=meta["config"],
+            seeds=meta["seeds"],
+            data_info=meta["data"],
+            metrics=meta["metrics"],
+        )
+    assert (existing_dir / MODEL_FILE).read_bytes() == orig_model_bytes
+    assert (existing_dir / METADATA_FILE).read_bytes() == orig_meta_bytes
+    assert set(p.relative_to(existing_dir) for p in existing_dir.rglob("*")) == orig_files_set
+
+    # 3. an empty pre-existing target directory is rejected
+    empty_id = "preexisting-empty"
+    (models_dir / empty_id).mkdir()
+    with pytest.raises(FileExistsError, match="already exists"):
+        train_ppo(train_candles, eval_candles, tiny_cfg, models_dir, model_id=empty_id)
+    assert list((models_dir / empty_id).iterdir()) == []
+
+    # 4. resume_from requires a different output model ID (cannot reuse same ID or same directory)
+    with pytest.raises(FileExistsError, match="new model_id|overwrite"):
+        train_ppo(
+            train_candles,
+            eval_candles,
+            tiny_cfg,
+            models_dir,
+            model_id=existing_id,
+            resume_from=existing_dir,
+        )
+
+    # 5. automatically generated model IDs are collision-resistant
+    res1 = train_ppo(train_candles, eval_candles, SMOKE_CFG, models_dir, model_id=None)
+    res2 = train_ppo(train_candles, eval_candles, SMOKE_CFG, models_dir, model_id=None)
+    assert res1.record.model_id != res2.record.model_id
+    assert res1.record.model_dir != res2.record.model_dir
+    assert res1.record.model_dir.exists() and res2.record.model_dir.exists()

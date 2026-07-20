@@ -111,11 +111,34 @@ def train_ppo(
     device_report = detect_device(cfg.device)
     logger.info("device: %s", device_report.to_dict())
 
-    model_id = validate_model_id(
-        model_id or f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-seed{cfg.seed}"
-    )
+    if model_id is None:
+        import uuid
+
+        us = int(time.time() * 1_000_000) % 1_000_000
+        model_id = (
+            f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-{us:06d}-seed{cfg.seed}-{uuid.uuid4().hex[:8]}"
+        )
+    model_id = validate_model_id(model_id)
     model_dir = Path(models_dir) / model_id
-    model_dir.mkdir(parents=True, exist_ok=True)
+
+    resume_record = None
+    if resume_from is not None:
+        resume_record = load_record(resume_from)  # validates schema + checksum
+        if (
+            model_id == resume_record.model_id
+            or model_dir.resolve() == resume_record.model_dir.resolve()
+        ):
+            raise FileExistsError(
+                f"resumed training output must use a new model_id and new directory; cannot overwrite resume_from ({resume_from})"
+            )
+
+    Path(models_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        model_dir.mkdir(parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"model directory {model_dir} already exists; refusing to reuse or overwrite"
+        ) from exc
 
     venv = DummyVecEnv(
         [
@@ -128,14 +151,13 @@ def train_ppo(
     )
 
     hp = cfg.hyperparams
-    if resume_from is not None:
-        record = load_record(resume_from)  # validates schema + checksum
+    if resume_record is not None:
         model = PPO.load(
-            record.model_dir / MODEL_FILE,
+            resume_record.model_dir / MODEL_FILE,
             env=venv,
             device=device_report.selected_device,
         )
-        logger.info("resumed from %s", record.model_id)
+        logger.info("resumed from %s", resume_record.model_id)
     else:
         model = PPO(
             "MlpPolicy",
