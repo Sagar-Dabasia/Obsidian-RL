@@ -2,6 +2,7 @@
 deterministic inference, GPU detection. All tiny and CPU-only."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +64,30 @@ def test_smoke_training_produces_valid_registry_entry(trained_model_dir: Path) -
     assert record.metadata["data"]["eval_start_ms"] > record.metadata["data"]["train_end_ms"]
     assert record.metadata["promotion"] == "candidate"
     assert (trained_model_dir / MODEL_FILE).exists()
+    assert (trained_model_dir / "final_model.zip").exists()
+    assert (trained_model_dir / MODEL_FILE).read_bytes() == (
+        trained_model_dir / "best" / "best_model.zip"
+    ).read_bytes()
+    assert record.metadata["metrics"]["best_validation_timestep"] is not None
+    assert (
+        record.metadata["metrics"]["best_validation_mean_reward"]
+        == record.metadata["metrics"]["eval_mean_reward"]
+    )
+
+
+def test_training_requires_a_best_validation_checkpoint(tmp_path: Path) -> None:
+    train_candles = make_candles(160, seed=13)
+    eval_candles = make_candles(
+        120, seed=14, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000
+    )
+    no_eval_cfg = replace(SMOKE_CFG, total_timesteps=64, eval_freq=10_000)
+    model_id = "no-best-checkpoint"
+
+    with pytest.raises(RuntimeError, match="did not create a valid best validation checkpoint"):
+        train_ppo(train_candles, eval_candles, no_eval_cfg, tmp_path, model_id=model_id)
+
+    assert (tmp_path / model_id / "final_model.zip").exists()
+    assert not (tmp_path / model_id / MODEL_FILE).exists()
 
 
 def test_deterministic_inference(trained_model_dir: Path) -> None:

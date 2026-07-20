@@ -303,20 +303,29 @@ def cmd_paper_trade(args: argparse.Namespace) -> int:
 
 
 def cmd_candidate_eval(args: argparse.Namespace) -> int:
-    from obsidian_rl.training.promotion import evaluate_candidate
+    from obsidian_rl.training.promotion import evaluate_candidate, evaluation_report_path
 
     settings = get_settings()
     val = _load_range(args.val_start, args.val_end)
     report = evaluate_candidate(settings.models_dir, args.model_id, val)
-    print(json.dumps(report, indent=1, default=str))
+    result = "passed" if report["passes"] else "failed"
+    report_path = evaluation_report_path(settings.models_dir, args.model_id)
+    print(f"candidate evaluation {result}; report: {report_path}")
+    if not report["passes"]:
+        print(f"gate failures: {'; '.join(report['failures'])}", file=sys.stderr)
     return 0 if report["passes"] else 1
 
 
 def cmd_promote(args: argparse.Namespace) -> int:
-    from obsidian_rl.training.promotion import current_champion, promote
+    from obsidian_rl.training.promotion import PromotionEvidenceError, current_champion, promote
+    from obsidian_rl.training.registry import ModelCompatibilityError
 
     settings = get_settings()
-    promote(settings.models_dir, args.model_id)
+    try:
+        promote(settings.models_dir, args.model_id)
+    except (ModelCompatibilityError, PromotionEvidenceError) as exc:
+        print(f"promotion refused: {exc}", file=sys.stderr)
+        return 1
     print(f"champion is now {current_champion(settings.models_dir)}")
     return 0
 

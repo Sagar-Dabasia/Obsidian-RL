@@ -6,6 +6,8 @@ model, and full metadata are written under models/<model_id>/.
 """
 
 import logging
+import math
+import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -20,6 +22,9 @@ from obsidian_rl.training.device import DeviceReport, detect_device
 from obsidian_rl.training.registry import MODEL_FILE, ModelRecord, load_record, register_model
 
 logger = logging.getLogger(__name__)
+
+FINAL_MODEL_FILE = "final_model.zip"
+BEST_VALIDATION_MODEL_FILE = "best_model.zip"
 
 
 @dataclass(frozen=True)
@@ -141,37 +146,54 @@ def train_ppo(
             verbose=0,
         )
 
+    checkpoint_callback = CheckpointCallback(
+        save_freq=max(cfg.checkpoint_freq // cfg.n_envs, 1),
+        save_path=str(model_dir / "checkpoints"),
+        name_prefix="ckpt",
+    )
+
+    class TrackingEvalCallback(EvalCallback):
+        """Remember the step at which EvalCallback writes its selected checkpoint."""
+
+        best_timestep: int | None = None
+
+        def _on_step(self) -> bool:
+            previous_best = self.best_mean_reward
+            should_continue = super()._on_step()
+            if self.best_mean_reward > previous_best:
+                self.best_timestep = self.num_timesteps
+            return should_continue
+
+    eval_callback = TrackingEvalCallback(
+        eval_env,
+        best_model_save_path=str(model_dir / "best"),
+        eval_freq=max(cfg.eval_freq // cfg.n_envs, 1),
+        n_eval_episodes=1,
+        deterministic=True,
+        verbose=0,
+    )
     callbacks = [
-        CheckpointCallback(
-            save_freq=max(cfg.checkpoint_freq // cfg.n_envs, 1),
-            save_path=str(model_dir / "checkpoints"),
-            name_prefix="ckpt",
-        ),
-        EvalCallback(
-            eval_env,
-            best_model_save_path=str(model_dir / "best"),
-            eval_freq=max(cfg.eval_freq // cfg.n_envs, 1),
-            n_eval_episodes=1,
-            deterministic=True,
-            verbose=0,
-        ),
+        checkpoint_callback,
+        eval_callback,
     ]
 
     started = time.time()
     model.learn(total_timesteps=cfg.total_timesteps, callback=callbacks, progress_bar=False)
     wall = time.time() - started
 
-    model.save(model_dir / MODEL_FILE)
+    final_checkpoint = model_dir / FINAL_MODEL_FILE
+    model.save(final_checkpoint)
 
-    eval_mean = None
-    best_eval = model_dir / "best" / "evaluations.npz"  # EvalCallback log location varies
-    try:
-        from stable_baselines3.common.evaluation import evaluate_policy
-
-        mean_r, _ = evaluate_policy(model, eval_env, n_eval_episodes=1, deterministic=True)
-        eval_mean = float(mean_r if isinstance(mean_r, float | int) else mean_r[0])
-    except Exception as exc:
-        logger.warning("post-training evaluation failed: %s (%s)", exc, best_eval)
+    best_checkpoint = model_dir / "best" / BEST_VALIDATION_MODEL_FILE
+    if not best_checkpoint.is_file() or best_checkpoint.stat().st_size == 0:
+        raise RuntimeError(
+            "EvalCallback did not create a valid best validation checkpoint; "
+            f"refusing to register the final checkpoint (diagnostic retained at {final_checkpoint})"
+        )
+    eval_mean = float(eval_callback.best_mean_reward)
+    if not math.isfinite(eval_mean):
+        raise RuntimeError("EvalCallback selected a checkpoint without a finite validation score")
+    shutil.copy2(best_checkpoint, model_dir / MODEL_FILE)
 
     record = register_model(
         Path(models_dir),
@@ -196,7 +218,12 @@ def train_ppo(
             "n_train_candles": len(train_candles),
             "n_eval_candles": len(eval_candles),
         },
-        metrics={"eval_mean_reward": eval_mean, "wall_seconds": wall},
+        metrics={
+            "eval_mean_reward": eval_mean,
+            "best_validation_mean_reward": eval_mean,
+            "best_validation_timestep": eval_callback.best_timestep,
+            "wall_seconds": wall,
+        },
     )
     return TrainResult(record, device_report, eval_mean, wall)
 
