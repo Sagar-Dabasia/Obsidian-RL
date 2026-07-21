@@ -71,3 +71,25 @@ def test_package_not_importing_from_wrong_location() -> None:
     assert obsidian_rl.__file__ is not None
     mod_path = Path(obsidian_rl.__file__).resolve()
     assert mod_path.exists()
+
+
+def test_optional_dependency_groups_defined() -> None:
+    """Verify pyproject.toml defines all required optional dependency groups."""
+    pyproject_path = REPO_ROOT / "pyproject.toml"
+    with pyproject_path.open("rb") as f:
+        data = tomllib.load(f)
+
+    opt_deps = data.get("project", {}).get("optional-dependencies", {})
+    required_extras = ["dev", "rl", "gate", "dashboard"]
+    for extra in required_extras:
+        assert extra in opt_deps, f"pyproject.toml missing optional-dependencies group: {extra}"
+
+
+def test_ci_workflow_installs_all_four_extras() -> None:
+    """Ensure CI workflow explicitly installs .[dev,rl,gate,dashboard]."""
+    ci_path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    assert ci_path.exists(), "CI workflow file not found"
+    text = ci_path.read_text(encoding="utf-8")
+    assert 'pip install -e ".[dev,rl,gate,dashboard]"' in text, (
+        "ci.yml must install all four extras: .[dev,rl,gate,dashboard]"
+    )

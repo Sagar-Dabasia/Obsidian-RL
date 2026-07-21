@@ -22,17 +22,12 @@ source .venv/bin/activate
 # On Windows (PowerShell):
 .venv\Scripts\Activate.ps1
 
-# 2. Upgrade pip and install the package with dev dependencies
+# 2. Upgrade pip and install the package with all development and subsystem dependencies
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,rl,gate,dashboard]"
 ```
 
-The `.[dev]` optional dependency group installs exact versions of the required development tooling (`pytest`, `ruff`, `mypy`, `build`) without adding global packages or unused dependencies.
-
-If working with specific optional subsystems (e.g., reinforcement learning, supervised gating, or dashboarding), install those dependency groups as needed:
-```bash
-python -m pip install -e ".[rl,gate,dashboard,dev]"
-```
+The `.[dev,rl,gate,dashboard]` optional dependency groups install exact versions of the required development tooling (`pytest`, `ruff`, `mypy`, `build`) as well as RL (`gymnasium`, `stable-baselines3`), gating (`lightgbm`, `scikit-learn`), and dashboarding (`streamlit`) dependencies required for full test suite execution.
 
 ## Verification Commands
 
