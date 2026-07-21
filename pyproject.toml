@@ -17,6 +17,9 @@ dependencies = [
     "pydantic-settings==2.14.2",  # typed configuration
 ]
 
+[project.scripts]
+obsidian-rl = "obsidian_rl.cli:main"
+
 [project.optional-dependencies]
 rl = [
     "gymnasium==1.3.0",           # trading environment interface
@@ -36,6 +39,7 @@ dev = [
     "pytest==9.1.1",
     "ruff==0.15.22",
     "mypy==2.3.0",
+    "build==1.5.0",
 ]
 
 [tool.setuptools.packages.find]

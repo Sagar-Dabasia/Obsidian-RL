@@ -3,22 +3,22 @@
 Updated: 2026-07-21
 
 ## Current branch and commit
-- Branch: `wip/phase7-live-accounting`
-- Starting commit: `33911ac61821ed884e43d8bb1b03016682067a00`
+- Branch: `wip/phase8-ci-reproducibility`
+- Starting commit: `e90b8e4914cf9b5888a683f9d1a1458186f60ecb`
 
 ## Status
-Phase 7 Live-Paper Funding, Run Metadata & Durable Failure Evidence — **COMPLETE (verified)**
+Phase 8 CI & Clean-Machine Reproducibility — **COMPLETE (verified)**
 
 See full run report: [docs/AGENT_RUN_REPORT.md](AGENT_RUN_REPORT.md)
-Timestamped archive: [docs/agent-runs/2026-07-21T193500Z-phase7-live-accounting.md](agent-runs/2026-07-21T193500Z-phase7-live-accounting.md)
+Timestamped archive: [docs/agent-runs/2026-07-21T203000Z-phase8-ci-reproducibility.md](agent-runs/2026-07-21T203000Z-phase8-ci-reproducibility.md)
 
-## What was implemented in Phase 7
-- **Authoritative Run Configuration**: `LivePaperRunner` constructs single validated `PortfolioConfig` and `CostModel` instances, persisting canonical sorted compact JSON in `runs` (`cost_model_json`, `config_json`). Verifies runtime vs stored configuration on resume.
-- **Funding-Event Accounting**: Added public funding rate retrieval in `BinanceFuturesRest` (`GET /fapi/v1/fundingRate`), `funding_events` table in SQLite ledger with exact idempotency checking, state restoration including post-decision funding events, atomic rollback on write failures, and rejection of funding on closed runs.
-- **Replay / Backtest Funding Parity**: Updated `replay_candles` to accept optional `funding_rates` DataFrame and verified exact accounting parity with `run_backtest`.
-- **Durable Failure Evidence**: Added `failure_event` to `ALLOWED_EVENT_TYPES` and `record_failure` method to log sanitized failure events (max 200 chars). Integrated with `PaperTrader._decide` (fail-flat target 0 with rejection_reason) and `LivePaperRunner` before re-raising.
+## What was implemented in Phase 8
+- **Development Environment & Packaging**: Added `build==1.5.0` to `[project.optional-dependencies] dev` in `pyproject.toml` (`python -m pip install -e ".[dev]"`) and registered console script `obsidian-rl = "obsidian_rl.cli:main"`. Created comprehensive development guide in `docs/development.md` and updated `README.md`.
+- **GitHub Actions CI (`.github/workflows/ci.yml`)**: Created least-privilege CI workflow (`permissions: contents: read`, concurrency cancellation) across `ubuntu-latest` and `windows-latest` for Python `3.11` and `3.12`. Executes clean package installation (`pip install -e ".[dev]"`), `pip check`, compilation (`compileall`), `ruff check`, `ruff format --check`, `mypy`, `pytest`, package build (`python -m build`), and an isolated wheel smoke test running outside the repository directory (`obsidian-rl --help`).
+- **Repository Hygiene & Packaging Test Suites (`tests/test_repository_hygiene.py`, `tests/test_packaging.py`)**: Added automated checks proving `.env` files are not tracked, no secret patterns are committed, essential patterns are ignored by `.gitignore`, all 13 runtime submodules are packaged, installed package isolation holds outside source checkout, and `tests/__init__.py` prevents external top-level namespace collisions.
 
 ## Verification
-- Focused tests (`pytest tests/test_ledger.py tests/test_paper_trader.py tests/test_live_runner.py tests/test_backtest_baselines.py tests/test_live_accounting.py -q`): **74 passed**
-- Full suite (`pytest -q`): **359 passed, 1 skipped**
-- `compileall`, `mypy`, `ruff check`, `ruff format --check`, `git diff --check`: **All clean**
+- Focused tests (`pytest tests/test_packaging.py tests/test_repository_hygiene.py -q`): **22 passed**
+- Full suite (`pytest -q`): **381 passed, 1 skipped**
+- `compileall`, `mypy`, `ruff check`, `ruff format --check`, `pip check`, `build`, `git diff --check`: **All clean and verified**
+- Wheel smoke test outside repository in separate virtual environment: **Passed cleanly**
