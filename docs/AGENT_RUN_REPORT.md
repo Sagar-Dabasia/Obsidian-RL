@@ -1,4 +1,4 @@
-# Agent Run Report — Phase 8: CI & Clean-Machine Reproducibility
+# Agent Run Report — Phase 8: CI & Clean-Machine Reproducibility & Final System Audit
 
 ## Meta
 
@@ -7,96 +7,50 @@
 | **Model** | Antigravity |
 | **Date (UTC)** | 2026-07-21 |
 | **Branch** | `wip/phase8-ci-reproducibility` |
-| **Starting commit** | `1cf5483e43e13cea91b43d7dfbb1f77bafaa57b6` |
-| **Task** | Finish Phase 8 clean-environment dependency wiring: install `.[dev,rl,gate,dashboard]` in CI workflow (`.github/workflows/ci.yml`), `README.md`, and `docs/development.md`. Validate documented extras in `tests/test_packaging.py`. Verify clean virtual environment setup and wheel installation. |
+| **Starting commit** | `d1c0ed55273be5cab0e0b00eba32c50d1f7b6907` |
+| **Task** | Perform final complete-system audit covering all 8 audit areas: repository hygiene, data integrity, model lifecycle, feature/gate contracts, accounting parity, reconnect/failure safety, operational readiness, and strategy evidence. Create `FINAL_SYSTEM_AUDIT.md`. |
 
 ---
 
 ## Working-tree status
 
 ```
-M  README.md
-M  pyproject.toml
-M  .github/workflows/ci.yml
-M  docs/development.md
+A  docs/FINAL_SYSTEM_AUDIT.md
 M  docs/AGENT_RUN_REPORT.md
 M  docs/CODEX_HANDOFF.md
-M  docs/agent-runs/2026-07-21T203000Z-phase8-ci-reproducibility.md
-M  tests/test_packaging.py
-A  tests/test_repository_hygiene.py
 ```
 
 ---
 
-## Fixes & Implementation
+## Audit & Verification Summary
 
-### 1. Clean Environment Dependency Wiring (`.github/workflows/ci.yml`, `README.md`, `docs/development.md`)
-- Updated GitHub Actions CI workflow to install all four required optional dependency groups using the single consistent command: `python -m pip install -e ".[dev,rl,gate,dashboard]"`.
-- Updated `README.md` setup instructions to document `python -m pip install -e ".[dev,rl,gate,dashboard]"`.
-- Updated `docs/development.md` setup instructions and documentation to mandate `python -m pip install -e ".[dev,rl,gate,dashboard]"`.
-
-### 2. Packaging & CI Extras Verification (`tests/test_packaging.py`)
-- Added `test_optional_dependency_groups_defined` verifying `pyproject.toml` defines all required extras (`dev`, `rl`, `gate`, `dashboard`).
-- Added `test_ci_workflow_installs_all_four_extras` reading `.github/workflows/ci.yml` and proving the CI installation step specifies `pip install -e ".[dev,rl,gate,dashboard]"`.
-
-### 3. Real Clean-Venv Verification
-- Created brand-new temporary virtual environment `D:\clean_ci_venv`.
-- Inside `D:\clean_ci_venv`, successfully ran:
-  - `python -m pip install --upgrade pip`
-  - `python -m pip install -e ".[dev,rl,gate,dashboard]"`
-  - `python -m pip check` -> Clean
-  - `python -m pytest -q` -> 383 passed, 1 skipped
-  - `python -m compileall -q src tests` -> Clean
-  - `python -m ruff check src tests` -> All checks passed
-  - `python -m ruff format --check src tests` -> Formatted
-  - `python -m mypy src` -> Success: no issues found in 46 source files
-  - `python -m build` -> Built obsidian_rl-0.1.0.tar.gz and wheel
-- Installed built wheel in separate clean virtual environment `D:\wheel_clean_venv` and verified:
-  - `python -c "import obsidian_rl"` -> Clean import
-  - `obsidian-rl --help` -> Full CLI usage displayed
+### Final System Audit Documented (`docs/FINAL_SYSTEM_AUDIT.md`)
+- Performed complete offline system verification across all 8 required audit areas without modifying production code/tests, accessing Binance/`.env`, training models, or running the holdout.
+- Verified zero tracked `.env` files (`git ls-files -- .env`), comprehensive `.gitignore` exclusions, and least-privilege offline CI workflow (`.github/workflows/ci.yml`).
+- Verified strict candle validation, single-use holdout segregation (`HOLDOUT_LOCK.json`), validation-selected model registration, immutable metadata (`schema_version="1.0.0"`), and atomic cross-process promotion locking (`.champion.lock`).
+- Verified schema-bound feature transformation (`expected_feature_fingerprint`), directional Alpha Gate target handling (`Long`/`Short` with fees), and fail-closed inference behavior.
+- Verified exact accounting parity between backtest, replay, and live-paper pathways (W+1 open execution, terminal liquidation curve consistency, signed chronological funding idempotency).
+- Verified reconnect gap recovery catch-up without synthetic fills, durable pending order expiration (`EXPIRED`), and sanitized durable failure logging (`failure_events` table).
+- Verified finite configuration defaults, authoritative ledger configuration persistence, and zero `TODO`, `FIXME`, or `NotImplementedError` placeholders across `src/obsidian_rl`.
+- Confirmed strict separation of algorithmic/accounting correctness (`383 passed`) from trading profitability claims, keeping real holdout data completely unobserved (`HOLDOUT_LOCK.json` clean).
 
 ---
 
 ## Verification Results
 
-### Focused / Packaging Tests
+### Audit Verification Commands
 ```
-python -m pytest tests/test_packaging.py tests/test_repository_hygiene.py -q
-........................                                                 [100%]
-24 passed
-```
-
-### Fresh-Venv Test Suite
-```
-python -m pytest -q (inside D:\clean_ci_venv)
-........................................................................ [ 18%]
-........................................................................ [ 37%]
-........................................................................ [ 55%]
-........................................................................ [ 74%]
-....................................s................................... [ 93%]
-..........................                                               [100%]
-383 passed, 1 skipped
-```
-
-### Local Repository Test Suite
-```
-python -m pytest -q (inside .venv)
-........................................................................ [ 18%]
-........................................................................ [ 37%]
-........................................................................ [ 55%]
-........................................................................ [ 74%]
-....................................s................................... [ 93%]
-..........................                                               [100%]
-383 passed, 1 skipped
-```
-
-### Static Analysis, Linting & Package Check
-```
-python -m compileall -q src tests                            -> clean
+python -m pytest -q                                          -> 383 passed, 1 skipped in 25.86s (clean)
+python -m compileall -q src tests                            -> Clean compilation across 118 files
+python -m ruff check src tests                               -> Clean (all lint checks passed)
+python -m ruff format --check src tests                      -> Clean (all 76 files formatted)
 python -m mypy src                                          -> Success: no issues found in 46 source files
-python -m ruff check tests/test_packaging.py                -> All checks passed!
-python -m ruff format --check tests/test_packaging.py       -> 1 file already formatted
 python -m pip check                                         -> No broken requirements found
-python -m build                                             -> Successfully built obsidian_rl-0.1.0.tar.gz and wheel
-git diff --check                                             -> clean
+python -m build                                             -> Clean build of obsidian_rl-0.1.0.tar.gz & wheel
+git diff --check                                             -> Clean (no whitespace/merge errors)
+git status --short                                           -> Clean (except new audit report files)
+git ls-files -- .env                                         -> Clean (0 tracked .env files)
 ```
+
+### Final Verdict
+READY FOR CONTROLLED HISTORICAL TRAINING
