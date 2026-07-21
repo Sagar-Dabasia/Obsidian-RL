@@ -695,6 +695,57 @@ def current_champion(models_dir: Path) -> str | None:
     return str(model_id) if model_id else None
 
 
+def get_verified_champion_info(models_dir: Path) -> dict[str, Any]:
+    """Load and verify champion state and promotion evidence read-only without mutations."""
+    path = _champion_path(models_dir)
+    if not path.exists():
+        raise PromotionEvidenceError("CHAMPION.json does not exist; no champion is set")
+    data = _load_champion_data(path, models_dir)
+    model_id = data.get("model_id")
+    if not model_id or data.get("generation", 0) < 1:
+        raise PromotionEvidenceError("no champion is set in CHAMPION.json")
+    model_id = str(model_id)
+    model_dir = Path(models_dir) / model_id
+    if not model_dir.exists() or not (model_dir / MODEL_FILE).exists():
+        raise PromotionEvidenceError(f"champion model {model_id} artifact does not exist")
+
+    record = load_record(model_dir)
+    report = _load_evaluation_report(models_dir, model_id)
+    art_sha = data.get("model_artifact_sha256")
+    actual_sha = artifact_sha256(model_dir / MODEL_FILE)
+    if (
+        not art_sha
+        or art_sha != actual_sha
+        or art_sha != record.metadata.get("artifact_sha256")
+        or art_sha != report.get("model_artifact_sha256")
+    ):
+        raise PromotionEvidenceError("champion artifact SHA-256 mismatch across evidence files")
+
+    source_commit = report.get("source_commit")
+    if (
+        not source_commit
+        or source_commit != record.metadata.get("source_commit")
+        or record.metadata.get("source_tree_clean") is not True
+        or report.get("source_tree_clean") is not True
+    ):
+        raise PromotionEvidenceError(
+            "champion promotion evidence lacks verified clean source provenance"
+        )
+
+    costs_data = report["costs"]
+    return {
+        "model_id": model_id,
+        "model_dir": model_dir,
+        "model_artifact_sha256": art_sha,
+        "generation": data.get("generation"),
+        "source_commit": source_commit,
+        "source_tree_clean": True,
+        "cost_model": CostModel(**costs_data) if isinstance(costs_data, dict) else CostModel(),
+        "feature_schema": record.metadata.get("feature_schema", {}),
+        "report_sha256": report.get("report_sha256"),
+    }
+
+
 def _load_champion_data(path: Path, models_dir: Path | None = None) -> dict[str, Any]:
     """Load CHAMPION.json; strictly validate or normalize legacy files; reject malformed files."""
     if not path.exists():
@@ -907,7 +958,8 @@ def promote(models_dir: Path, model_id: str) -> None:
         eval_commit = report.get("evaluation_source_git_commit", report.get("source_git_commit"))
         if current_state.commit != eval_commit:
             raise PromotionEvidenceError(
-                "current source commit differs from evaluation source commit; reevaluation required after code changes"
+                "current source commit differs from evaluation source commit; "
+                "reevaluation required after code changes"
             )
         path = _champion_path(models_dir)
         data = _load_champion_data(path, models_dir)
@@ -942,8 +994,9 @@ def rollback(models_dir: Path) -> str:
         data["model_id"] = previous
         data["lineage"] = lineage[:-1]
         data["generation"] = data.get("generation", 0) + 1
-        data["model_artifact_sha256"] = prev_record.metadata.get("artifact_sha256") or artifact_sha256(
-            Path(models_dir) / previous / MODEL_FILE
-        )
+        prev_sha = prev_record.metadata.get("artifact_sha256")
+        if not prev_sha:
+            prev_sha = artifact_sha256(Path(models_dir) / previous / MODEL_FILE)
+        data["model_artifact_sha256"] = prev_sha
         _write_champion_atomically(path, data, action=f"rollback:{current}->{previous}")
         return previous

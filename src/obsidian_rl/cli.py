@@ -78,11 +78,26 @@ def _load_range(start: str | None, end: str | None) -> "object":
 
 
 def cmd_train(args: argparse.Namespace) -> int:
+    from obsidian_rl.evaluation.holdout import check_reserved_period_overlap
     from obsidian_rl.training.ppo import PpoHyperparams, TrainConfig, train_ppo
 
     settings = get_settings()
     train_candles = _load_range(args.train_start, args.train_end)
     eval_candles = _load_range(args.eval_start, args.eval_end)
+    check_reserved_period_overlap(
+        _parse_utc_date(args.train_start),
+        _parse_utc_date(args.train_end),
+        train_candles,
+        purpose="training",
+        settings=settings,
+    )
+    check_reserved_period_overlap(
+        _parse_utc_date(args.eval_start),
+        _parse_utc_date(args.eval_end) if args.eval_end else None,
+        eval_candles,
+        purpose="training evaluation",
+        settings=settings,
+    )
     if args.smoke:
         cfg = TrainConfig(
             total_timesteps=4096,
@@ -117,6 +132,7 @@ def cmd_train(args: argparse.Namespace) -> int:
 def cmd_walk_forward(args: argparse.Namespace) -> int:
     from pathlib import Path
 
+    from obsidian_rl.evaluation.holdout import check_reserved_period_overlap, get_holdout_start_ms
     from obsidian_rl.evaluation.walkforward import (
         evaluate_strategies_on_slice,
         make_folds,
@@ -129,7 +145,16 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
 
     settings = get_settings()
     candles = _load_range(args.data_start, None)
+    check_reserved_period_overlap(
+        _parse_utc_date(args.data_start),
+        None,
+        candles,
+        purpose="walkforward",
+        settings=settings,
+    )
     holdout_ms = _parse_utc_date(args.holdout_start)
+    if holdout_ms > get_holdout_start_ms(settings):
+        raise ValueError("walkforward holdout_start cannot exceed central reserved boundary")
     folds = make_folds(
         _parse_utc_date(args.data_start),
         holdout_ms,
@@ -192,40 +217,14 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
 
 def cmd_holdout(args: argparse.Namespace) -> int:
     """Run the final untouched holdout ONCE for one selected model."""
-    from pathlib import Path
+    from obsidian_rl.evaluation.holdout import run_final_holdout
 
-    from obsidian_rl.evaluation.walkforward import (
-        evaluate_strategies_on_slice,
-        save_results,
-        slice_candles,
-        summarize,
-    )
-    from obsidian_rl.portfolio.costs import CostModel
-    from obsidian_rl.strategies.baselines import default_baselines
-    from obsidian_rl.strategies.ppo_policy import PpoPolicyStrategy
-
-    candles = _load_range(args.holdout_start, args.end)
-    holdout = slice_candles(
-        candles,
-        _parse_utc_date(args.holdout_start),
-        _parse_utc_date(args.end) if args.end else 2**62,
-    )
-    strategies: list[tuple[str, object, int | None]] = [
-        (b.strategy_id, b, None)  # type: ignore[attr-defined]
-        for b in default_baselines()
-    ]
-    if args.model_dir:
-        strat = PpoPolicyStrategy.from_dir(Path(args.model_dir))
-        strategies.append((strat.strategy_id, strat, None))
-    rows = evaluate_strategies_on_slice(
-        holdout,
-        strategies,  # type: ignore[arg-type]
-        fold_id=-1,
-        cost_model=CostModel(),
-    )
-    path = save_results(rows, Path("artifacts/holdout"), extra={"model_dir": args.model_dir})
-    print(f"results: {path}")
-    print(summarize(rows).to_string())
+    settings = get_settings()
+    rep_path, report_hash = run_final_holdout(settings, args.model_id, args.end)
+    print("holdout completed")
+    print(f"model_id: {args.model_id}")
+    print(f"report path: {rep_path}")
+    print(f"report sha256: {report_hash}")
     return 0
 
 
@@ -243,11 +242,19 @@ def _strategy_from_args(model_dir: str | None) -> tuple[object, str | None]:
 
 def cmd_replay(args: argparse.Namespace) -> int:
     """Historical replay through the live-paper decision path (same code as live)."""
+    from obsidian_rl.evaluation.holdout import check_reserved_period_overlap
     from obsidian_rl.ledger.ledger import Ledger
     from obsidian_rl.live.paper_trader import PaperTrader, replay_candles
 
     settings = get_settings()
     candles = _load_range(args.start, args.end)
+    check_reserved_period_overlap(
+        _parse_utc_date(args.start),
+        _parse_utc_date(args.end) if args.end else None,
+        candles,
+        purpose="replay",
+        settings=settings,
+    )
     strategy, model_id = _strategy_from_args(args.model_dir)
     ledger = Ledger(settings.ledger_path)
     run = ledger.start_run(
@@ -303,10 +310,18 @@ def cmd_paper_trade(args: argparse.Namespace) -> int:
 
 
 def cmd_candidate_eval(args: argparse.Namespace) -> int:
+    from obsidian_rl.evaluation.holdout import check_reserved_period_overlap
     from obsidian_rl.training.promotion import evaluate_candidate, evaluation_report_path
 
     settings = get_settings()
     val = _load_range(args.val_start, args.val_end)
+    check_reserved_period_overlap(
+        _parse_utc_date(args.val_start),
+        _parse_utc_date(args.val_end) if args.val_end else None,
+        val,
+        purpose="candidate evaluation",
+        settings=settings,
+    )
     report = evaluate_candidate(settings.models_dir, args.model_id, val)
     result = "passed" if report["passes"] else "failed"
     report_path = evaluation_report_path(settings.models_dir, args.model_id)
@@ -390,9 +405,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_walk_forward)
 
     p = sub.add_parser("holdout", help="run the untouched final holdout ONCE for one model")
-    p.add_argument("--holdout-start", default="2025-07-01")
-    p.add_argument("--end", default=None)
-    p.add_argument("--model-dir", default=None, help="validated model registry directory")
+    p.add_argument("--model-id", required=True, help="exact model ID matching current champion")
+    p.add_argument("--end", required=True, help="fixed UTC end boundary for final holdout")
     p.set_defaults(func=cmd_holdout)
 
     p = sub.add_parser("replay", help="historical replay through the live-paper path")

@@ -51,6 +51,20 @@ def make_folds(
     purge_candles: int = WARMUP_ROWS,
 ) -> list[FoldSpec]:
     """Rolling chronological folds; validation slices never overlap the holdout."""
+    from obsidian_rl.evaluation.holdout import get_holdout_start_ms
+
+    canonical_holdout = get_holdout_start_ms()
+    if holdout_start_ms > canonical_holdout:
+        raise ValueError(
+            f"holdout_start_ms ({holdout_start_ms}) exceeds central reserved boundary "
+            f"({canonical_holdout})"
+        )
+    if data_start_ms >= canonical_holdout:
+        raise ValueError(
+            f"data_start_ms ({data_start_ms}) overlaps central reserved boundary "
+            f"({canonical_holdout})"
+        )
+
     ms = interval_to_ms(interval)
     purge_ms = purge_candles * ms
     folds: list[FoldSpec] = []

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     symbol: str = "BTCUSDT"
     interval: str = "15m"
+    holdout_start_utc: str = "2025-07-01"
 
     # Public market-data endpoints (ADR-003). No authenticated endpoint is ever used.
     fapi_base_url: str = "https://fapi.binance.com"
