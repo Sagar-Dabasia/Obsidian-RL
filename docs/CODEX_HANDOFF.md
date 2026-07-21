@@ -4,50 +4,46 @@ Updated: 2026-07-21
 
 ## Current branch and commit
 - Branch: `wip/phase5-alpha-gate-direction`
-- Starting commit: `f0418c5dc45bb7eff84bf42cfd1d02f411767d63`
+- Starting commit: `18d7fb5a976b653bc49442f36e986ef1e28ae3c7`
 
 ## Status
-Phase 5 — Alpha Gate Signed Directional Net Edge — **COMPLETE (verified & committed)**
+Phase 5b — Harden Alpha Gate Artifact Validation — **COMPLETE (verified & committed)**
 
 See full run report: [docs/AGENT_RUN_REPORT.md](AGENT_RUN_REPORT.md)
-Timestamped archive: [docs/agent-runs/2026-07-21T141000Z-phase5-alpha-gate-direction.md](agent-runs/2026-07-21T141000Z-phase5-alpha-gate-direction.md)
+Timestamped archive: [docs/agent-runs/2026-07-21T142000Z-phase5b-harden-gate.md](agent-runs/2026-07-21T142000Z-phase5b-harden-gate.md)
 
-## What was implemented/fixed in Phase 5
+## What was implemented in Phase 5b
 
-### Signed directional label (`labels.py`)
-- Added `signed_directional_net_edge(open_, horizon, round_trip_cost)`:
-  `sign(gross) * max(abs(gross) - round_trip_cost, 0)` where `gross = log(open[t+1+h] / open[t+1])`.
-- Correctly represents both long edge (`+gross - cost`) and short edge (`-(abs(gross) - cost)`).
-- Sub-cost moves return exactly 0.
-- Strict input validation: non-bool `int >= 1` horizon, finite non-bool non-negative cost, finite strictly-positive prices.
-- Legacy `forward_executable_net_return` retained for compatibility only; not used for gate training.
+### `AlphaGate.predict_row` hardening (`alpha_gate.py`)
+- Rejects non-1D inputs (`ndim != 1`).
+- Rejects wrong feature count (`shape[0] != _N_FEATURES`).
+- Rejects non-finite inputs (unchanged from Phase 5).
+- Rejects empty booster output.
+- Rejects multi-value booster output.
 
-### Gate schema v2 (`alpha_gate.py`)
-- `GATE_SCHEMA_VERSION = "gate-schema-v2"`.
-- `save_gate` persists: `gate_schema_version`, `target_name` (`signed-directional-net-edge-v1`), `feature_schema_version`, `features`, `horizon`, `round_trip_cost`, `artifact_sha256`.
-- `load_gate` validates all 8 required fields; rejects legacy schema; validates horizon, cost, feature order, and SHA-256.
-- `AlphaGate.predict_row` validates finite inputs and non-finite predictions.
-- `AlphaGate.decide(row, margin)` returns `+1`/`-1`/`0` with validated non-negative margin.
-- `build_training_frame` uses the new signed label.
+### `_load_and_validate_meta` hardening (`alpha_gate.py`)
+- Rejects malformed JSON.
+- Rejects non-dict root (list, scalar etc.).
+- Rejects NaN/Infinity in metadata values.
+- Enforces exact `_REQUIRED_META_KEYS` set (no missing, no extra keys).
+- Validates `created_utc_ms` is non-bool `int >= 0`.
+- Validates `artifact_sha256` is exactly 64 lowercase hex characters.
 
-### Gated strategies (`gated.py`)
-- `GatedStrategy` and `GateDirectStrategy` use `gate.decide()` for validated direction; margin validated at construction time.
+### `save_gate` hardening (`alpha_gate.py`)
+- Pre-save field validation via `_validate_gate_fields_for_save()`.
+- Serialises with `allow_nan=False`.
 
 ## Files changed
-- `src/obsidian_rl/features/labels.py`
 - `src/obsidian_rl/gate/alpha_gate.py`
-- `src/obsidian_rl/strategies/gated.py`
-- `tests/test_labels.py`
 - `tests/test_alpha_gate.py`
 - `docs/AGENT_RUN_REPORT.md`
 - `docs/CODEX_HANDOFF.md`
-- `docs/agent-runs/2026-07-21T141000Z-phase5-alpha-gate-direction.md`
+- `docs/agent-runs/2026-07-21T142000Z-phase5b-harden-gate.md`
 
-## Verification Commands Run
-- `python -m pytest tests/test_labels.py tests/test_alpha_gate.py -q`: **40 passed in 1.43s**
-- `python -m ruff check ... (5 Phase 5 files)`: **All checks passed!**
-- `python -m ruff format --check ... (5 Phase 5 files)`: **5 files already formatted**
-- `python -m mypy src`: **Success (no issues found in 45 source files)**
+## Verification
+- `python -m pytest tests/test_alpha_gate.py tests/test_labels.py -q`: **58 passed**
+- `python -m ruff check ...`: **All checks passed!**
+- `python -m ruff format --check ...`: **Clean**
+- `python -m mypy src`: **Success (45 source files)**
 - `python -m compileall -q src tests`: **Clean**
-- `git diff --check`: **Clean**
-- `python -m pytest -q`: **296 passed, 1 skipped**
+- `python -m pytest -q`: **314 passed, 1 skipped**

@@ -39,16 +39,20 @@ GATE_MODEL_FILE = "gate.txt"
 GATE_META_FILE = "gate_meta.json"
 GATE_SCHEMA_VERSION = "gate-schema-v2"
 
-_REQUIRED_META_KEYS = {
-    "gate_schema_version",
-    "target_name",
-    "created_utc_ms",
-    "horizon",
-    "round_trip_cost",
-    "feature_schema_version",
-    "features",
-    "artifact_sha256",
-}
+_REQUIRED_META_KEYS = frozenset(
+    {
+        "gate_schema_version",
+        "target_name",
+        "created_utc_ms",
+        "horizon",
+        "round_trip_cost",
+        "feature_schema_version",
+        "features",
+        "artifact_sha256",
+    }
+)
+
+_N_FEATURES = len(MARKET_FEATURES)
 
 
 class GateCompatibilityError(RuntimeError):
@@ -63,10 +67,24 @@ class AlphaGate:
     schema_version: str  # feature schema version (kept for compat)
 
     def predict_row(self, market_row: np.ndarray) -> float:
-        arr = np.asarray(market_row, dtype=np.float64).reshape(1, -1)
+        arr = np.asarray(market_row, dtype=np.float64)
+        if arr.ndim != 1:
+            raise ValueError(f"market_row must be 1-dimensional, got shape {arr.shape}")
+        if arr.shape[0] != _N_FEATURES:
+            raise ValueError(
+                f"market_row must have exactly {_N_FEATURES} values, got {arr.shape[0]}"
+            )
         if not np.isfinite(arr).all():
             raise ValueError("market_row contains non-finite values")
-        pred = float(self.booster.predict(arr)[0])
+        raw = self.booster.predict(arr.reshape(1, -1))
+        raw_arr = np.asarray(raw)
+        if raw_arr.size == 0:
+            raise ValueError("booster.predict() returned an empty array")
+        if raw_arr.size != 1:
+            raise ValueError(
+                f"booster.predict() returned {raw_arr.size} values; expected exactly 1"
+            )
+        pred = float(raw_arr.flat[0])
         if not math.isfinite(pred):
             raise ValueError(f"gate prediction is non-finite: {pred!r}")
         return pred
@@ -148,11 +166,31 @@ def train_gate(
     return AlphaGate(booster, horizon, round_trip_cost, FEATURE_SCHEMA_VERSION)
 
 
-def save_gate(gate: AlphaGate, out_dir: Path) -> None:
+def _validate_gate_fields_for_save(gate: "AlphaGate") -> None:
+    """Raise GateCompatibilityError if gate fields are invalid before serialising."""
+    if isinstance(gate.horizon, bool) or not isinstance(gate.horizon, int) or gate.horizon < 1:
+        raise GateCompatibilityError(f"gate.horizon invalid before save: {gate.horizon!r}")
+    if (
+        isinstance(gate.round_trip_cost, bool)
+        or not isinstance(gate.round_trip_cost, (int, float))
+        or not math.isfinite(gate.round_trip_cost)
+        or gate.round_trip_cost < 0
+    ):
+        raise GateCompatibilityError(
+            f"gate.round_trip_cost invalid before save: {gate.round_trip_cost!r}"
+        )
+    if gate.schema_version != FEATURE_SCHEMA_VERSION:
+        raise GateCompatibilityError(
+            f"gate.schema_version mismatch before save: {gate.schema_version!r}"
+        )
+
+
+def save_gate(gate: "AlphaGate", out_dir: Path) -> None:
+    _validate_gate_fields_for_save(gate)
     out_dir.mkdir(parents=True, exist_ok=True)
     model_path = out_dir / GATE_MODEL_FILE
     gate.booster.save_model(str(model_path))
-    meta = {
+    meta: dict[str, Any] = {
         "gate_schema_version": GATE_SCHEMA_VERSION,
         "target_name": SIGNED_DIRECTIONAL_NET_EDGE_VERSION,
         "created_utc_ms": int(time.time() * 1000),
@@ -162,16 +200,50 @@ def save_gate(gate: AlphaGate, out_dir: Path) -> None:
         "features": list(MARKET_FEATURES),
         "artifact_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
     }
-    (out_dir / GATE_META_FILE).write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    # Fail fast if any non-finite values were somehow constructed
+    try:
+        serialised = json.dumps(meta, indent=1, allow_nan=False)
+    except (ValueError, TypeError) as exc:
+        raise GateCompatibilityError(
+            f"gate metadata contains non-serialisable value: {exc}"
+        ) from exc
+    (out_dir / GATE_META_FILE).write_text(serialised, encoding="utf-8")
 
 
 def _load_and_validate_meta(meta_path: Path, model_path: Path) -> dict[str, Any]:
     """Load gate_meta.json and validate all required fields, checksum, and schema."""
-    meta: dict[str, Any] = json.loads(meta_path.read_text(encoding="utf-8"))
+    raw_text = meta_path.read_text(encoding="utf-8")
 
-    missing = _REQUIRED_META_KEYS - set(meta.keys())
-    if missing:
-        raise GateCompatibilityError(f"gate metadata missing fields: {sorted(missing)}")
+    # Parse JSON, rejecting malformed text
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise GateCompatibilityError(f"gate metadata is malformed JSON: {exc}") from exc
+
+    # Root must be an object, not a list or scalar
+    if not isinstance(parsed, dict):
+        raise GateCompatibilityError(
+            f"gate metadata root must be a JSON object, got {type(parsed).__name__}"
+        )
+
+    # Reject NaN/Infinity that Python's json.loads() silently accepts
+    try:
+        json.dumps(parsed, allow_nan=False)
+    except (ValueError, TypeError) as exc:
+        raise GateCompatibilityError(
+            f"gate metadata contains non-finite JSON value: {exc}"
+        ) from exc
+
+    meta: dict[str, Any] = parsed
+
+    # Exact key set — no missing, no extra
+    actual_keys = frozenset(meta.keys())
+    missing = _REQUIRED_META_KEYS - actual_keys
+    extra = actual_keys - _REQUIRED_META_KEYS
+    if missing or extra:
+        raise GateCompatibilityError(
+            f"gate metadata key mismatch: missing={sorted(missing)}, extra={sorted(extra)}"
+        )
 
     if meta.get("gate_schema_version") != GATE_SCHEMA_VERSION:
         raise GateCompatibilityError(
@@ -209,9 +281,22 @@ def _load_and_validate_meta(meta_path: Path, model_path: Path) -> dict[str, Any]
     ):
         raise GateCompatibilityError(f"gate metadata round_trip_cost invalid: {cost!r}")
 
+    ts = meta.get("created_utc_ms")
+    if isinstance(ts, bool) or not isinstance(ts, int) or ts < 0:
+        raise GateCompatibilityError(
+            f"gate metadata created_utc_ms must be a non-bool int >= 0, got {ts!r}"
+        )
+
     expected_sha = meta.get("artifact_sha256")
-    if not isinstance(expected_sha, str) or len(expected_sha) != 64:
-        raise GateCompatibilityError("gate metadata artifact_sha256 malformed")
+    if (
+        not isinstance(expected_sha, str)
+        or len(expected_sha) != 64
+        or not expected_sha.islower()
+        or not all(c in "0123456789abcdef" for c in expected_sha)
+    ):
+        raise GateCompatibilityError(
+            f"gate metadata artifact_sha256 must be 64 lowercase hex chars, got {expected_sha!r}"
+        )
 
     actual_sha = hashlib.sha256(model_path.read_bytes()).hexdigest()
     if actual_sha != expected_sha:
@@ -220,7 +305,7 @@ def _load_and_validate_meta(meta_path: Path, model_path: Path) -> dict[str, Any]
     return meta
 
 
-def load_gate(model_dir: Path) -> AlphaGate:
+def load_gate(model_dir: Path) -> "AlphaGate":
     """Load a text-format booster after validating metadata, checksum, and schema."""
     import lightgbm as lgb
 

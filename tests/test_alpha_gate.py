@@ -146,7 +146,7 @@ def test_missing_metadata_fields_rejected(tmp_path: Path) -> None:
     meta = _base_meta()
     meta.pop("horizon")
     _write_meta(tmp_path, meta)
-    with pytest.raises(GateCompatibilityError, match="missing fields"):
+    with pytest.raises(GateCompatibilityError, match="missing"):
         load_gate(tmp_path)
 
 
@@ -170,7 +170,7 @@ def test_malformed_cost_rejected(tmp_path: Path) -> None:
     meta = _base_meta()
     meta["round_trip_cost"] = float("nan")
     _write_meta(tmp_path, meta)
-    with pytest.raises(GateCompatibilityError, match="round_trip_cost"):
+    with pytest.raises(GateCompatibilityError, match="non-finite"):
         load_gate(tmp_path)
 
 
@@ -264,3 +264,178 @@ def test_gate_direct_strategy_invalid_margin() -> None:
 def test_insufficient_data_refused() -> None:
     with pytest.raises(ValueError, match="insufficient"):
         train_gate(make_candles(WARMUP_ROWS + 100), horizon=8)
+
+
+# ── predict_row — shape / length / prediction-count hardening ─────────────────
+
+
+def test_predict_row_wrong_feature_length() -> None:
+    gate = stub_gate(0.0)
+    short_row = np.zeros(len(MARKET_FEATURES) - 1, dtype=np.float64)
+    with pytest.raises(ValueError, match=r"exactly \d+ values"):
+        gate.predict_row(short_row)
+
+
+def test_predict_row_two_dimensional_input() -> None:
+    gate = stub_gate(0.0)
+    matrix = np.zeros((1, len(MARKET_FEATURES)), dtype=np.float64)
+    with pytest.raises(ValueError, match="1-dimensional"):
+        gate.predict_row(matrix)
+
+
+def test_predict_row_empty_prediction_rejected() -> None:
+    class EmptyBooster:
+        def predict(self, arr: np.ndarray) -> np.ndarray:
+            return np.array([])
+
+    gate = AlphaGate(EmptyBooster(), 16, 0.001, FEATURE_SCHEMA_VERSION)
+    row = np.zeros(len(MARKET_FEATURES), dtype=np.float64)
+    with pytest.raises(ValueError, match="empty"):
+        gate.predict_row(row)
+
+
+def test_predict_row_multi_value_prediction_rejected() -> None:
+    class MultiBooster:
+        def predict(self, arr: np.ndarray) -> np.ndarray:
+            return np.array([0.1, 0.2])
+
+    gate = AlphaGate(MultiBooster(), 16, 0.001, FEATURE_SCHEMA_VERSION)
+    row = np.zeros(len(MARKET_FEATURES), dtype=np.float64)
+    with pytest.raises(ValueError, match=r"2 values.*exactly 1"):
+        gate.predict_row(row)
+
+
+# ── _load_and_validate_meta — metadata hardening ──────────────────────────────
+
+
+def _write_meta(tmp_path: Path, meta: dict) -> None:
+    """Write gate.txt stub and gate_meta.json with the given meta (allow_nan=True)."""
+    (tmp_path / "gate.txt").write_bytes(b"stub")
+    sha = __import__("hashlib").sha256(b"stub").hexdigest()
+    meta.setdefault("artifact_sha256", sha)
+    (tmp_path / "gate_meta.json").write_text(json.dumps(meta, allow_nan=True), encoding="utf-8")
+
+
+def _base_meta() -> dict:
+    return {
+        "gate_schema_version": GATE_SCHEMA_VERSION,
+        "target_name": SIGNED_DIRECTIONAL_NET_EDGE_VERSION,
+        "created_utc_ms": 1_000_000,
+        "horizon": 16,
+        "round_trip_cost": 0.0013,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "features": list(MARKET_FEATURES),
+    }
+
+
+def test_metadata_root_is_list_rejected(tmp_path: Path) -> None:
+    (tmp_path / "gate.txt").write_bytes(b"stub")
+    (tmp_path / "gate_meta.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    with pytest.raises(GateCompatibilityError, match="JSON object"):
+        load_gate(tmp_path)
+
+
+def test_metadata_malformed_json_rejected(tmp_path: Path) -> None:
+    (tmp_path / "gate.txt").write_bytes(b"stub")
+    (tmp_path / "gate_meta.json").write_text("{not: valid json", encoding="utf-8")
+    with pytest.raises(GateCompatibilityError, match="malformed JSON"):
+        load_gate(tmp_path)
+
+
+def test_metadata_nan_json_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["round_trip_cost"] = float("nan")
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="non-finite"):
+        load_gate(tmp_path)
+
+
+def test_metadata_infinity_json_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["round_trip_cost"] = float("inf")
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="non-finite"):
+        load_gate(tmp_path)
+
+
+def test_metadata_extra_field_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["unexpected_extra"] = "bad"
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="extra"):
+        load_gate(tmp_path)
+
+
+def test_metadata_created_utc_ms_bool_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["created_utc_ms"] = True  # bool is subtype of int — must be rejected
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="created_utc_ms"):
+        load_gate(tmp_path)
+
+
+def test_metadata_created_utc_ms_negative_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["created_utc_ms"] = -1
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="created_utc_ms"):
+        load_gate(tmp_path)
+
+
+def test_metadata_created_utc_ms_missing_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta.pop("created_utc_ms", None)
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="missing"):
+        load_gate(tmp_path)
+
+
+def test_metadata_sha256_uppercase_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    # Uppercase hex is not valid for our lowercase-only constraint
+    sha_bytes = b"stub"
+    meta["artifact_sha256"] = __import__("hashlib").sha256(sha_bytes).hexdigest().upper()
+    (tmp_path / "gate.txt").write_bytes(sha_bytes)
+    (tmp_path / "gate_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(GateCompatibilityError, match="artifact_sha256"):
+        load_gate(tmp_path)
+
+
+def test_metadata_sha256_non_hex_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["artifact_sha256"] = "g" * 64  # 'g' is not hex
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="artifact_sha256"):
+        load_gate(tmp_path)
+
+
+def test_metadata_sha256_wrong_length_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["artifact_sha256"] = "a" * 32  # too short
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="artifact_sha256"):
+        load_gate(tmp_path)
+
+
+# ── save_gate — pre-save field validation ─────────────────────────────────────
+
+
+def test_save_gate_rejects_invalid_horizon(tmp_path: Path) -> None:
+    gate = stub_gate(0.0)
+    gate.horizon = 0  # type: ignore[assignment]
+    with pytest.raises(GateCompatibilityError, match="horizon"):
+        save_gate(gate, tmp_path)
+
+
+def test_save_gate_rejects_invalid_cost(tmp_path: Path) -> None:
+    gate = stub_gate(0.0)
+    gate.round_trip_cost = -0.01  # type: ignore[assignment]
+    with pytest.raises(GateCompatibilityError, match="round_trip_cost"):
+        save_gate(gate, tmp_path)
+
+
+def test_save_gate_rejects_wrong_schema_version(tmp_path: Path) -> None:
+    gate = stub_gate(0.0)
+    gate.schema_version = "old-version"  # type: ignore[assignment]
+    with pytest.raises(GateCompatibilityError, match="schema_version"):
+        save_gate(gate, tmp_path)
