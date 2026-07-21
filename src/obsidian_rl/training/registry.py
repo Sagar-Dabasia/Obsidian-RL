@@ -90,7 +90,7 @@ def artifact_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _resolve_repo_root(repo_root: Path | None = None) -> Path:
+def resolve_repo_root(repo_root: Path | None = None) -> Path:
     target = (
         Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parent
     )
@@ -109,9 +109,12 @@ def _resolve_repo_root(repo_root: Path | None = None) -> Path:
         ) from exc
 
 
+_resolve_repo_root = resolve_repo_root
+
+
 def current_git_commit(repo_root: Path | None = None) -> str | None:
     try:
-        root = _resolve_repo_root(repo_root)
+        root = resolve_repo_root(repo_root)
         out = subprocess.run(
             ["git", "-c", "safe.directory=*", "rev-parse", "HEAD"],
             capture_output=True,
@@ -136,7 +139,7 @@ class GitSourceState:
 
 def get_git_source_state(repo_root: Path | None = None) -> GitSourceState:
     """Check Git HEAD commit and working tree status (`git status --porcelain`)."""
-    root = _resolve_repo_root(repo_root)
+    root = resolve_repo_root(repo_root)
     commit = current_git_commit(root)
     if not commit:
         raise RuntimeError("unable to resolve a valid 40-character commit hash for project source")

@@ -1,6 +1,7 @@
 """Tests for Phase 4 holdout evaluation: single-use, frozen champion, immutable evidence."""
 
 import json
+import os
 import time
 from argparse import Namespace
 from collections.abc import Iterator
@@ -376,3 +377,246 @@ def test_holdout_concurrency_lock(
         RuntimeError, match="timed out waiting for holdout lock; holdout currently running"
     ):
         holdout_module.run_final_holdout(fake_settings, "m1", "2025-07-02T00:00:00+00:00")
+
+
+def test_holdout_repo_anchor_and_cwd_change(tmp_path: Path) -> None:
+    with patch("obsidian_rl.evaluation.holdout.HOLDOUT_DIR", Path("artifacts/holdout")):
+        orig_cwd = Path.cwd()
+        dir1 = holdout_module.get_holdout_dir()
+        state1 = holdout_module.get_holdout_state_path()
+        try:
+            os.chdir(tmp_path)
+            dir2 = holdout_module.get_holdout_dir()
+            state2 = holdout_module.get_holdout_state_path()
+            assert dir1 == dir2
+            assert state1 == state2
+            assert dir1.is_absolute()
+            assert state1.is_absolute()
+        finally:
+            os.chdir(orig_cwd)
+
+
+def test_holdout_utc_boundaries() -> None:
+    ms1, can1 = holdout_module.parse_utc_boundary("2025-07-01")
+    assert ms1 == 1751328000000
+    assert can1 == "2025-07-01T00:00:00Z"
+
+    ms2, can2 = holdout_module.parse_utc_boundary("2025-07-01T00:00:00+00:00")
+    assert ms2 == 1751328000000
+    assert can2 == "2025-07-01T00:00:00Z"
+
+    ms3, can3 = holdout_module.parse_utc_boundary("2025-07-01T00:00:00Z")
+    assert ms3 == 1751328000000
+    assert can3 == "2025-07-01T00:00:00Z"
+
+    with pytest.raises(ValueError, match="naive timestamp or non-UTC offset rejected"):
+        holdout_module.parse_utc_boundary("2025-07-01T12:00:00")
+
+    with pytest.raises(ValueError, match="naive timestamp or non-UTC offset rejected"):
+        holdout_module.parse_utc_boundary("2025-07-01T12:00:00+05:00")
+
+    with pytest.raises(ValueError, match="malformed YYYY-MM-DD date"):
+        holdout_module.parse_utc_boundary("2025-02-31")
+
+    with pytest.raises(ValueError, match="reversed range"):
+        holdout_module.check_reserved_period_overlap(200, 100)
+
+
+def _valid_base_state() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "consumption_id": "0123456789abcdef0123456789abcdef",
+        "started_at_utc": "2025-07-01T00:00:00Z",
+        "status": "started",
+        "reserved_start_utc": "2025-07-01T00:00:00Z",
+        "fixed_end_utc": "2025-07-02T00:00:00Z",
+        "symbol": "BTCUSDT",
+        "interval": "15m",
+        "model_id": "m1",
+        "model_artifact_sha256": "a" * 64,
+        "feature_schema": schema_fingerprint(),
+        "source_commit": "b" * 40,
+        "source_tree_clean": True,
+        "costs": {"taker_fee": 0.0005, "half_spread": 0.00005, "slippage": 0.0001},
+        "baselines": ["buy_hold", "rsi"],
+        "scenarios": ["base", "costs2x", "delay1"],
+        "report_filename": None,
+        "report_sha256": None,
+    }
+
+
+def test_holdout_source_tree_clean_false(isolated_holdout_paths: tuple[Path, Path, Path]) -> None:
+    _, state_path, _ = isolated_holdout_paths
+    state = _valid_base_state()
+    state["source_tree_clean"] = False
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="source_tree_clean must be exactly True"):
+        holdout_module.load_holdout_state(state_path)
+
+
+def test_holdout_state_strict_validation(isolated_holdout_paths: tuple[Path, Path, Path]) -> None:
+    h_dir, state_path, _ = isolated_holdout_paths
+
+    def _assert_invalid(state_dict: dict[str, object], match: str) -> None:
+        state_path.write_text(json.dumps(state_dict), encoding="utf-8")
+        with pytest.raises(RuntimeError, match=match):
+            holdout_module.load_holdout_state(state_path, holdout_dir=h_dir)
+
+    # Malformed consumption ID
+    st = _valid_base_state()
+    st["consumption_id"] = "not-a-hex-uuid"
+    _assert_invalid(st, "consumption_id must be a 32-char hex UUID")
+
+    # Malformed commit
+    st = _valid_base_state()
+    st["source_commit"] = "NOTLOWERCASECOMMIT"
+    _assert_invalid(st, "source_commit must be lowercase 40-char hex")
+
+    # Mismatched feature schema
+    st = _valid_base_state()
+    st["feature_schema"] = {"version": "wrong"}
+    _assert_invalid(st, "feature_schema does not match current complete schema fingerprint")
+
+    # Malformed costs
+    st = _valid_base_state()
+    st["costs"] = {"taker_fee": 0.0005}
+    _assert_invalid(st, "costs must be a dict with exactly taker_fee, half_spread, slippage")
+
+    # Malformed baselines
+    st = _valid_base_state()
+    st["baselines"] = []
+    _assert_invalid(st, "baselines must be a non-empty list of unique non-empty strings")
+
+    # Malformed scenarios
+    st = _valid_base_state()
+    st["scenarios"] = ["base", "other"]
+    _assert_invalid(st, "scenarios must exactly equal \\['base', 'costs2x', 'delay1'\\]")
+
+    # Extra fields
+    st = _valid_base_state()
+    st["extra_field"] = "unexpected"
+    _assert_invalid(st, "unknown or extra fields in HOLDOUT_STATE.json")
+
+    # Failed state containing metrics
+    st = _valid_base_state()
+    st["status"] = "failed"
+    st["failure_class"] = "ValueError"
+    st["reason"] = "something broke"
+    st["failed_at_utc"] = "2025-07-01T01:00:00Z"
+    st.pop("report_filename")
+    st.pop("report_sha256")
+    st["metrics"] = {"net_return": 0.5}
+    _assert_invalid(st, "failed state must not contain metrics")
+
+    # Completed state field disagreement
+    st = _valid_base_state()
+    st["status"] = "completed"
+    rep_data = {
+        "schema_version": 1,
+        "consumption_id": "differentconsumptionid1234567890",
+        "symbol": "BTCUSDT",
+        "interval": "15m",
+        "reserved_start_utc": "2025-07-01T00:00:00Z",
+        "fixed_end_utc": "2025-07-02T00:00:00Z",
+        "model_id": "m1",
+        "model_artifact_sha256": "a" * 64,
+        "source_commit": "b" * 40,
+        "costs": st["costs"],
+    }
+    rep_hash = _compute_report_hash(rep_data)
+    rep_full = {**rep_data, "report_sha256": rep_hash}
+    rep_filename = "report-test-complete.json"
+    (h_dir / rep_filename).write_text(_json_dumps(rep_full) + "\n", encoding="utf-8")
+    st["report_filename"] = rep_filename
+    st["report_sha256"] = rep_hash
+    _assert_invalid(st, "report consumption_id does not match state")
+
+
+def test_holdout_dataset_identity() -> None:
+    df = pd.DataFrame(
+        {
+            "open_time": pd.Series([1000, 2000], dtype="int64"),
+            "price": pd.Series([10.0, 20.0], dtype="float64"),
+        }
+    )
+    base_id = holdout_module.compute_dataset_identity(df, start_ms=1000, end_ms=2000)
+
+    # Index change alters hash
+    df_idx = df.copy()
+    df_idx.index = pd.Index([5, 10])
+    idx_id = holdout_module.compute_dataset_identity(df_idx, start_ms=1000, end_ms=2000)
+    assert idx_id["dataset_sha256"] != base_id["dataset_sha256"]
+
+    # Dtype change alters hash
+    df_dtype = df.copy()
+    df_dtype["price"] = df_dtype["price"].astype("float32")
+    dtype_id = holdout_module.compute_dataset_identity(df_dtype, start_ms=1000, end_ms=2000)
+    assert dtype_id["dataset_sha256"] != base_id["dataset_sha256"]
+
+    # Column order alters hash
+    df_cols = df[["price", "open_time"]]
+    cols_id = holdout_module.compute_dataset_identity(df_cols, start_ms=1000, end_ms=2000)
+    assert cols_id["dataset_sha256"] != base_id["dataset_sha256"]
+
+    # Row value alters hash
+    df_row = df.copy()
+    df_row.loc[0, "price"] = 15.0
+    row_id = holdout_module.compute_dataset_identity(df_row, start_ms=1000, end_ms=2000)
+    assert row_id["dataset_sha256"] != base_id["dataset_sha256"]
+
+    # Middle row outside requested interval is rejected
+    df_mid = pd.DataFrame(
+        {
+            "open_time": pd.Series([500, 1000, 2000], dtype="int64"),
+            "price": pd.Series([10.0, 15.0, 20.0], dtype="float64"),
+        }
+    )
+    with pytest.raises(ValueError, match=r"loaded dataset open_time .* precedes requested start"):
+        holdout_module.compute_dataset_identity(df_mid, start_ms=1000, end_ms=2000)
+
+    # Unsorted or duplicate open_time values are rejected
+    df_dup = pd.DataFrame(
+        {
+            "open_time": pd.Series([1000, 1000], dtype="int64"),
+            "price": pd.Series([10.0, 20.0], dtype="float64"),
+        }
+    )
+    with pytest.raises(ValueError, match="open_time values must be unique and strictly increasing"):
+        holdout_module.compute_dataset_identity(df_dup, start_ms=1000, end_ms=2000)
+
+
+def test_holdout_lock_integrity_and_symlinks(
+    isolated_holdout_paths: tuple[Path, Path, Path],
+) -> None:
+    h_dir, state_path, lock_path = isolated_holdout_paths
+
+    # Ownership mismatch does not remove another process's lock
+    with (
+        pytest.raises(RuntimeError, match="holdout lock ownership mismatch"),
+        holdout_module._holdout_lock(h_dir),
+    ):
+        # Simulate another process taking ownership or modifying the token
+        lock_path.write_text("another-token", encoding="utf-8")
+    assert lock_path.exists()
+    assert lock_path.read_text(encoding="utf-8") == "another-token"
+    lock_path.unlink()
+
+    # Symlinked paths rejected
+    with patch.object(Path, "is_symlink", return_value=True):
+        with pytest.raises(RuntimeError, match="must not be a symlink"):
+            holdout_module.load_holdout_state(state_path, holdout_dir=h_dir)
+        with pytest.raises(RuntimeError, match="must not be a symlink"):
+            holdout_module._verify_report_file(state_path, "a" * 64, holdout_dir=h_dir)
+        with (
+            pytest.raises(RuntimeError, match="must not be a symlink"),
+            holdout_module._holdout_lock(h_dir),
+        ):
+            pass
+
+    # Unexpected lock filesystem errors are not swallowed
+    with (
+        patch("builtins.open", side_effect=OSError("simulated disk error")),
+        pytest.raises(RuntimeError, match="unexpected filesystem error creating lock file"),
+        holdout_module._holdout_lock(h_dir),
+    ):
+        pass
