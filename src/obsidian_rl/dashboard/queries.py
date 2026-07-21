@@ -74,9 +74,7 @@ def get_run_closure(ledger_path: Path, run_id: str) -> dict[str, Any] | None:
         ledger.close()
 
 
-def equity_and_drawdown(
-    frame: pd.DataFrame, closure: dict[str, Any] | None = None
-) -> pd.DataFrame:
+def equity_and_drawdown(frame: pd.DataFrame, closure: dict[str, Any] | None = None) -> pd.DataFrame:
     """Equity + running-drawdown curves for one session only."""
     if frame.empty and closure is None:
         return pd.DataFrame(columns=["candle_open_ms", "net_equity", "drawdown"])
@@ -143,9 +141,7 @@ def kpis(
     }
 
 
-def closed_trade_events(
-    frame: pd.DataFrame, closure: dict[str, Any] | None = None
-) -> pd.DataFrame:
+def closed_trade_events(frame: pd.DataFrame, closure: dict[str, Any] | None = None) -> pd.DataFrame:
     """Realized-P&L events (including reversals), not flat-transition inference."""
     cols = ["candle_open_ms", "exec_price", "delta_qty", "realized_pnl_delta", "position_qty"]
     if not frame.empty:

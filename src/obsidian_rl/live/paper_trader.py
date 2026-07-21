@@ -1,21 +1,6 @@
-"""The single live-paper decision path, shared verbatim by replay and live streaming.
-
-Two-phase protocol per candle:
-  1. on_finalized_candle(candle_t)  — validate, dedupe, buffer, build the observation,
-     propose a target (frozen policy, no exploration, no training).
-  2. on_next_open(open_time, open_price) — execute the pending decision at the open of
-     candle t+1 (the first traded price after the decision; never the price that formed
-     the observation), record everything in the ledger.
-
-Replay drives these with recorded candles; live mode drives them with websocket events.
-Identical inputs produce identical decisions and accounting (proven by parity tests).
-
-Failure policy: invalid data or model state => fail FLAT (target 0 proposal with a
-rejection reason) or refuse the event explicitly. Prices are never fabricated; models
-are never trained here.
-"""
-
+import copy
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -33,7 +18,12 @@ from obsidian_rl.evaluation.backtest import (
 from obsidian_rl.features.pipeline import WARMUP_ROWS, compute_market_features
 from obsidian_rl.ledger.ledger import Ledger
 from obsidian_rl.portfolio.costs import CostModel
-from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine, PortfolioState
+from obsidian_rl.portfolio.engine import (
+    ExecutionResult,
+    PortfolioConfig,
+    PortfolioEngine,
+    PortfolioState,
+)
 from obsidian_rl.strategies.base import Strategy
 
 logger = logging.getLogger(__name__)
@@ -51,6 +41,7 @@ class PendingDecision:
     candle_close_ms: int
     decision_ts_ms: int
     proposed_target: float
+    rejection_reason: str | None = None
 
 
 class PaperTrader:
@@ -160,6 +151,36 @@ class PaperTrader:
             state.cash,
             self.last_finalized_ms,
         )
+
+    # ------------------------------------------------------------------ funding
+    def apply_funding_event(self, funding_time_ms: int, rate: float, mark_price: float) -> float:
+        """Apply a funding event to the carried position and persist in the ledger."""
+        if self.ledger.get_closure(self.run_id) is not None:
+            raise ValueError(f"closed run {self.run_id} cannot receive funding")
+
+        orig_state = copy.copy(self.engine.state)
+        flow = self.engine.apply_funding(mark_price, rate)
+        equity = self.engine.state.net_equity(mark_price)
+        idempotency_key = f"{self.run_id}:funding:{funding_time_ms}"
+
+        try:
+            self.ledger.record_funding(
+                self.run_id,
+                funding_time_ms=funding_time_ms,
+                rate=rate,
+                mark_price=mark_price,
+                position_qty=self.engine.state.qty,
+                cash_flow=flow,
+                resulting_cash=self.engine.state.cash,
+                resulting_equity=equity,
+                funding_total=self.engine.state.funding_paid,
+                idempotency_key=idempotency_key,
+            )
+        except Exception:
+            self.engine.state = orig_state
+            raise
+
+        return flow
 
     # ------------------------------------------------------------------ phase 1
     def ingest_observation(self, candle: dict[str, float | int]) -> None:
@@ -272,21 +293,69 @@ class PaperTrader:
         open_ms = int(candle["open_time"])
         close_px = float(candle["close"])
         proposed = 0.0
+        rejection_reason: str | None = None
+
         try:
             frame = pd.DataFrame(list(self.buffer), columns=CANDLE_COLUMNS)
-            market_row = compute_market_features(frame).iloc[-1].to_numpy(dtype=np.float32)
-            if np.isnan(market_row).any():
-                raise ValueError("NaN in market features")
-            port = self.tracker.observe(self.engine, close_px)
-            proposed = float(self.strategy.propose(market_row, port))
+            try:
+                feats = compute_market_features(frame)
+                market_row = feats.iloc[-1].to_numpy(dtype=np.float32)
+                if not np.isfinite(market_row).all():
+                    raise ValueError("non-finite values in market features")
+            except Exception as exc:
+                reason = f"feature construction failure: {exc}"
+                self.ledger.record_failure(
+                    self.run_id,
+                    failure_type="feature_construction_failure",
+                    reason=reason,
+                    event_ts_ms=open_ms,
+                )
+                rejection_reason = f"fail-flat: {reason}"
+                raise
+
+            try:
+                port = self.tracker.observe(self.engine, close_px)
+            except Exception as exc:
+                reason = f"observation construction failure: {exc}"
+                self.ledger.record_failure(
+                    self.run_id,
+                    failure_type="observation_construction_failure",
+                    reason=reason,
+                    event_ts_ms=open_ms,
+                )
+                rejection_reason = f"fail-flat: {reason}"
+                raise
+
+            try:
+                raw_pred = self.strategy.propose(market_row, port)
+                if isinstance(raw_pred, bool):
+                    raise ValueError(f"strategy proposed boolean target {raw_pred!r}")
+                proposed = float(raw_pred)
+                if not math.isfinite(proposed):
+                    raise ValueError(f"non-finite strategy target: {raw_pred!r}")
+            except Exception as exc:
+                reason = f"strategy prediction failure: {exc}"
+                self.ledger.record_failure(
+                    self.run_id,
+                    failure_type="strategy_prediction_failure",
+                    reason=reason,
+                    event_ts_ms=open_ms,
+                )
+                rejection_reason = f"fail-flat: {reason}"
+                raise
         except Exception:
+            if rejection_reason is None:
+                raise
             logger.exception("decision failure at candle %s; failing FLAT", open_ms)
             proposed = 0.0
+
+        snapped = snap_target(proposed, self.allowed_targets)
         return PendingDecision(
             candle_open_ms=open_ms,
             candle_close_ms=int(candle["close_time"]),
             decision_ts_ms=int(candle["close_time"]) + 1,
-            proposed_target=snap_target(proposed, self.allowed_targets),
+            proposed_target=snapped,
+            rejection_reason=rejection_reason,
         )
 
     # ------------------------------------------------------------------ phase 2
@@ -339,6 +408,26 @@ class PaperTrader:
 
         pending, self.pending = self.pending, None
         result = self.engine.rebalance(pending.proposed_target, next_open_price)
+        if pending.rejection_reason:
+            combined = (
+                f"{pending.rejection_reason}; {result.rejection_reason}"
+                if result.rejection_reason
+                else pending.rejection_reason
+            )
+            result = ExecutionResult(
+                proposed_target=result.proposed_target,
+                approved_target=result.approved_target,
+                executed_target=result.executed_target,
+                delta_qty=result.delta_qty,
+                exec_price=result.exec_price,
+                traded_notional=result.traded_notional,
+                fee=result.fee,
+                spread_cost=result.spread_cost,
+                slippage_cost=result.slippage_cost,
+                realized_pnl_delta=result.realized_pnl_delta,
+                rejection_reason=combined,
+            )
+
         self.tracker.update_after_step(self.engine.state.qty, result.traded_notional)
         self.ledger.record_decision(
             self.run_id,
@@ -369,10 +458,6 @@ class PaperTrader:
         closure_reason: str = "close_session",
     ) -> None:
         """Terminal liquidation at the given mark and run closure (explicit, logged)."""
-        import copy
-        import math
-        import time
-
         if not math.isfinite(mark_price) or mark_price <= 0:
             raise ValueError(f"invalid mark_price for session closure: {mark_price}")
 
@@ -426,17 +511,12 @@ class PaperTrader:
         )
 
 
-def replay_candles(trader: PaperTrader, candles: pd.DataFrame) -> int:
-    """Drive the live-paper decision path over recorded candles. Returns decisions made.
-
-    Ordering mirrors the live handle_event path EXACTLY: for each row, first execute any
-    pending decision whose execution candle is THIS row (phase 2, at this row's open),
-    THEN ingest the finalized candle (phase 1, which may set a new pending). This means a
-    pending decision carried in from restore() or from a prior backfill batch — whose
-    execution candle is the FIRST row of `candles` — is executed before it can be
-    overwritten. (The previous look-ahead ordering lost that carried decision because the
-    first on_finalized_candle overwrote `pending` before it executed.)
-    """
+def replay_candles(
+    trader: PaperTrader,
+    candles: pd.DataFrame,
+    funding_rates: pd.DataFrame | None = None,
+) -> int:
+    """Drive the live-paper decision path over recorded candles. Returns decisions made."""
     run_info = trader.ledger.get_run(trader.run_id)
     ended_at = run_info["ended_at_ms"] if run_info is not None else None
     closure = trader.ledger.get_closure(trader.run_id)
@@ -449,15 +529,35 @@ def replay_candles(trader: PaperTrader, candles: pd.DataFrame) -> int:
     if closure is not None and ended_at is not None:
         return 0
 
+    funding_events: list[tuple[int, float]] = []
+    if funding_rates is not None:
+        funding_events = [
+            (int(r.funding_time_ms), float(r.funding_rate))
+            for r in funding_rates.itertuples(index=False)
+        ]
+        funding_events.sort()
+    f_idx = 0
+
     n = 0
     for row in candles.itertuples(index=False):
         candle = {c: getattr(row, c) for c in CANDLE_COLUMNS}
+        open_time = int(candle["open_time"])
+        close_time = int(candle["close_time"])
+
         if (
             trader.pending is not None
-            and int(candle["open_time"]) == trader.pending.candle_open_ms + trader.interval_ms
+            and open_time == trader.pending.candle_open_ms + trader.interval_ms
         ):
-            trader.on_next_open(int(candle["open_time"]), float(candle["open"]))
+            trader.on_next_open(open_time, float(candle["open"]))
             n += 1
+
+        # Apply funding events falling within or up to this candle's span
+        while f_idx < len(funding_events) and funding_events[f_idx][0] <= close_time:
+            f_time, f_rate = funding_events[f_idx]
+            if f_time >= open_time or trader.last_finalized_ms is None:
+                trader.apply_funding_event(f_time, f_rate, float(candle["close"]))
+            f_idx += 1
+
         new_pending = trader.on_finalized_candle(candle)
         if new_pending is not None:
             trader.pending = new_pending

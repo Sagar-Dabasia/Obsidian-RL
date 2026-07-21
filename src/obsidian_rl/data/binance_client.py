@@ -109,3 +109,57 @@ class BinanceFuturesRest:
                 raise DataFetchError("pagination cursor did not advance; aborting")
             cursor = next_cursor
         return klines_to_frame(rows)
+
+    def fetch_funding_rates(
+        self, symbol: str, start_ms: int, end_ms: int | None = None, limit: int = 1000
+    ) -> list[dict[str, Any]]:
+        """Fetch funding rate history from GET /fapi/v1/fundingRate."""
+        url = f"{self._base}/fapi/v1/fundingRate"
+        params: dict[str, str | int] = {
+            "symbol": symbol,
+            "startTime": start_ms,
+            "limit": limit,
+        }
+        if end_ms is not None:
+            params["endTime"] = end_ms
+        last_error: str = "no attempts made"
+        for attempt in range(self._max_retries):
+            try:
+                resp = self._session.get(url, params=params, timeout=self._timeout)
+            except requests.RequestException as exc:
+                last_error = f"request error: {exc}"
+            else:
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if not isinstance(payload, list):
+                        raise DataFetchError(f"unexpected fundingRate payload type {type(payload)}")
+                    out: list[dict[str, Any]] = []
+                    for item in payload:
+                        if not isinstance(item, dict):
+                            raise DataFetchError("fundingRate item must be a dict")
+                        out.append(
+                            {
+                                "symbol": str(item["symbol"]),
+                                "funding_time_ms": int(item["fundingTime"]),
+                                "funding_rate": float(item["fundingRate"]),
+                                "mark_price": float(item.get("markPrice", 0.0) or 0.0),
+                            }
+                        )
+                    return out
+                if resp.status_code in (429, 418):
+                    retry_after = float(resp.headers.get("Retry-After", "0") or 0)
+                    wait = max(retry_after, 2.0 ** (attempt + 1))
+                    logger.warning("rate limited (%s); backing off %.1fs", resp.status_code, wait)
+                    self._sleep(wait)
+                    last_error = f"HTTP {resp.status_code}"
+                    continue
+                if 500 <= resp.status_code < 600:
+                    last_error = f"HTTP {resp.status_code}"
+                else:
+                    raise DataFetchError(
+                        f"fundingRate request failed: HTTP {resp.status_code}: {resp.text[:200]}"
+                    )
+            self._sleep(min(2.0**attempt, 30.0))
+        raise DataFetchError(
+            f"fundingRate request failed after {self._max_retries} retries: {last_error}"
+        )
