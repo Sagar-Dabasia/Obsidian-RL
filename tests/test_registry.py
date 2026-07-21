@@ -1,8 +1,9 @@
 """Model registry schema contract validation tests."""
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -52,7 +53,8 @@ def test_registry_register_and_load_record_passes_for_valid_schema(tmp_path: Pat
     model_dir = _register_stub(tmp_path, "test-model-1")
     record = load_record(model_dir)
     assert record.model_id == "test-model-1"
-    assert record.metadata["feature_schema"]["schema_version"] == schema_fingerprint()["schema_version"]
+    expected_ver = schema_fingerprint()["schema_version"]
+    assert record.metadata["feature_schema"]["schema_version"] == expected_ver
 
 
 def test_load_record_rejects_legacy_schema_version(tmp_path: Path) -> None:

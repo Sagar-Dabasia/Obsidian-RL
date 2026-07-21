@@ -1,4 +1,4 @@
-# Agent Run Report — Phase 6: Strict Feature and Observation Schema Contract
+# Agent Run Report — Phase 6: Feature Validation Wiring & Immutability
 
 ## Meta
 
@@ -7,61 +7,42 @@
 | **Model** | Antigravity |
 | **Date (UTC)** | 2026-07-21 |
 | **Branch** | `wip/phase6-schema-contract` |
-| **Starting commit** | `0748c4aa219274c561ee4a3516eca7761e2f0a6b` |
-| **Task** | Phase 6 — Create strict feature and observation schema contract (`fs-v2`) inside `schema.py`, refactor `pipeline.py`, `observation.py`, `backtest.py`, `registry.py`, `alpha_gate.py`, and `trading_env.py`, enforcing candle and schema fingerprint validation across the repository. |
+| **Starting commit** | `69ced4b6bbf2516ae87e5b2c32a0dbb13fe8ac4e` |
+| **Task** | Finalize Phase 6 validation wiring: feature calculation candle validation in `compute_market_features`, interval validation, single-pass validation in `feature_matrix`, output contiguity/dtype/finite guarantees, and schema descriptor/fingerprint deepcopy immutability. |
 
 ---
 
 ## Working-tree status
 
-**Before**: clean on `wip/phase6-schema-contract` at `0748c4aa219274c561ee4a3516eca7761e2f0a6b`
+**Before**: clean on `wip/phase6-schema-contract` at `69ced4b6bbf2516ae87e5b2c32a0dbb13fe8ac4e`
 
 **After**:
 ```
 M  src/obsidian_rl/env/trading_env.py
-M  src/obsidian_rl/evaluation/backtest.py
-M  src/obsidian_rl/features/observation.py
 M  src/obsidian_rl/features/pipeline.py
-A  src/obsidian_rl/features/schema.py
-M  src/obsidian_rl/gate/alpha_gate.py
-M  src/obsidian_rl/training/registry.py
-M  tests/test_alpha_gate.py
+M  src/obsidian_rl/features/schema.py
 M  tests/test_features.py
-A  tests/test_observation.py
-M  tests/test_observation_parity.py
-A  tests/test_registry.py
-M  tests/test_training.py
+M  tests/test_registry.py
 M  docs/AGENT_RUN_REPORT.md
 M  docs/CODEX_HANDOFF.md
-A  docs/agent-runs/2026-07-21T170000Z-phase6-schema-contract.md
+A  docs/agent-runs/2026-07-21T190000Z-phase6-validation-wiring.md
 ```
 
 ---
 
 ## Fixes & Implementation
 
-### 1. `src/obsidian_rl/features/schema.py` (New)
-- `SCHEMA_VERSION = "fs-v2"`.
-- Defined complete ordered schema descriptors for market features (`MARKET_FEATURES`), formulas (`MARKET_FEATURE_FORMULAS`), lags (`LOG_RETURN_LAGS`), rolling windows (`96`), warm-up rows (`96`), clipping bounds (`CLIP = 10.0`), portfolio features (`PORTFOLIO_FEATURES`), portfolio normalization bounds (`PORTFOLIO_BOUNDS`), and observation properties (`OBSERVATION_DIM = 17`, `OBSERVATION_DTYPE = "float32"`).
-- Serializes `schema_descriptor()` with canonical sorted-keys compact JSON (`allow_nan=False`) and computes lowercase 64-character SHA-256 (`schema_sha256()`).
-- `validate_fingerprint(stored)` strictly verifies stored fingerprints against legacy versions, malformed hashes, missing/extra fields, descriptor/hash disagreements, reordered features, and changed constants/bounds.
+### 1. `compute_market_features` & `feature_matrix` Validation Wiring (`pipeline.py`)
+- `compute_market_features` now calls `validate_candle_frame(candles, expected_interval_ms=expected_interval_ms)` as its first action before reading any columns or performing calculations.
+- Added optional `expected_interval_ms` parameter to `compute_market_features` and `feature_matrix`.
+- Validated `expected_interval_ms` as `int` > 0 (rejecting `bool`, negative, zero, or float values even for a 1-row DataFrame).
+- `feature_matrix` delegates candle validation to `compute_market_features` to avoid double validation.
+- `feature_matrix` guarantees exact output shape, contiguous C-order `float32` feature matrix, contiguous C-order `int64` timestamps, exact row alignment, and explicitly rejects any post-warmup NaN or infinity.
 
-### 2. `src/obsidian_rl/features/pipeline.py`
-- Re-exports schema constants and definitions from `schema.py`.
-- `validate_candle_frame(candles)` enforces schema rules: required columns exactly once, numeric (`not bool`) dtypes for OHLCV, strictly increasing unique `open_time`, `close_time >= open_time`, positive finite prices (`high >= max(open, close)`, `low <= min(open, close)`), and non-negative finite volume.
-
-### 3. `src/obsidian_rl/features/observation.py`
-- Re-exports `PortfolioObs` and observation definitions from `schema.py`.
-- Added `validate_portfolio_obs(portfolio)` to reject boolean, non-finite, or out-of-bounds `PortfolioObs` values.
-- `build_observation(market_row, portfolio)` validates inputs and emits a contiguous 1D `float32` array of exactly `(OBSERVATION_DIM,)` without any non-finite values.
-
-### 4. `src/obsidian_rl/evaluation/backtest.py` & `src/obsidian_rl/env/trading_env.py`
-- Replaced hardcoded normalization/clipping constants (`ROLLING_WINDOW = 96` and `[-3.0, 3.0, 10]`) with `PORTFOLIO_BOUNDS` from `schema.py`.
-- Updated `observation_space` to bind explicitly to `OBSERVATION_DIM` and `np.dtype(OBSERVATION_DTYPE)` from `schema.py`.
-
-### 5. `src/obsidian_rl/training/registry.py` & `src/obsidian_rl/gate/alpha_gate.py`
-- Updated `load_record` in `registry.py` to run `validate_fingerprint(stored)` when loading `feature_schema`.
-- Updated `save_gate` and `_load_and_validate_meta` in `alpha_gate.py` to include `feature_schema` in `_REQUIRED_META_KEYS` and validate it against the exact `fs-v2` schema contract.
+### 2. Schema Contract Immutability (`schema.py`)
+- Wrapping dict constants (`MARKET_FEATURE_FORMULAS`, `PORTFOLIO_BOUNDS`, `CANDLE_VALIDATION_RULES`) in `MappingProxyType` to prevent accidental in-place mutation.
+- `schema_descriptor()` and `schema_fingerprint()` now return deep-copied, fully independent data structures.
+- Mutating any nested list or dictionary returned by `schema_descriptor()` or `schema_fingerprint()` does not alter subsequent schema outputs, SHA-256 hashes, feature order, bounds, or observation behavior.
 
 ---
 
@@ -69,18 +50,27 @@ A  docs/agent-runs/2026-07-21T170000Z-phase6-schema-contract.md
 
 ### Focused Tests
 ```
-python -m pytest tests/test_features.py tests/test_observation.py tests/test_registry.py tests/test_alpha_gate.py tests/test_observation_parity.py -q
-........................................................................................... [100%]
-91 passed
+python -m pytest tests/test_features.py tests/test_registry.py tests/test_observation.py -q
+............................ [100%]
+28 passed
 ```
 
 ### Full Suite
 ```
 python -m pytest -q
-........................................................................ [ 21%]
-........................................................................ [ 42%]
-........................................................................ [ 63%]
-.....................................................................s.. [ 84%]
-.....................................................                    [100%]
-340 passed, 1 skipped
+........................................................................ [ 20%]
+........................................................................ [ 41%]
+........................................................................ [ 62%]
+........................................................................ [ 82%]
+...s.......................................................              [100%]
+344 passed, 1 skipped
+```
+
+### Static Analysis & Linting
+```
+python -m compileall -q src tests                            -> clean
+python -m mypy src                                          -> Success: 46 source files
+python -m ruff check src/... tests/...                       -> All checks passed!
+python -m ruff format --check src/... tests/...              -> 4 files already formatted
+git diff --check                                             -> clean
 ```

@@ -80,7 +80,7 @@ class TradingEnv(gym.Env):
         # Every feature is clipped/bounded upstream (pipeline CLIP=10, portfolio obs
         # clipped to at most [-3, 10]); 16 is a safe hard bound.
         self.observation_space = spaces.Box(
-            low=-16.0, high=16.0, shape=(OBSERVATION_DIM,), dtype=np.dtype(OBSERVATION_DTYPE)
+            low=-16.0, high=16.0, shape=(OBSERVATION_DIM,), dtype=np.float32
         )
 
         self._engine: PortfolioEngine | None = None

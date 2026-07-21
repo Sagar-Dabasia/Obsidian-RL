@@ -9,8 +9,6 @@ versioned with the schema. Warm-up rows are explicit NaN; consumers must drop or
 them — silently filling is forbidden.
 """
 
-import math
-
 import numpy as np
 import pandas as pd
 
@@ -32,18 +30,18 @@ from obsidian_rl.features.schema import (
 FEATURE_SCHEMA_VERSION = SCHEMA_VERSION
 
 __all__ = [
+    "ALL_FEATURES",
+    "CLIP",
     "FEATURE_SCHEMA_VERSION",
     "MARKET_FEATURES",
-    "PORTFOLIO_FEATURES",
-    "ALL_FEATURES",
-    "WARMUP_ROWS",
-    "CLIP",
     "OBSERVATION_DIM",
+    "PORTFOLIO_FEATURES",
+    "WARMUP_ROWS",
+    "compute_market_features",
+    "feature_matrix",
     "schema_fingerprint",
     "schema_sha256",
     "validate_candle_frame",
-    "compute_market_features",
-    "feature_matrix",
 ]
 
 
@@ -62,6 +60,7 @@ def validate_candle_frame(
     Does NOT mutate the caller's frame.
 
     Checks (in order):
+      - expected_interval_ms if provided: int > 0, not bool
       - DataFrame input
       - Required columns present exactly once
       - Non-empty
@@ -73,10 +72,19 @@ def validate_candle_frame(
       - low <= min(open, close)
       - optional interval continuity (open_time diffs == expected_interval_ms)
     """
+    if expected_interval_ms is not None:
+        if isinstance(expected_interval_ms, bool) or not isinstance(expected_interval_ms, int):
+            raise CandleValidationError(
+                f"expected_interval_ms must be an integer, "
+                f"got {type(expected_interval_ms).__name__}"
+            )
+        if expected_interval_ms <= 0:
+            raise CandleValidationError(
+                f"expected_interval_ms must be > 0, got {expected_interval_ms}"
+            )
+
     if not isinstance(candles, pd.DataFrame):
-        raise CandleValidationError(
-            f"candles must be a DataFrame, got {type(candles).__name__}"
-        )
+        raise CandleValidationError(f"candles must be a DataFrame, got {type(candles).__name__}")
     # Required columns — exactly once each
     for col in REQUIRED_CANDLE_COLUMNS:
         if col not in candles.columns:
@@ -96,9 +104,7 @@ def validate_candle_frame(
 
     # open_time: integer type, not bool
     if ot.dtype.kind not in ("i", "u"):
-        raise CandleValidationError(
-            f"open_time must be integer dtype, got {ot.dtype}"
-        )
+        raise CandleValidationError(f"open_time must be integer dtype, got {ot.dtype}")
     if ot.isna().any():
         raise CandleValidationError("open_time contains NaN")
     ot_vals = ot.to_numpy(dtype=np.int64)
@@ -107,9 +113,7 @@ def validate_candle_frame(
 
     # close_time: integer type
     if ct.dtype.kind not in ("i", "u"):
-        raise CandleValidationError(
-            f"close_time must be integer dtype, got {ct.dtype}"
-        )
+        raise CandleValidationError(f"close_time must be integer dtype, got {ct.dtype}")
     if ct.isna().any():
         raise CandleValidationError("close_time contains NaN")
     ct_vals = ct.to_numpy(dtype=np.int64)
@@ -120,7 +124,8 @@ def validate_candle_frame(
     for name, series in [("open", o), ("high", h), ("low", lo), ("close", c), ("volume", v)]:
         if series.dtype.kind == "b" or series.dtype.kind not in ("f", "i", "u"):
             raise CandleValidationError(
-                f"{name} column must be numeric float/int (not bool or non-numeric), got {series.dtype}"
+                f"{name} column must be numeric float/int "
+                f"(not bool or non-numeric), got {series.dtype}"
             )
     for name, series in [("open", o), ("high", h), ("low", lo), ("close", c)]:
         arr = series.to_numpy(dtype=np.float64)
@@ -161,12 +166,18 @@ def validate_candle_frame(
             )
 
 
-def compute_market_features(candles: pd.DataFrame) -> pd.DataFrame:
+def compute_market_features(
+    candles: pd.DataFrame,
+    *,
+    expected_interval_ms: int | None = None,
+) -> pd.DataFrame:
     """Compute the versioned market feature frame, index-aligned with `candles`.
 
     The first WARMUP_ROWS rows contain NaN by design.
     Output index exactly matches input; columns exactly equal MARKET_FEATURES in order.
     """
+    validate_candle_frame(candles, expected_interval_ms=expected_interval_ms)
+
     c = candles["close"].astype("float64")
     h = candles["high"].astype("float64")
     lo = candles["low"].astype("float64")
@@ -201,22 +212,29 @@ def compute_market_features(candles: pd.DataFrame) -> pd.DataFrame:
         ((c - lo_96) / span.where(span > 0)).fillna(0.5).where(span.notna(), np.nan)
     )
 
-    out = out[MARKET_FEATURES]
+    out = out[list(MARKET_FEATURES)]
     # Deterministic outlier clip on unbounded features (documented; causal).
-    out[CLIPPED_FEATURES] = out[CLIPPED_FEATURES].clip(-CLIP, CLIP)
+    out[list(CLIPPED_FEATURES)] = out[list(CLIPPED_FEATURES)].clip(-CLIP, CLIP)
     return out
 
 
-def feature_matrix(candles: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+def feature_matrix(
+    candles: pd.DataFrame,
+    *,
+    expected_interval_ms: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """Return (open_time_ms, features) for all rows past warm-up, as float32.
 
-    Raises if any non-warm-up row still contains NaN (stale/missing data must fail
-    explicitly, never be filled).
+    Raises if any non-warm-up row still contains NaN or non-finite values (stale/missing
+    data must fail explicitly, never be filled).
     """
-    feats = compute_market_features(candles)
+    feats = compute_market_features(candles, expected_interval_ms=expected_interval_ms)
     trimmed = feats.iloc[WARMUP_ROWS:]
-    if trimmed.isna().any().any():
-        bad = trimmed.index[trimmed.isna().any(axis=1)][:5].tolist()
-        raise ValueError(f"NaN features beyond warm-up at rows {bad}; refusing to fill")
-    open_times = candles["open_time"].iloc[WARMUP_ROWS:].to_numpy(dtype=np.int64)
-    return open_times, trimmed.to_numpy(dtype=np.float32)
+    mat = np.ascontiguousarray(trimmed.to_numpy(dtype=np.float32), dtype=np.float32)
+    if not np.isfinite(mat).all():
+        raise ValueError("NaN or non-finite features beyond warm-up; refusing to fill")
+    open_times = np.ascontiguousarray(
+        candles["open_time"].iloc[WARMUP_ROWS:].to_numpy(dtype=np.int64),
+        dtype=np.int64,
+    )
+    return open_times, mat
