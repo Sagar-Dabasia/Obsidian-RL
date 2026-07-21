@@ -34,6 +34,7 @@ from obsidian_rl.features.pipeline import (
     WARMUP_ROWS,
     compute_market_features,
 )
+from obsidian_rl.features.schema import schema_fingerprint, validate_fingerprint
 
 GATE_MODEL_FILE = "gate.txt"
 GATE_META_FILE = "gate_meta.json"
@@ -48,6 +49,7 @@ _REQUIRED_META_KEYS = frozenset(
         "round_trip_cost",
         "feature_schema_version",
         "features",
+        "feature_schema",
         "artifact_sha256",
     }
 )
@@ -198,6 +200,7 @@ def save_gate(gate: "AlphaGate", out_dir: Path) -> None:
         "round_trip_cost": gate.round_trip_cost,
         "feature_schema_version": gate.schema_version,
         "features": list(MARKET_FEATURES),
+        "feature_schema": schema_fingerprint(),
         "artifact_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
     }
     # Fail fast if any non-finite values were somehow constructed
@@ -267,6 +270,11 @@ def _load_and_validate_meta(meta_path: Path, model_path: Path) -> dict[str, Any]
         raise GateCompatibilityError(
             "gate feature list mismatch (reordered or changed) — retrain required"
         )
+
+    try:
+        validate_fingerprint(meta.get("feature_schema"))
+    except (RuntimeError, ValueError) as exc:
+        raise GateCompatibilityError(f"gate feature schema mismatch: {exc}") from exc
 
     horizon = meta.get("horizon")
     if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1:

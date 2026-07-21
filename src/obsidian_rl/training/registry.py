@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from obsidian_rl.features.observation import schema_fingerprint
+from obsidian_rl.features.schema import schema_fingerprint, validate_fingerprint
 
 METADATA_FILE = "metadata.json"
 MODEL_FILE = "model.zip"
@@ -281,12 +281,11 @@ def load_record(model_dir: Path) -> ModelRecord:
             f"checksum mismatch for {artifact}: metadata says {stored_sha}, file is {actual}"
         )
 
-    current = schema_fingerprint()
     stored = metadata.get("feature_schema")
-    if not isinstance(stored, dict) or stored != current:
-        raise ModelCompatibilityError(
-            "feature schema mismatch: metadata feature_schema does not exactly match current schema fingerprint"
-        )
+    try:
+        validate_fingerprint(stored)
+    except (RuntimeError, ValueError) as exc:
+        raise ModelCompatibilityError(f"feature schema mismatch: {exc}") from exc
     return ModelRecord(model_id, Path(model_dir), metadata)
 
 

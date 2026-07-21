@@ -86,3 +86,68 @@ def test_feature_order_is_stable() -> None:
     df = make_candles(150)
     feats = compute_market_features(df)
     assert list(feats.columns) == MARKET_FEATURES
+
+
+# ── Phase 6 Schema contract & candle validation tests ─────────────────────────
+
+
+def test_schema_descriptor_canonical_json_and_sha256() -> None:
+    from obsidian_rl.features.schema import SCHEMA_VERSION, schema_descriptor, schema_sha256
+
+    desc = schema_descriptor()
+    assert desc["schema_version"] == SCHEMA_VERSION
+    sha = schema_sha256(desc)
+    assert isinstance(sha, str) and len(sha) == 64 and sha.islower()
+    assert all(c in "0123456789abcdef" for c in sha)
+
+    # Modifying any descriptor value alters the SHA-256
+    mutated = dict(desc)
+    mutated["warmup_rows"] = 999
+    assert schema_sha256(mutated) != sha
+
+
+def test_validate_candle_frame_enforces_schema() -> None:
+    from obsidian_rl.features.pipeline import validate_candle_frame
+
+    df = make_candles(150)
+    validate_candle_frame(df)  # valid frame passes
+
+    # Missing column
+    with pytest.raises(ValueError, match="missing required column"):
+        validate_candle_frame(df.drop(columns=["volume"]))
+
+    # Non-numeric / bool column
+    df_bool = df.copy()
+    df_bool["volume"] = True
+    with pytest.raises(ValueError, match="bool or non-numeric"):
+        validate_candle_frame(df_bool)
+
+    # Non-finite value
+    df_nan = df.copy()
+    df_nan.loc[10, "close"] = float("nan")
+    with pytest.raises(ValueError, match="non-finite value"):
+        validate_candle_frame(df_nan)
+
+    # Negative volume
+    df_neg = df.copy()
+    df_neg.loc[10, "volume"] = -1.0
+    with pytest.raises(ValueError, match="volume must be >= 0"):
+        validate_candle_frame(df_neg)
+
+    # High < max(open, close)
+    df_hi = df.copy()
+    df_hi.loc[10, "high"] = min(df_hi.loc[10, "open"], df_hi.loc[10, "close"]) - 1.0
+    with pytest.raises(ValueError, match="high must be >= (open|close)"):
+        validate_candle_frame(df_hi)
+
+    # Low > min(open, close)
+    df_lo = df.copy()
+    df_lo.loc[10, "low"] = max(df_lo.loc[10, "open"], df_lo.loc[10, "close"]) + 1.0
+    with pytest.raises(ValueError, match="low must be <= (open|close)"):
+        validate_candle_frame(df_lo)
+
+    # Not strictly increasing / unique time
+    df_time = df.copy()
+    df_time.loc[10, "open_time"] = df_time.loc[9, "open_time"]
+    with pytest.raises(ValueError, match="open_time must be strictly increasing and unique"):
+        validate_candle_frame(df_time)

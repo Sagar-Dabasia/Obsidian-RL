@@ -9,6 +9,7 @@ import pytest
 from obsidian_rl.features.labels import SIGNED_DIRECTIONAL_NET_EDGE_VERSION
 from obsidian_rl.features.observation import PortfolioObs
 from obsidian_rl.features.pipeline import FEATURE_SCHEMA_VERSION, MARKET_FEATURES, WARMUP_ROWS
+from obsidian_rl.features.schema import schema_fingerprint, schema_sha256
 from obsidian_rl.gate.alpha_gate import (
     GATE_SCHEMA_VERSION,
     AlphaGate,
@@ -325,6 +326,7 @@ def _base_meta() -> dict:
         "round_trip_cost": 0.0013,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": list(MARKET_FEATURES),
+        "feature_schema": schema_fingerprint(),
     }
 
 
@@ -439,3 +441,79 @@ def test_save_gate_rejects_wrong_schema_version(tmp_path: Path) -> None:
     gate.schema_version = "old-version"  # type: ignore[assignment]
     with pytest.raises(GateCompatibilityError, match="schema_version"):
         save_gate(gate, tmp_path)
+
+
+# ── Phase 6 feature_schema strict validation tests ────────────────────────────
+
+
+def test_gate_legacy_feature_schema_version_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["feature_schema"]["schema_version"] = "fs-v1"
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="legacy schema version"):
+        load_gate(tmp_path)
+
+
+def test_gate_missing_feature_schema_field_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    del meta["feature_schema"]["warmup_rows"]
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="missing or extra schema fields"):
+        load_gate(tmp_path)
+
+
+def test_gate_extra_feature_schema_field_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["feature_schema"]["unexpected_field"] = 123
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="missing or extra schema fields"):
+        load_gate(tmp_path)
+
+
+def test_gate_changed_feature_schema_constants_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["feature_schema"]["warmup_rows"] = 999
+    desc = {k: v for k, v in meta["feature_schema"].items() if k != "schema_sha256"}
+    meta["feature_schema"]["schema_sha256"] = schema_sha256(desc)
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="changed constants or schema mismatch"):
+        load_gate(tmp_path)
+
+
+def test_gate_reordered_feature_schema_features_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["feature_schema"]["market_features"] = list(reversed(MARKET_FEATURES))
+    desc = {k: v for k, v in meta["feature_schema"].items() if k != "schema_sha256"}
+    meta["feature_schema"]["schema_sha256"] = schema_sha256(desc)
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="reordered features"):
+        load_gate(tmp_path)
+
+
+def test_gate_changed_feature_schema_bounds_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    bounds = dict(meta["feature_schema"]["portfolio_bounds"])
+    bounds["exposure"] = dict(bounds["exposure"])
+    bounds["exposure"]["clip_high"] = 99.0
+    meta["feature_schema"]["portfolio_bounds"] = bounds
+    desc = {k: v for k, v in meta["feature_schema"].items() if k != "schema_sha256"}
+    meta["feature_schema"]["schema_sha256"] = schema_sha256(desc)
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="changed bounds or normalization"):
+        load_gate(tmp_path)
+
+
+def test_gate_malformed_feature_schema_hash_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["feature_schema"]["schema_sha256"] = "invalid_hash"
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="malformed schema hash"):
+        load_gate(tmp_path)
+
+
+def test_gate_feature_schema_descriptor_hash_disagreement_rejected(tmp_path: Path) -> None:
+    meta = _base_meta()
+    meta["feature_schema"]["warmup_rows"] = 999  # descriptor altered, but hash not updated
+    _write_meta(tmp_path, meta)
+    with pytest.raises(GateCompatibilityError, match="descriptor/hash disagreement"):
+        load_gate(tmp_path)

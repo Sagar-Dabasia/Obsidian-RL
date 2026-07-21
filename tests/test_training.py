@@ -82,7 +82,7 @@ def test_gpu_detection_report() -> None:
 def test_smoke_training_produces_valid_registry_entry(trained_model_dir: Path) -> None:
     record = load_record(trained_model_dir)
     assert record.metadata["algorithm"] == "ppo-mlp-discrete5"
-    assert record.metadata["feature_schema"]["version"] == "fs-v1"
+    assert record.metadata["feature_schema"]["version"] == "fs-v2"
     assert record.metadata["data"]["eval_start_ms"] > record.metadata["data"]["train_end_ms"]
     assert record.metadata["promotion"] == "candidate"
     assert (trained_model_dir / MODEL_FILE).exists()

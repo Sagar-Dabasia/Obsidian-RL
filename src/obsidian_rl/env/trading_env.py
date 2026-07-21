@@ -24,8 +24,9 @@ import pandas as pd
 from gymnasium import spaces
 
 from obsidian_rl.evaluation.backtest import DEFAULT_TARGETS, PortfolioFeatureTracker
-from obsidian_rl.features.observation import OBSERVATION_DIM, build_observation
+from obsidian_rl.features.observation import build_observation
 from obsidian_rl.features.pipeline import WARMUP_ROWS, compute_market_features
+from obsidian_rl.features.schema import OBSERVATION_DIM, OBSERVATION_DTYPE
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 
@@ -79,7 +80,7 @@ class TradingEnv(gym.Env):
         # Every feature is clipped/bounded upstream (pipeline CLIP=10, portfolio obs
         # clipped to at most [-3, 10]); 16 is a safe hard bound.
         self.observation_space = spaces.Box(
-            low=-16.0, high=16.0, shape=(OBSERVATION_DIM,), dtype=np.float32
+            low=-16.0, high=16.0, shape=(OBSERVATION_DIM,), dtype=np.dtype(OBSERVATION_DTYPE)
         )
 
         self._engine: PortfolioEngine | None = None

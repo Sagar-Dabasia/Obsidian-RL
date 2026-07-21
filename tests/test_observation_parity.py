@@ -51,6 +51,6 @@ def test_wrong_market_shape_refused() -> None:
 
 def test_schema_fingerprint_stable() -> None:
     fp = schema_fingerprint()
-    assert fp["version"] == "fs-v1"
+    assert fp["version"] == fp["schema_version"] == "fs-v2"
     assert fp["observation_dim"] == OBSERVATION_DIM == 17
     assert fp["market_features"][0] == "logret_1"
