@@ -140,8 +140,58 @@ def test_handle_event_gap_recovery_and_expiration(tmp_path: Path) -> None:
 
     # Verify backfill triggered and events recorded
     mock_rest.fetch_klines.assert_called_once()
-    assert runner.trader.last_finalized_ms == 1_800_000
     events = runner.ledger.get_events(runner.run_id)
     event_types = {row["event_type"] for row in events}
     assert "market_data_gap" in event_types
     assert "backfill_observation_completed" in event_types
+
+
+def test_backfill_stops_when_gap_event_persistence_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(data_dir=tmp_path / "data", ledger_path=tmp_path / "ledger.sqlite3")
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    strategy = ThresholdMomentum()
+    runner = LivePaperRunner(settings, strategy)
+
+    runner.trader.last_finalized_ms = 900_000
+    missing_df = pd.DataFrame(
+        [
+            {
+                "open_time": 1_800_000,
+                "open": 100.0,
+                "high": 105.0,
+                "low": 95.0,
+                "close": 101.0,
+                "volume": 10.0,
+                "close_time": 2_699_999,
+                "quote_volume": 1000.0,
+                "trades": 5,
+                "taker_buy_volume": 5.0,
+                "taker_buy_quote_volume": 500.0,
+            }
+        ]
+    )
+    mock_rest = MagicMock()
+    mock_rest.fetch_klines.return_value = missing_df
+    runner.rest = mock_rest
+
+    # Make record_event raise when event_type is market_data_gap
+    orig_record_event = runner.ledger.record_event
+
+    def _mock_record_event(*args: object, **kwargs: object) -> bool:
+        if kwargs.get("event_type") == "market_data_gap" or (
+            len(args) >= 2 and args[1] == "market_data_gap"
+        ):
+            raise RuntimeError("gap event persistence failure")
+        return orig_record_event(*args, **kwargs)  # type: ignore[no-any-return]
+
+    monkeypatch.setattr(runner.ledger, "record_event", _mock_record_event)
+
+    with pytest.raises(RuntimeError, match="gap event persistence failure"):
+        runner.backfill(now_ms=2_700_000, max_open_ms=2_700_000)
+
+    # Verify backfill stopped before ingesting observations
+    assert runner.trader.last_finalized_ms == 900_000
+    assert len(runner.trader.buffer) == 0
+    runner.ledger.close()

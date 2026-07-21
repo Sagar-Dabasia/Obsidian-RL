@@ -11,7 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from obsidian_rl.portfolio.engine import ExecutionResult, PortfolioState
 
@@ -116,6 +116,10 @@ class DuplicateDecisionError(RuntimeError):
 
 class DuplicateClosureError(RuntimeError):
     """A terminal closure record already exists for this run."""
+
+
+class EventConflictError(RuntimeError):
+    """Audit event with this idempotency key already exists with conflicting contents."""
 
 
 @dataclass(frozen=True)
@@ -512,6 +516,12 @@ class Ledger:
         return row
 
     # ------------------------------------------------------------------ events
+    ALLOWED_EVENT_TYPES: ClassVar[set[str]] = {
+        "market_data_gap",
+        "pending_execution_expired",
+        "backfill_observation_completed",
+    }
+
     def record_event(
         self,
         run_id: str,
@@ -523,19 +533,30 @@ class Ledger:
     ) -> bool:
         """Persist a durable audit event (e.g. gap, expiration, backfill).
 
-        Returns True if inserted, False if duplicate idempotency_key was suppressed.
-        Raises ValueError if timestamp or JSON validation fails.
+        Returns True if inserted, False if identical existing event verified.
+        Raises ValueError if validation fails, EventConflictError if idempotency key
+        conflict detected, or re-raises unrelated integrity errors.
         """
-        if not isinstance(event_ts_ms, int) or event_ts_ms < 0:
-            raise ValueError(f"invalid event_ts_ms: {event_ts_ms}")
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError(f"invalid run_id: {run_id!r}")
+        if not isinstance(event_type, str) or event_type not in self.ALLOWED_EVENT_TYPES:
+            raise ValueError(f"invalid event_type: {event_type!r}")
+        if not isinstance(idempotency_key, str) or not idempotency_key:
+            raise ValueError(f"invalid idempotency_key: {idempotency_key!r}")
+        if not isinstance(event_ts_ms, int) or isinstance(event_ts_ms, bool) or event_ts_ms < 0:
+            raise ValueError(f"invalid event_ts_ms: {event_ts_ms!r}")
+        created_at = created_at_ms if created_at_ms is not None else int(time.time() * 1000)
+        if not isinstance(created_at, int) or isinstance(created_at, bool) or created_at < 0:
+            raise ValueError(f"invalid created_at_ms: {created_at!r}")
+        if not isinstance(details, dict):
+            raise ValueError(f"details must be a dictionary, got {type(details)}")
+
         try:
-            details_json = json.dumps(details)
+            details_json = json.dumps(
+                details, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid details JSON: {exc}") from exc
-
-        created_at = created_at_ms if created_at_ms is not None else int(time.time() * 1000)
-        if not isinstance(created_at, int) or created_at < 0:
-            raise ValueError(f"invalid created_at_ms: {created_at}")
 
         try:
             self._conn.execute(
@@ -545,10 +566,38 @@ class Ledger:
             )
             self._conn.commit()
             return True
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as exc:
             with contextlib.suppress(Exception):
                 self._conn.rollback()
-            return False
+
+            cur = self._conn.execute(
+                "SELECT run_id, event_type, event_ts_ms, details_json"
+                " FROM run_events WHERE idempotency_key=?",
+                (idempotency_key,),
+            )
+            existing = cur.fetchone()
+            if existing is None:
+                raise exc
+
+            ex_run_id = existing["run_id"] if isinstance(existing, sqlite3.Row) else existing[0]
+            ex_event = existing["event_type"] if isinstance(existing, sqlite3.Row) else existing[1]
+            ex_ts = existing["event_ts_ms"] if isinstance(existing, sqlite3.Row) else existing[2]
+            ex_details = (
+                existing["details_json"] if isinstance(existing, sqlite3.Row) else existing[3]
+            )
+
+            if (
+                ex_run_id == run_id
+                and ex_event == event_type
+                and ex_ts == event_ts_ms
+                and ex_details == details_json
+            ):
+                return False
+
+            raise EventConflictError(
+                f"event with idempotency_key {idempotency_key!r} already exists with"
+                " different contents"
+            ) from exc
         except Exception:
             with contextlib.suppress(Exception):
                 self._conn.rollback()

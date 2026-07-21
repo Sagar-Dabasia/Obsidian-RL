@@ -213,7 +213,7 @@ class PaperTrader:
         if details is not None:
             event_details.update(details)
 
-        success = self.ledger.record_event(
+        self.ledger.record_event(
             run_id=self.run_id,
             event_type="pending_execution_expired",
             event_ts_ms=now,
@@ -221,10 +221,6 @@ class PaperTrader:
             details=event_details,
             created_at_ms=now,
         )
-        if not success and not self.ledger.has_event(idempotency_key):
-            raise RuntimeError(
-                f"failed to persist pending_execution_expired event for run {self.run_id}"
-            )
         self.pending = None
         return True
 

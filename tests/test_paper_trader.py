@@ -10,7 +10,7 @@ import pytest
 from obsidian_rl.evaluation.backtest import run_backtest
 from obsidian_rl.features.observation import PortfolioObs
 from obsidian_rl.features.pipeline import WARMUP_ROWS
-from obsidian_rl.ledger.ledger import Ledger
+from obsidian_rl.ledger.ledger import EventConflictError, Ledger
 from obsidian_rl.live.paper_trader import (
     BUFFER_SIZE,
     CandleSequenceError,
@@ -372,3 +372,73 @@ def test_restore_stale_pending_expiration(tmp_path: Path) -> None:
     trader2.restore(state, candles, now_ms=stale_now)
     assert trader2.pending is None
     assert ledger.has_event(f"{run_id}:pending_expired:{last_ms}") is True
+
+
+def test_expire_pending_failure_or_conflict_leaves_pending_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 5)
+    replay_candles(trader, candles)
+    if trader.pending is None:
+        trader.pending = trader._decide(dict(candles.iloc[-1]))
+    assert trader.pending is not None
+    pending_backup = copy.deepcopy(trader.pending)
+
+    # 1. DB persistence failure leaves pending unchanged and re-raises
+    def _raise(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("db persistence error")
+
+    monkeypatch.setattr(ledger, "record_event", _raise)
+    with pytest.raises(RuntimeError, match="db persistence error"):
+        trader.expire_pending("test_reason")
+    assert trader.pending == pending_backup
+
+    monkeypatch.undo()
+
+    # 2. Conflicting existing event raises EventConflictError and leaves pending unchanged
+    idempotency_key = f"{run_id}:pending_expired:{trader.pending.candle_open_ms}"
+    ledger.record_event(
+        run_id=run_id,
+        event_type="pending_execution_expired",
+        event_ts_ms=1700000000000,
+        idempotency_key=idempotency_key,
+        details={"conflicting": "details"},
+    )
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        trader.expire_pending("test_reason", now_ms=1700000000000)
+    assert trader.pending == pending_backup
+    ledger.close()
+
+
+def test_expire_pending_identical_retry_clears_pending(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 5)
+    replay_candles(trader, candles)
+    if trader.pending is None:
+        trader.pending = trader._decide(dict(candles.iloc[-1]))
+    assert trader.pending is not None
+
+    expected_open = trader.pending.candle_open_ms + trader.interval_ms
+    idempotency_key = f"{run_id}:pending_expired:{trader.pending.candle_open_ms}"
+    details = {
+        "pending_source_open_ms": trader.pending.candle_open_ms,
+        "expected_execution_open_ms": expected_open,
+        "expiration_reason": "retry_reason",
+        "proposed_target": trader.pending.proposed_target,
+    }
+    # Pre-insert exact identical event
+    ledger.record_event(
+        run_id=run_id,
+        event_type="pending_execution_expired",
+        event_ts_ms=1700000000000,
+        idempotency_key=idempotency_key,
+        details=details,
+        created_at_ms=1700000000000,
+    )
+
+    # Now expire_pending should see identical existing event and clear pending without raising
+    success = trader.expire_pending("retry_reason", now_ms=1700000000000)
+    assert success is True
+    assert trader.pending is None
+    ledger.close()

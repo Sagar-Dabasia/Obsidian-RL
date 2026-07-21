@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_rl.ledger.ledger import DuplicateClosureError, DuplicateDecisionError, Ledger
+from obsidian_rl.ledger.ledger import (
+    DuplicateClosureError,
+    DuplicateDecisionError,
+    EventConflictError,
+    Ledger,
+)
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 
@@ -369,4 +374,227 @@ def test_record_and_get_events_idempotency(tmp_path: Path) -> None:
     events = ledger.get_events(run.run_id)
     assert len(events) == 1
     assert events[0]["event_type"] == "market_data_gap"
+    ledger.close()
+
+
+def test_record_event_rejects_bool_timestamps(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="invalid event_ts_ms"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=True,  # type: ignore[arg-type]
+            idempotency_key="k1",
+            details={},
+        )
+    with pytest.raises(ValueError, match="invalid created_at_ms"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k2",
+            details={},
+            created_at_ms=False,  # type: ignore[arg-type]
+        )
+    ledger.close()
+
+
+def test_record_event_rejects_negative_timestamps(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="invalid event_ts_ms"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=-1,
+            idempotency_key="k1",
+            details={},
+        )
+    with pytest.raises(ValueError, match="invalid created_at_ms"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k2",
+            details={},
+            created_at_ms=-5,
+        )
+    ledger.close()
+
+
+def test_record_event_rejects_nan_and_inf(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="invalid details JSON"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_nan",
+            details={"val": float("nan")},
+        )
+    with pytest.raises(ValueError, match="invalid details JSON"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_inf",
+            details={"val": float("inf")},
+        )
+    with pytest.raises(ValueError, match="invalid details JSON"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_neginf",
+            details={"val": float("-inf")},
+        )
+    ledger.close()
+
+
+def test_record_event_rejects_non_dict_details(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="details must be a dictionary"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k1",
+            details="not_a_dict",  # type: ignore[arg-type]
+        )
+    ledger.close()
+
+
+def test_record_event_rejects_unknown_event_types(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="invalid event_type"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="unknown_event",
+            event_ts_ms=1000,
+            idempotency_key="k1",
+            details={},
+        )
+    ledger.close()
+
+
+def test_record_event_foreign_key_error_not_duplicate(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    ledger._conn.execute("PRAGMA foreign_keys = ON;")
+    with pytest.raises(sqlite3.IntegrityError):
+        ledger.record_event(
+            run_id="nonexistent_run",
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_fk",
+            details={},
+        )
+    ledger.close()
+
+
+def test_record_event_trigger_integrity_error(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    ledger._conn.execute(
+        "CREATE TRIGGER fail_event BEFORE INSERT ON run_events BEGIN "
+        "SELECT RAISE(FAIL, 'trigger check failure'); END;"
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="trigger check failure"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_trig",
+            details={},
+        )
+    ledger.close()
+
+
+def test_record_event_identical_retry(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    s1 = ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1000,
+        idempotency_key="k_idem",
+        details={"a": 1, "b": 2},
+    )
+    assert s1 is True
+    s2 = ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1000,
+        idempotency_key="k_idem",
+        details={"b": 2, "a": 1},
+    )
+    assert s2 is False
+    assert len(ledger.get_events(run.run_id)) == 1
+    ledger.close()
+
+
+def test_record_event_conflict_different_run_id(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    r1 = ledger.start_run("s1", "live", 10_000.0, {})
+    r2 = ledger.start_run("s2", "live", 10_000.0, {})
+    ledger.record_event(
+        run_id=r1.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1000,
+        idempotency_key="k_shared",
+        details={"x": 1},
+    )
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        ledger.record_event(
+            run_id=r2.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_shared",
+            details={"x": 1},
+        )
+    ledger.close()
+
+
+def test_record_event_conflict_different_contents(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1000,
+        idempotency_key="k_conflict",
+        details={"a": 1},
+    )
+    # Different event_type
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="backfill_observation_completed",
+            event_ts_ms=1000,
+            idempotency_key="k_conflict",
+            details={"a": 1},
+        )
+    # Different event_ts_ms
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=2000,
+            idempotency_key="k_conflict",
+            details={"a": 1},
+        )
+    # Different details
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_conflict",
+            details={"a": 2},
+        )
     ledger.close()
