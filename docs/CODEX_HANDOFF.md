@@ -3,38 +3,51 @@
 Updated: 2026-07-21
 
 ## Current branch and commit
-- Branch: `wip/phase4-holdout-enforcement`
-- Starting commit: `30136da586f2723dcf930ed1a165f3a755cee1c9`
+- Branch: `wip/phase5-alpha-gate-direction`
+- Starting commit: `f0418c5dc45bb7eff84bf42cfd1d02f411767d63`
 
 ## Status
-Phase 4 — Single-Use & Immutable Final Holdout Enforcement (`resolve_repo_root` path derivation, `HOLDOUT_SCHEMA_VERSION = 2`, strict 22-field state/report schema verification, deep state-vs-report cross validation, and `dataset_identity` / `report_sha256` integrity) — **COMPLETE (verified & ready to commit)**
+Phase 5 — Alpha Gate Signed Directional Net Edge — **COMPLETE (verified & committed)**
 
 See full run report: [docs/AGENT_RUN_REPORT.md](AGENT_RUN_REPORT.md)
-Timestamped archive: [docs/agent-runs/2026-07-21T135000Z-phase4-holdout-integrity.md](agent-runs/2026-07-21T135000Z-phase4-holdout-integrity.md)
+Timestamped archive: [docs/agent-runs/2026-07-21T141000Z-phase5-alpha-gate-direction.md](agent-runs/2026-07-21T141000Z-phase5-alpha-gate-direction.md)
 
-## What was implemented/fixed in Phase 4 Holdout Enforcement
-- **Strict Repository Anchoring (`holdout.py`)**:
-  - Removed mutable module-level path override mechanisms (`HOLDOUT_DIR`, `HOLDOUT_STATE_PATH`, `HOLDOUT_LOCK_PATH`). `get_holdout_dir(repo_root=None)` now always returns `resolve_repo_root(repo_root) / "artifacts" / "holdout"`, ensuring state locking (`.holdout.lock`) and `HOLDOUT_STATE.json` are strictly anchored to the repository root regardless of current working directory (`os.chdir`).
-- **Schema Version 2 & Strict Field Validation (`holdout.py`)**:
-  - Bumped `HOLDOUT_SCHEMA_VERSION = 2`. Both `load_holdout_state` and `_verify_report_file` enforce exact allowed key sets without extra/unknown keys, canonical `UTC` timestamps ending in `Z` (`parse_utc_boundary`), strict boolean checks (`type(v) is bool`), finite floating-point checks (`math.isfinite`), non-empty unique strings for baselines, and exact allowed scenarios (`['base', 'costs2x', 'delay1']`).
-- **Deep Report & State Integrity Verification (`holdout.py`)**:
-  - `_verify_report_file` verifies that `report_sha256` matches both the expected hash and the dynamically recomputed SHA-256 of the report contents (`_compute_report_hash`).
-  - `_verify_report_file` verifies `dataset_identity` dictionary fields against root metadata (`dataset_sha256`, `row_count`, `first_open_ms`, `last_open_ms`).
-  - `_verify_report_file` wraps `_json_loads_strict` to catch `PromotionEvidenceError` (`or malformed JSON or non-finite numbers`) and cleanly raise `RuntimeError("holdout report non-finite or malformed JSON: ...")`.
-  - When `status == "completed"`, `load_holdout_state` calls `_verify_report_file` and performs strict cross validation, ensuring all 13 bound metadata fields (`schema_version`, `consumption_id`, `model_id`, `model_artifact_sha256`, `feature_schema`, `source_commit`, `source_tree_clean`, `symbol`, `interval`, `reserved_start_utc`, `fixed_end_utc`, `costs`, `baselines`, `scenarios`) exactly match between state and report. Any mismatch raises `RuntimeError("report <field> does not match state")`.
+## What was implemented/fixed in Phase 5
+
+### Signed directional label (`labels.py`)
+- Added `signed_directional_net_edge(open_, horizon, round_trip_cost)`:
+  `sign(gross) * max(abs(gross) - round_trip_cost, 0)` where `gross = log(open[t+1+h] / open[t+1])`.
+- Correctly represents both long edge (`+gross - cost`) and short edge (`-(abs(gross) - cost)`).
+- Sub-cost moves return exactly 0.
+- Strict input validation: non-bool `int >= 1` horizon, finite non-bool non-negative cost, finite strictly-positive prices.
+- Legacy `forward_executable_net_return` retained for compatibility only; not used for gate training.
+
+### Gate schema v2 (`alpha_gate.py`)
+- `GATE_SCHEMA_VERSION = "gate-schema-v2"`.
+- `save_gate` persists: `gate_schema_version`, `target_name` (`signed-directional-net-edge-v1`), `feature_schema_version`, `features`, `horizon`, `round_trip_cost`, `artifact_sha256`.
+- `load_gate` validates all 8 required fields; rejects legacy schema; validates horizon, cost, feature order, and SHA-256.
+- `AlphaGate.predict_row` validates finite inputs and non-finite predictions.
+- `AlphaGate.decide(row, margin)` returns `+1`/`-1`/`0` with validated non-negative margin.
+- `build_training_frame` uses the new signed label.
+
+### Gated strategies (`gated.py`)
+- `GatedStrategy` and `GateDirectStrategy` use `gate.decide()` for validated direction; margin validated at construction time.
 
 ## Files changed
-- `src/obsidian_rl/evaluation/holdout.py`
-- `tests/test_holdout.py`
+- `src/obsidian_rl/features/labels.py`
+- `src/obsidian_rl/gate/alpha_gate.py`
+- `src/obsidian_rl/strategies/gated.py`
+- `tests/test_labels.py`
+- `tests/test_alpha_gate.py`
 - `docs/AGENT_RUN_REPORT.md`
 - `docs/CODEX_HANDOFF.md`
-- `docs/agent-runs/2026-07-21T135000Z-phase4-holdout-integrity.md`
+- `docs/agent-runs/2026-07-21T141000Z-phase5-alpha-gate-direction.md`
 
 ## Verification Commands Run
-- `python -m pytest tests/test_holdout.py -q`: **15 passed in 0.58s**.
-- `python -m ruff check src/obsidian_rl/evaluation/holdout.py tests/test_holdout.py`: **All checks passed!**.
-- `python -m ruff format --check src/obsidian_rl/evaluation/holdout.py tests/test_holdout.py`: **Clean (already formatted)**.
-- `python -m mypy src`: **Success (no issues found in 45 source files)**.
-- `python -m compileall -q src tests`: **Clean**.
-- `git diff --check`: **Clean**.
-- `python -m pytest -q`: **271 passed, 1 skipped in 5.34s**.
+- `python -m pytest tests/test_labels.py tests/test_alpha_gate.py -q`: **40 passed in 1.43s**
+- `python -m ruff check ... (5 Phase 5 files)`: **All checks passed!**
+- `python -m ruff format --check ... (5 Phase 5 files)`: **5 files already formatted**
+- `python -m mypy src`: **Success (no issues found in 45 source files)**
+- `python -m compileall -q src tests`: **Clean**
+- `git diff --check`: **Clean**
+- `python -m pytest -q`: **296 passed, 1 skipped**
