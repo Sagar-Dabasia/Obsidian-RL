@@ -11,11 +11,11 @@ import time
 
 from obsidian_rl.config import Settings
 from obsidian_rl.data.binance_client import BinanceFuturesRest
-from obsidian_rl.data.schema import interval_to_ms, klines_to_frame
+from obsidian_rl.data.schema import CANDLE_COLUMNS, interval_to_ms, klines_to_frame
 from obsidian_rl.data.store import CandleStore
 from obsidian_rl.data.validation import drop_unfinalized, require_valid
 from obsidian_rl.ledger.ledger import Ledger
-from obsidian_rl.live.paper_trader import BUFFER_SIZE, PaperTrader, replay_candles
+from obsidian_rl.live.paper_trader import BUFFER_SIZE, PaperTrader
 from obsidian_rl.live.stream import KlineEvent, kline_events
 from obsidian_rl.strategies.base import Strategy
 
@@ -69,12 +69,13 @@ class LivePaperRunner:
             run_id,
             interval=settings.interval,
             data_source=f"ws:{settings.symbol}",
+            max_live_open_lag_ms=settings.max_live_open_lag_ms,
         )
         if resume:
             state = self.ledger.restore_state(run_id)
             candles = self.store.read()
             if state is not None and len(candles):
-                self.trader.restore(state, candles)
+                self.trader.restore(state, candles, now_ms=int(time.time() * 1000))
             run_info = self.ledger.get_run(run_id)
             ended_at = run_info["ended_at_ms"] if run_info is not None else None
             closure = self.ledger.get_closure(run_id)
@@ -96,7 +97,7 @@ class LivePaperRunner:
         if closure is not None and ended_at is not None:
             raise ValueError(f"run {self.run_id} is already closed and cannot be resumed")
 
-    def backfill(self, now_ms: int | None = None) -> int:
+    def backfill(self, now_ms: int | None = None, max_open_ms: int | None = None) -> int:
         """Fetch finalized candles between the trader's last candle and now via REST."""
         self._check_not_closed()
         now = now_ms if now_ms is not None else int(time.time() * 1000)
@@ -107,31 +108,111 @@ class LivePaperRunner:
             start = last + self.interval_ms
         df = self.rest.fetch_klines(self.settings.symbol, self.settings.interval, start)
         df = drop_unfinalized(df, now)
+        if max_open_ms is not None:
+            df = df[df["open_time"] < max_open_ms]
         if df.empty:
             return 0
         require_valid(df, self.settings.interval, now_ms=now)
         self.store.write(df, source="fapi:backfill")
-        replay_candles(self.trader, df)
+
+        if self.trader.pending is not None:
+            expected = self.trader.pending.candle_open_ms + self.interval_ms
+            if any(int(row.open_time) >= expected for row in df.itertuples(index=False)):
+                self.trader.expire_pending(
+                    "backfilled_over_expected_open",
+                    now_ms=now,
+                    details={"expected_open_ms": expected},
+                )
+
+        if last is not None:
+            first_missing = int(df.iloc[0]["open_time"])
+            last_missing = int(df.iloc[-1]["open_time"])
+            idempotency_key = f"{self.run_id}:gap:{first_missing}:{last_missing}"
+            self.ledger.record_event(
+                run_id=self.run_id,
+                event_type="market_data_gap",
+                event_ts_ms=now,
+                idempotency_key=idempotency_key,
+                details={
+                    "first_missing_open_ms": first_missing,
+                    "last_missing_open_ms": last_missing,
+                    "num_missing_candles": len(df),
+                },
+                created_at_ms=now,
+            )
+
+        for row in df.itertuples(index=False):
+            candle = {c: getattr(row, c) for c in CANDLE_COLUMNS}
+            self.trader.ingest_observation(candle)
+
+        first_open = int(df.iloc[0]["open_time"])
+        last_open = int(df.iloc[-1]["open_time"])
+        idempotency_key = f"{self.run_id}:backfill_completed:{first_open}:{last_open}"
+        self.ledger.record_event(
+            run_id=self.run_id,
+            event_type="backfill_observation_completed",
+            event_ts_ms=now,
+            idempotency_key=idempotency_key,
+            details={
+                "first_open_ms": first_open,
+                "last_open_ms": last_open,
+                "candles_ingested": len(df),
+            },
+            created_at_ms=now,
+        )
         return len(df)
 
     def handle_event(self, event: KlineEvent) -> None:
-        """Route one websocket kline event through the two-phase protocol."""
+        """Route one websocket kline event through the two-phase protocol with gap safety."""
         self._check_not_closed()
+        if event.event_time_ms < event.open_time or event.close_time < event.open_time:
+            return
+
         last = self.trader.last_finalized_ms
-        # Phase 2: the first event of a new candle carries its (fixed) open price.
+        if last is not None and event.open_time > last + self.interval_ms:
+            logger.warning("gap detected before %s; backfilling", event.open_time)
+            self.backfill(now_ms=event.event_time_ms, max_open_ms=event.open_time)
+            last = self.trader.last_finalized_ms
+            if last is not None and event.open_time <= last:
+                return
+
+        if self.trader.pending is not None:
+            expected = self.trader.pending.candle_open_ms + self.interval_ms
+            if event.open_time > expected:
+                self.trader.expire_pending(
+                    "missed_execution_window",
+                    now_ms=event.event_time_ms,
+                    details={"event_open_time": event.open_time, "expected_open_time": expected},
+                )
+            elif (
+                event.open_time == expected
+                and event.event_time_ms - event.open_time > self.settings.max_live_open_lag_ms
+            ):
+                self.trader.expire_pending(
+                    "max_live_open_lag_exceeded",
+                    now_ms=event.event_time_ms,
+                    details={
+                        "event_time_ms": event.event_time_ms,
+                        "lag_ms": event.event_time_ms - event.open_time,
+                        "max_lag_ms": self.settings.max_live_open_lag_ms,
+                    },
+                )
+
         if (
             self.trader.pending is not None
             and event.open_time == self.trader.pending.candle_open_ms + self.interval_ms
         ):
-            self.trader.on_next_open(event.open_time, event.open)
+            self.trader.on_next_open(
+                event.open_time,
+                event.open,
+                now_ms=event.event_time_ms,
+                event_time_ms=event.event_time_ms,
+            )
+
         if event.is_closed:
-            if last is not None and event.open_time > last + self.interval_ms:
-                logger.warning("gap detected before %s; backfilling", event.open_time)
-                self.backfill()
-                if self.trader.last_finalized_ms is not None and (
-                    event.open_time <= self.trader.last_finalized_ms
-                ):
-                    return
+            last = self.trader.last_finalized_ms
+            if last is not None and event.open_time <= last:
+                return
             candle = event.to_candle()
             self.store.write(
                 klines_to_frame(

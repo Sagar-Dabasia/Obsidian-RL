@@ -11,7 +11,12 @@ from obsidian_rl.evaluation.backtest import run_backtest
 from obsidian_rl.features.observation import PortfolioObs
 from obsidian_rl.features.pipeline import WARMUP_ROWS
 from obsidian_rl.ledger.ledger import Ledger
-from obsidian_rl.live.paper_trader import CandleSequenceError, PaperTrader, replay_candles
+from obsidian_rl.live.paper_trader import (
+    BUFFER_SIZE,
+    CandleSequenceError,
+    PaperTrader,
+    replay_candles,
+)
 from obsidian_rl.live.stream import parse_kline_event
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.strategies.baselines import ThresholdMomentum
@@ -279,6 +284,7 @@ def test_close_session_retry_after_failure(tmp_path: Path, monkeypatch: pytest.M
     replay_candles(trader, candles)
 
     orig_finalize = ledger.finalize_run
+
     def _fail(*args: object, **kwargs: object) -> object:
         raise RuntimeError("db error")
 
@@ -322,7 +328,47 @@ def test_replay_candles_inconsistent_state_raises(tmp_path: Path) -> None:
 
     # Manually set ended_at_ms without creating a closure
     ledger._conn.execute("UPDATE runs SET ended_at_ms = 12345 WHERE run_id = ?", (run_id,))
-    ledger._conn.commit()
-
     with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
         replay_candles(trader, candles)
+
+
+def test_ingest_observation_and_expire_pending(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 5)
+    for i in range(len(candles)):
+        c = dict(candles.iloc[i])
+        trader.ingest_observation(c)
+
+    assert len(trader.buffer) == min(len(candles), BUFFER_SIZE)
+    assert trader.pending is None
+    assert trader.last_finalized_ms == int(candles["open_time"].iloc[-1])
+    assert trader.engine.state.trade_count == 0
+
+    # Now create a pending decision via on_finalized_candle
+    next_c = dict(make_candles(1, start_ms=trader.last_finalized_ms + trader.interval_ms).iloc[0])
+    trader.on_finalized_candle(next_c)
+    assert trader.pending is not None
+
+    # Expire pending
+    expired = trader.expire_pending("missed_test_window", now_ms=1700000000000)
+    assert expired is True
+    assert trader.pending is None
+    assert ledger.has_event(f"{run_id}:pending_expired:{int(next_c['open_time'])}") is True
+
+
+def test_restore_stale_pending_expiration(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 5)
+    replay_candles(trader, candles)
+    # Replay left trader.pending set or processed up to last candle
+    last_ms = int(candles["open_time"].iloc[-1])
+    if trader.pending is None:
+        trader.pending = trader._decide(dict(candles.iloc[-1]))
+
+    # Restore with now_ms well past the execution window + max_live_open_lag_ms
+    state = trader.engine.state
+    trader2 = PaperTrader(trader.strategy, ledger, run_id, max_live_open_lag_ms=5000)
+    stale_now = last_ms + trader.interval_ms + 10_000
+    trader2.restore(state, candles, now_ms=stale_now)
+    assert trader2.pending is None
+    assert ledger.has_event(f"{run_id}:pending_expired:{last_ms}") is True

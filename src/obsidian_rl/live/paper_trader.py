@@ -16,8 +16,10 @@ are never trained here.
 """
 
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -65,6 +67,7 @@ class PaperTrader:
         cost_model: CostModel | None = None,
         allowed_targets: tuple[float, ...] = DEFAULT_TARGETS,
         data_source: str = "replay",
+        max_live_open_lag_ms: int = 5000,
     ) -> None:
         self.strategy = strategy
         self.ledger = ledger
@@ -76,12 +79,18 @@ class PaperTrader:
         self.tracker = PortfolioFeatureTracker()
         self.allowed_targets = allowed_targets
         self.data_source = data_source
+        self.max_live_open_lag_ms = max_live_open_lag_ms
         self.buffer: deque[dict[str, float | int]] = deque(maxlen=BUFFER_SIZE)
         self.last_finalized_ms: int | None = None
         self.pending: PendingDecision | None = None
 
     # ------------------------------------------------------------------ recovery
-    def restore(self, state: PortfolioState, buffer_candles: pd.DataFrame) -> None:
+    def restore(
+        self,
+        state: PortfolioState,
+        buffer_candles: pd.DataFrame,
+        now_ms: int | None = None,
+    ) -> None:
         """Rebuild engine, feature buffer, tracker, and any pre-crash pending decision."""
         run_info = self.ledger.get_run(self.run_id)
         ended_at = run_info["ended_at_ms"] if run_info is not None else None
@@ -138,6 +147,12 @@ class PaperTrader:
             logger.info(
                 "recovered pre-crash pending decision for candle %s", self.last_finalized_ms
             )
+
+        if self.pending is not None and now_ms is not None:
+            expected = self.pending.candle_open_ms + self.interval_ms
+            if now_ms > expected + self.max_live_open_lag_ms:
+                self.expire_pending("stale_restart_pending", now_ms=now_ms)
+
         logger.info(
             "restored run %s: qty=%.6f cash=%.2f last_candle=%s",
             self.run_id,
@@ -147,6 +162,72 @@ class PaperTrader:
         )
 
     # ------------------------------------------------------------------ phase 1
+    def ingest_observation(self, candle: dict[str, float | int]) -> None:
+        """Ingest one finalized candle in observation-only mode without trading or proposing."""
+        run_info = self.ledger.get_run(self.run_id)
+        ended_at = run_info["ended_at_ms"] if run_info is not None else None
+        closure = self.ledger.get_closure(self.run_id)
+        if (closure is not None) != (ended_at is not None):
+            msg = (
+                f"inconsistent closure/ended state for run {self.run_id}: "
+                f"closure={closure is not None}, ended={ended_at is not None}"
+            )
+            raise RuntimeError(msg)
+        if closure is not None and ended_at is not None:
+            return
+
+        open_ms = int(candle["open_time"])
+        if self.last_finalized_ms is not None:
+            if open_ms <= self.last_finalized_ms:
+                logger.info("duplicate/stale observation candle %s ignored", open_ms)
+                return
+            if open_ms != self.last_finalized_ms + self.interval_ms:
+                raise CandleSequenceError(
+                    f"gap: expected {self.last_finalized_ms + self.interval_ms}, got {open_ms}"
+                )
+
+        self.buffer.append(dict(candle))
+        self.last_finalized_ms = open_ms
+        close_px = float(candle["close"])
+        self.engine.mark_to_market(close_px)
+        self.tracker.update_after_step(self.engine.state.qty, 0.0)
+
+    def expire_pending(
+        self,
+        reason: str,
+        now_ms: int | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        """Expire a pending decision whose execution window was missed."""
+        if self.pending is None:
+            return False
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        expected_open = self.pending.candle_open_ms + self.interval_ms
+        idempotency_key = f"{self.run_id}:pending_expired:{self.pending.candle_open_ms}"
+        event_details = {
+            "pending_source_open_ms": self.pending.candle_open_ms,
+            "expected_execution_open_ms": expected_open,
+            "expiration_reason": reason,
+            "proposed_target": self.pending.proposed_target,
+        }
+        if details is not None:
+            event_details.update(details)
+
+        success = self.ledger.record_event(
+            run_id=self.run_id,
+            event_type="pending_execution_expired",
+            event_ts_ms=now,
+            idempotency_key=idempotency_key,
+            details=event_details,
+            created_at_ms=now,
+        )
+        if not success and not self.ledger.has_event(idempotency_key):
+            raise RuntimeError(
+                f"failed to persist pending_execution_expired event for run {self.run_id}"
+            )
+        self.pending = None
+        return True
+
     def on_finalized_candle(self, candle: dict[str, float | int]) -> PendingDecision | None:
         """Ingest one FINALIZED candle; propose a target. Returns None while warming up
         or when the candle is a duplicate."""
@@ -213,7 +294,13 @@ class PaperTrader:
         )
 
     # ------------------------------------------------------------------ phase 2
-    def on_next_open(self, next_open_ms: int, next_open_price: float) -> None:
+    def on_next_open(
+        self,
+        next_open_ms: int,
+        next_open_price: float,
+        now_ms: int | None = None,
+        event_time_ms: int | None = None,
+    ) -> None:
         """Execute the pending decision at the open of the following candle."""
         if self.pending is None:
             return
@@ -231,10 +318,29 @@ class PaperTrader:
             return
 
         expected = self.pending.candle_open_ms + self.interval_ms
+        if next_open_ms > expected:
+            self.expire_pending(
+                "missed_execution_window",
+                now_ms=event_time_ms or now_ms,
+                details={"next_open_ms": next_open_ms, "expected_open_ms": expected},
+            )
+            return
         if next_open_ms != expected:
             raise CandleSequenceError(
                 f"execution candle mismatch: expected open_time {expected}, got {next_open_ms}"
             )
+        if event_time_ms is not None and event_time_ms - next_open_ms > self.max_live_open_lag_ms:
+            self.expire_pending(
+                "max_live_open_lag_exceeded",
+                now_ms=event_time_ms or now_ms,
+                details={
+                    "event_time_ms": event_time_ms,
+                    "lag_ms": event_time_ms - next_open_ms,
+                    "max_lag_ms": self.max_live_open_lag_ms,
+                },
+            )
+            return
+
         pending, self.pending = self.pending, None
         result = self.engine.rebalance(pending.proposed_target, next_open_price)
         self.tracker.update_after_step(self.engine.state.qty, result.traded_notional)

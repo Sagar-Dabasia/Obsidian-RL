@@ -7,6 +7,7 @@ k.x "Is this kline closed?", k.q quote volume, k.V/k.Q taker buy volumes.
 
 import json
 import logging
+import math
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class KlineEvent:
+    event_time_ms: int
     open_time: int
     close_time: int
     is_closed: bool
@@ -45,25 +47,75 @@ class KlineEvent:
 
 
 def parse_kline_event(raw: str | bytes) -> KlineEvent | None:
-    """Parse one websocket message; None for non-kline payloads."""
-    msg = json.loads(raw)
-    k = msg.get("k") if isinstance(msg, dict) else None
-    if not isinstance(k, dict):
+    """Parse one websocket message; None for non-kline payloads or invalid events."""
+    try:
+        msg = json.loads(raw)
+        if not isinstance(msg, dict):
+            return None
+        k = msg.get("k")
+        if not isinstance(k, dict):
+            return None
+        e_val = msg.get("E")
+        if e_val is None or isinstance(e_val, bool):
+            return None
+        event_time_ms = int(e_val)
+        open_time = int(k["t"])
+        close_time = int(k["T"])
+        if event_time_ms < open_time or close_time < open_time:
+            return None
+
+        open_px = float(k["o"])
+        high_px = float(k["h"])
+        low_px = float(k["l"])
+        close_px = float(k["c"])
+        volume = float(k["v"])
+        quote_volume = float(k["q"])
+        trades = int(k["n"])
+        taker_buy_volume = float(k["V"])
+        taker_buy_quote_volume = float(k["Q"])
+
+        if not all(
+            math.isfinite(x)
+            for x in (
+                open_px,
+                high_px,
+                low_px,
+                close_px,
+                volume,
+                quote_volume,
+                taker_buy_volume,
+                taker_buy_quote_volume,
+            )
+        ):
+            return None
+        if open_px <= 0 or high_px <= 0 or low_px <= 0 or close_px <= 0:
+            return None
+        if (
+            volume < 0
+            or quote_volume < 0
+            or trades < 0
+            or taker_buy_volume < 0
+            or taker_buy_quote_volume < 0
+        ):
+            return None
+
+        return KlineEvent(
+            event_time_ms=event_time_ms,
+            open_time=open_time,
+            close_time=close_time,
+            is_closed=bool(k["x"]),
+            open=open_px,
+            high=high_px,
+            low=low_px,
+            close=close_px,
+            volume=volume,
+            quote_volume=quote_volume,
+            trades=trades,
+            taker_buy_volume=taker_buy_volume,
+            taker_buy_quote_volume=taker_buy_quote_volume,
+        )
+    except (ValueError, TypeError, KeyError):
         return None
-    return KlineEvent(
-        open_time=int(k["t"]),
-        close_time=int(k["T"]),
-        is_closed=bool(k["x"]),
-        open=float(k["o"]),
-        high=float(k["h"]),
-        low=float(k["l"]),
-        close=float(k["c"]),
-        volume=float(k["v"]),
-        quote_volume=float(k["q"]),
-        trades=int(k["n"]),
-        taker_buy_volume=float(k["V"]),
-        taker_buy_quote_volume=float(k["Q"]),
-    )
 
 
 async def kline_events(

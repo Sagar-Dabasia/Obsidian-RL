@@ -342,3 +342,31 @@ def test_restore_state_consistency_checks(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
         ledger.restore_state(run2.run_id)
     ledger.close()
+
+
+def test_record_and_get_events_idempotency(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    success = ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1700000000000,
+        idempotency_key="gap_key_1",
+        details={"missing": 5},
+    )
+    assert success is True
+    assert ledger.has_event("gap_key_1") is True
+
+    # Duplicate insertion should return False and not raise
+    success_dup = ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1700000000000,
+        idempotency_key="gap_key_1",
+        details={"missing": 5},
+    )
+    assert success_dup is False
+    events = ledger.get_events(run.run_id)
+    assert len(events) == 1
+    assert events[0]["event_type"] == "market_data_gap"
+    ledger.close()

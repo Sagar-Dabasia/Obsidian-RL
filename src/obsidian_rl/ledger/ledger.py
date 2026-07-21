@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from obsidian_rl.portfolio.engine import ExecutionResult, PortfolioState
 
@@ -64,6 +65,16 @@ CREATE TABLE IF NOT EXISTS decisions (
     created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_run_candle ON decisions(run_id, candle_open_ms);
+CREATE TABLE IF NOT EXISTS run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    event_type TEXT NOT NULL,
+    event_ts_ms INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    details_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_run_events_run_id ON run_events(run_id);
 CREATE TABLE IF NOT EXISTS run_closures (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id),
@@ -499,3 +510,62 @@ class Ledger:
         cur = self._conn.execute("SELECT * FROM run_closures WHERE run_id=?", (run_id,))
         row: sqlite3.Row | None = cur.fetchone()
         return row
+
+    # ------------------------------------------------------------------ events
+    def record_event(
+        self,
+        run_id: str,
+        event_type: str,
+        event_ts_ms: int,
+        idempotency_key: str,
+        details: dict[str, Any],
+        created_at_ms: int | None = None,
+    ) -> bool:
+        """Persist a durable audit event (e.g. gap, expiration, backfill).
+
+        Returns True if inserted, False if duplicate idempotency_key was suppressed.
+        Raises ValueError if timestamp or JSON validation fails.
+        """
+        if not isinstance(event_ts_ms, int) or event_ts_ms < 0:
+            raise ValueError(f"invalid event_ts_ms: {event_ts_ms}")
+        try:
+            details_json = json.dumps(details)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid details JSON: {exc}") from exc
+
+        created_at = created_at_ms if created_at_ms is not None else int(time.time() * 1000)
+        if not isinstance(created_at, int) or created_at < 0:
+            raise ValueError(f"invalid created_at_ms: {created_at}")
+
+        try:
+            self._conn.execute(
+                "INSERT INTO run_events (run_id, event_type, event_ts_ms, idempotency_key,"
+                " details_json, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, event_type, event_ts_ms, idempotency_key, details_json, created_at),
+            )
+            self._conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            with contextlib.suppress(Exception):
+                self._conn.rollback()
+            return False
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._conn.rollback()
+            raise
+
+    def has_event(self, idempotency_key: str) -> bool:
+        cur = self._conn.execute(
+            "SELECT 1 FROM run_events WHERE idempotency_key=?",
+            (idempotency_key,),
+        )
+        return cur.fetchone() is not None
+
+    def get_events(self, run_id: str) -> list[sqlite3.Row]:
+        self._conn.row_factory = sqlite3.Row
+        return list(
+            self._conn.execute(
+                "SELECT * FROM run_events WHERE run_id=? ORDER BY id ASC",
+                (run_id,),
+            )
+        )
