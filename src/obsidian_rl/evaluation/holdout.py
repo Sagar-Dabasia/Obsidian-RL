@@ -31,6 +31,7 @@ from obsidian_rl.strategies.base import Strategy
 from obsidian_rl.strategies.baselines import default_baselines
 from obsidian_rl.strategies.ppo_policy import PpoPolicyStrategy
 from obsidian_rl.training.promotion import (
+    PromotionEvidenceError,
     _compute_report_hash,
     _json_dumps,
     _json_loads_strict,
@@ -48,32 +49,22 @@ from obsidian_rl.training.registry import (
 
 logger = logging.getLogger(__name__)
 
+HOLDOUT_SCHEMA_VERSION = 2
+
 HOLDOUT_DIR = Path("artifacts/holdout")
 HOLDOUT_STATE_PATH = HOLDOUT_DIR / "HOLDOUT_STATE.json"
 HOLDOUT_LOCK_PATH = HOLDOUT_DIR / ".holdout.lock"
 
 
 def get_holdout_dir(repo_root: Path | None = None) -> Path:
-    if Path("artifacts/holdout") != HOLDOUT_DIR:
-        return HOLDOUT_DIR.resolve()
     return resolve_repo_root(repo_root) / "artifacts" / "holdout"
 
 
 def get_holdout_state_path(repo_root: Path | None = None) -> Path:
-    if (
-        HOLDOUT_STATE_PATH != HOLDOUT_DIR / "HOLDOUT_STATE.json"
-        and Path("artifacts/holdout") / "HOLDOUT_STATE.json" != HOLDOUT_STATE_PATH
-    ):
-        return HOLDOUT_STATE_PATH.resolve()
     return get_holdout_dir(repo_root) / "HOLDOUT_STATE.json"
 
 
 def get_holdout_lock_path(repo_root: Path | None = None) -> Path:
-    if (
-        HOLDOUT_LOCK_PATH != HOLDOUT_DIR / ".holdout.lock"
-        and Path("artifacts/holdout") / ".holdout.lock" != HOLDOUT_LOCK_PATH
-    ):
-        return HOLDOUT_LOCK_PATH.resolve()
     return get_holdout_dir(repo_root) / ".holdout.lock"
 
 
@@ -175,19 +166,26 @@ def compute_dataset_identity(
             f"loaded dataset open_time ({ot_array.max()}) exceeds requested end ({end_ms})"
         )
 
-    h = hashlib.sha256()
     cols = list(df.columns)
-    h.update(f"columns:{cols}\n".encode())
     dtypes = [str(df[c].dtype) for c in cols]
-    h.update(f"dtypes:{dtypes}\n".encode())
-    h.update(f"index_type:{type(df.index).__name__}\n".encode())
-    h.update(f"index_values:{list(df.index)}\n".encode())
+    index_type = type(df.index).__name__
     row_count = len(df)
-    h.update(f"row_count:{row_count}\n".encode())
-    h.update(f"first_open:{first_open}\n".encode())
-    h.update(f"last_open:{last_open}\n".encode())
-    for row in df.itertuples(index=False):
-        h.update(f"row:{tuple(row)}\n".encode())
+
+    descriptor = {
+        "columns": cols,
+        "dtypes": dtypes,
+        "first_open_ms": first_open,
+        "index_type": index_type,
+        "last_open_ms": last_open,
+        "row_count": row_count,
+    }
+
+    h = hashlib.sha256()
+    h.update(_json_dumps(descriptor).encode("utf-8"))
+    row_hashes = pd.util.hash_pandas_object(df, index=True, categorize=True).to_numpy(
+        dtype=np.uint64
+    )
+    h.update(row_hashes.tobytes())
     dataset_sha = h.hexdigest()
 
     return {
@@ -197,6 +195,7 @@ def compute_dataset_identity(
         "last_open_ms": last_open,
         "columns": cols,
         "dtypes": dtypes,
+        "index_type": index_type,
     }
 
 
@@ -306,12 +305,41 @@ def _validate_finite_nested(val: Any, path: str) -> None:
             _validate_finite_nested(item, f"{path}[{idx}]")
 
 
+REPORT_REQUIRED_KEYS = (
+    "schema_version",
+    "report_sha256",
+    "consumption_id",
+    "created_at_utc",
+    "symbol",
+    "interval",
+    "reserved_start_utc",
+    "fixed_end_utc",
+    "model_id",
+    "model_artifact_sha256",
+    "feature_schema",
+    "source_commit",
+    "source_tree_clean",
+    "costs",
+    "baselines",
+    "scenarios",
+    "first_open_ms",
+    "last_open_ms",
+    "row_count",
+    "dataset_sha256",
+    "dataset_identity",
+    "rows",
+)
+
+
 def _verify_report_file(
-    rep_path: Path, expected_hash: str, holdout_dir: Path | None = None
+    rep_path: Path,
+    expected_hash: str,
+    holdout_dir: Path | None = None,
+    repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Verify an immutable holdout report file strictly."""
     if holdout_dir is None:
-        holdout_dir = get_holdout_dir()
+        holdout_dir = get_holdout_dir(repo_root)
     if rep_path.is_symlink():
         raise RuntimeError("holdout report file must not be a symlink")
     resolved = rep_path.resolve()
@@ -322,12 +350,22 @@ def _verify_report_file(
         raise RuntimeError(f"holdout report file missing or not a file: {rep_path}")
 
     text = rep_path.read_text(encoding="utf-8")
-    report_data = _json_loads_strict(text, f"report {rep_path.name!r}")
+    try:
+        report_data = _json_loads_strict(text, f"report {rep_path.name!r}")
+    except (PromotionEvidenceError, ValueError) as exc:
+        raise RuntimeError(f"holdout report non-finite or malformed JSON: {exc}") from exc
     if not isinstance(report_data, dict):
         raise RuntimeError("holdout report root must be an object")
 
+    report_keys = set(report_data.keys())
+    expected_keys = set(REPORT_REQUIRED_KEYS)
+    if report_keys != expected_keys:
+        missing = sorted(expected_keys - report_keys)
+        extra = sorted(report_keys - expected_keys)
+        raise RuntimeError(f"holdout report keys mismatch: missing={missing}, extra={extra}")
+
     _validate_finite_nested(report_data, f"report {rep_path.name!r}")
-    stored_hash = report_data.get("report_sha256")
+    stored_hash = report_data["report_sha256"]
     if (
         not isinstance(stored_hash, str)
         or len(stored_hash) != 64
@@ -343,45 +381,134 @@ def _verify_report_file(
     if actual_hash != stored_hash:
         raise RuntimeError("holdout report hash mismatch; content does not match report_sha256")
 
-    # Revalidate dataset identity fields where present or where dataset metadata is included
-    if any(
-        k in report_data
-        for k in (
-            "first_open_ms",
-            "last_open_ms",
-            "row_count",
-            "dataset_sha256",
-            "dataset_identity",
-            "rows",
-        )
+    schema_ver = report_data["schema_version"]
+    if (
+        isinstance(schema_ver, bool)
+        or not isinstance(schema_ver, int)
+        or schema_ver != HOLDOUT_SCHEMA_VERSION
     ):
-        for field in ("first_open_ms", "last_open_ms", "row_count"):
-            if not isinstance(report_data.get(field), int):
-                raise RuntimeError(f"holdout report missing or invalid integer field {field!r}")
-        if report_data["first_open_ms"] > report_data["last_open_ms"]:
-            raise RuntimeError("holdout report dataset has reversed first_open_ms/last_open_ms")
-        if report_data["row_count"] <= 0:
-            raise RuntimeError("holdout report row_count must be positive")
-        dsha = report_data.get("dataset_sha256")
-        if (
-            not isinstance(dsha, str)
-            or len(dsha) != 64
-            or dsha != dsha.lower()
-            or not all(c in "0123456789abcdef" for c in dsha)
-        ):
-            raise RuntimeError("holdout report missing valid 64-char lowercase dataset_sha256")
+        raise RuntimeError(f"holdout report unsupported schema_version {schema_ver!r}")
 
-        ident = report_data.get("dataset_identity")
-        if ident is not None:
-            if not isinstance(ident, dict):
-                raise RuntimeError("holdout report dataset_identity must be an object")
-            if (
-                ident.get("dataset_sha256") != dsha
-                or ident.get("row_count") != report_data["row_count"]
-                or ident.get("first_open_ms") != report_data["first_open_ms"]
-                or ident.get("last_open_ms") != report_data["last_open_ms"]
-            ):
-                raise RuntimeError("holdout report dataset_identity inconsistent with metadata")
+    try:
+        _, can_c = parse_utc_boundary(report_data["created_at_utc"])
+        s_ms, can_s = parse_utc_boundary(report_data["reserved_start_utc"])
+        e_ms, can_e = parse_utc_boundary(report_data["fixed_end_utc"])
+    except ValueError as exc:
+        raise RuntimeError(f"holdout report timestamp check failed: {exc}") from exc
+    if (
+        can_c != report_data["created_at_utc"]
+        or can_s != report_data["reserved_start_utc"]
+        or can_e != report_data["fixed_end_utc"]
+    ):
+        raise RuntimeError("holdout report timestamps must be canonical UTC ending in Z")
+    if e_ms < s_ms:
+        raise RuntimeError("holdout report boundaries reversed: fixed_end_utc < reserved_start_utc")
+
+    try:
+        validate_model_id(report_data["model_id"])
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(f"holdout report invalid model_id: {exc}") from exc
+
+    art_sha = report_data["model_artifact_sha256"]
+    if (
+        not isinstance(art_sha, str)
+        or len(art_sha) != 64
+        or art_sha != art_sha.lower()
+        or not all(c in "0123456789abcdef" for c in art_sha)
+    ):
+        raise RuntimeError("holdout report model_artifact_sha256 must be valid lowercase SHA-256")
+
+    commit = report_data["source_commit"]
+    if (
+        not isinstance(commit, str)
+        or len(commit) != 40
+        or commit != commit.lower()
+        or not all(c in "0123456789abcdef" for c in commit)
+    ):
+        raise RuntimeError("holdout report source_commit must be lowercase 40-char hex")
+
+    if report_data["source_tree_clean"] is not True:
+        raise RuntimeError("holdout report source_tree_clean must be exactly True")
+
+    if report_data["feature_schema"] != schema_fingerprint():
+        raise RuntimeError(
+            "holdout report feature_schema does not match current complete schema fingerprint"
+        )
+
+    costs = report_data["costs"]
+    if not isinstance(costs, dict) or set(costs.keys()) != {"taker_fee", "half_spread", "slippage"}:
+        raise RuntimeError(
+            "holdout report costs must be a dict with exactly taker_fee, half_spread, slippage"
+        )
+    for k, v in costs.items():
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v):
+            raise RuntimeError(f"holdout report costs[{k!r}] must be a finite number")
+
+    baselines = report_data["baselines"]
+    if (
+        not isinstance(baselines, list)
+        or len(baselines) == 0
+        or not all(isinstance(b, str) and b.strip() for b in baselines)
+        or len(set(baselines)) != len(baselines)
+    ):
+        raise RuntimeError(
+            "holdout report baselines must be a non-empty list of unique non-empty strings"
+        )
+
+    scenarios = report_data["scenarios"]
+    if scenarios != ["base", "costs2x", "delay1"]:
+        raise RuntimeError(
+            "holdout report scenarios must exactly equal ['base', 'costs2x', 'delay1']"
+        )
+
+    for field in ("first_open_ms", "last_open_ms", "row_count"):
+        val = report_data[field]
+        if isinstance(val, bool) or not isinstance(val, int):
+            raise RuntimeError(f"holdout report missing or invalid integer field {field!r}")
+    if report_data["first_open_ms"] > report_data["last_open_ms"]:
+        raise RuntimeError("holdout report dataset has reversed first_open_ms/last_open_ms")
+    if report_data["row_count"] <= 0:
+        raise RuntimeError("holdout report row_count must be positive")
+
+    dsha = report_data["dataset_sha256"]
+    if (
+        not isinstance(dsha, str)
+        or len(dsha) != 64
+        or dsha != dsha.lower()
+        or not all(c in "0123456789abcdef" for c in dsha)
+    ):
+        raise RuntimeError("holdout report missing valid 64-char lowercase dataset_sha256")
+
+    ident = report_data["dataset_identity"]
+    if not isinstance(ident, dict):
+        raise RuntimeError("holdout report dataset_identity must be an object")
+    if (
+        ident.get("dataset_sha256") != dsha
+        or ident.get("row_count") != report_data["row_count"]
+        or ident.get("first_open_ms") != report_data["first_open_ms"]
+        or ident.get("last_open_ms") != report_data["last_open_ms"]
+    ):
+        raise RuntimeError("holdout report dataset_identity inconsistent with metadata")
+
+    rows = report_data["rows"]
+    if not isinstance(rows, list) or len(rows) == 0:
+        raise RuntimeError("holdout report rows must be a non-empty list of row objects")
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise RuntimeError(f"holdout report rows[{idx}] must be an object")
+        for req_field in (
+            "fold_id",
+            "strategy_id",
+            "scenario",
+            "val_buy_hold_return",
+            "net_return",
+            "sharpe",
+            "max_drawdown",
+            "turnover",
+            "trade_count",
+        ):
+            if req_field not in row:
+                raise RuntimeError(f"holdout report rows[{idx}] missing field {req_field!r}")
 
     return report_data
 
@@ -426,7 +553,7 @@ def load_holdout_state(
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
-        or schema_version != 1
+        or schema_version != HOLDOUT_SCHEMA_VERSION
     ):
         raise RuntimeError(f"HOLDOUT_STATE.json unsupported schema_version {schema_version!r}")
 
@@ -544,8 +671,15 @@ def load_holdout_state(
         )
 
     base_keys = set(required) | {"schema_version"}
-    if status == "started" or status == "completed":
+    if status == "started":
         allowed_keys = base_keys | {"report_filename", "report_sha256"}
+    elif status == "completed":
+        allowed_keys = base_keys | {
+            "report_filename",
+            "report_sha256",
+            "dataset_sha256",
+            "dataset_identity",
+        }
     elif status == "failed":
         allowed_keys = base_keys | {
             "failure_class",
@@ -600,15 +734,23 @@ def load_holdout_state(
         ):
             raise RuntimeError("completed state report_sha256 must be valid lowercase SHA-256")
         rep_path = holdout_dir / rep_name
-        report = _verify_report_file(rep_path, rep_sha, holdout_dir=holdout_dir)
+        report = _verify_report_file(
+            rep_path, rep_sha, holdout_dir=holdout_dir, repo_root=repo_root
+        )
+        if report.get("schema_version") != data["schema_version"]:
+            raise RuntimeError("report schema_version does not match state")
         if report.get("consumption_id") != data["consumption_id"]:
             raise RuntimeError("report consumption_id does not match state")
         if report.get("model_id") != data["model_id"]:
             raise RuntimeError("report model_id does not match state")
         if report.get("model_artifact_sha256") != data["model_artifact_sha256"]:
             raise RuntimeError("report model_artifact_sha256 does not match state")
+        if report.get("feature_schema") != data["feature_schema"]:
+            raise RuntimeError("report feature_schema does not match state")
         if report.get("source_commit") != data["source_commit"]:
             raise RuntimeError("report source_commit does not match state")
+        if report.get("source_tree_clean") != data["source_tree_clean"]:
+            raise RuntimeError("report source_tree_clean does not match state")
         if report.get("symbol") != data["symbol"]:
             raise RuntimeError("report symbol does not match state")
         if report.get("interval") != data["interval"]:
@@ -619,8 +761,19 @@ def load_holdout_state(
             raise RuntimeError("report fixed_end_utc does not match state")
         if report.get("costs") != data["costs"]:
             raise RuntimeError("report costs does not match state")
+        if report.get("baselines") != data["baselines"]:
+            raise RuntimeError("report baselines does not match state")
+        if report.get("scenarios") != data["scenarios"]:
+            raise RuntimeError("report scenarios does not match state")
         if report.get("report_sha256") != data["report_sha256"]:
             raise RuntimeError("report report_sha256 does not match state")
+        if "dataset_sha256" in data and report.get("dataset_sha256") != data["dataset_sha256"]:
+            raise RuntimeError("report dataset_sha256 does not match state")
+        if (
+            "dataset_identity" in data
+            and report.get("dataset_identity") != data["dataset_identity"]
+        ):
+            raise RuntimeError("report dataset_identity does not match state")
     else:
         if data.get("report_filename") is not None or data.get("report_sha256") is not None:
             raise RuntimeError(
@@ -634,16 +787,18 @@ def run_final_holdout(
     model_id: str,
     end_utc: str,
     models_dir: Path | None = None,
+    repo_root: Path | None = None,
 ) -> tuple[Path, str]:
     """Run the untouched final holdout ONCE for the frozen champion under strict isolation."""
     if models_dir is None:
         models_dir = settings.models_dir
 
-    holdout_dir = get_holdout_dir()
-    state_path = get_holdout_state_path()
+    root = resolve_repo_root(repo_root)
+    holdout_dir = get_holdout_dir(root)
+    state_path = get_holdout_state_path(root)
 
     with _holdout_lock(holdout_dir):
-        existing_state = load_holdout_state(state_path, holdout_dir=holdout_dir)
+        existing_state = load_holdout_state(state_path, holdout_dir=holdout_dir, repo_root=root)
         if existing_state:
             raise RuntimeError(
                 f"holdout already consumed: status is {existing_state['status']}. see {state_path}"
@@ -700,7 +855,7 @@ def run_final_holdout(
         consumption_id = uuid.uuid4().hex
         started_at = _utc_timestamp_canonical()
         started_state: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": HOLDOUT_SCHEMA_VERSION,
             "consumption_id": consumption_id,
             "started_at_utc": started_at,
             "status": "started",
@@ -757,7 +912,7 @@ def run_final_holdout(
 
             ts_ms = _utc_ms()
             report_data: dict[str, Any] = {
-                "schema_version": 1,
+                "schema_version": HOLDOUT_SCHEMA_VERSION,
                 "consumption_id": consumption_id,
                 "created_at_utc": _utc_timestamp_canonical(),
                 "symbol": settings.symbol,
@@ -771,9 +926,12 @@ def run_final_holdout(
                 "dataset_identity": identity,
                 "model_id": model_id,
                 "model_artifact_sha256": champion_info["model_artifact_sha256"],
+                "feature_schema": champion_info["feature_schema"],
                 "source_commit": git_state.commit,
                 "source_tree_clean": True,
                 "costs": asdict(costs),
+                "baselines": baseline_ids,
+                "scenarios": scenario_names,
                 "rows": [r.to_dict() for r in rows],
             }
 
@@ -786,11 +944,13 @@ def run_final_holdout(
             if rep_path.is_symlink():
                 raise RuntimeError("holdout report must not be a symlink")
             _write_exclusive_file(rep_path, payload)
-            _verify_report_file(rep_path, report_hash, holdout_dir=holdout_dir)
+            _verify_report_file(rep_path, report_hash, holdout_dir=holdout_dir, repo_root=root)
 
             completed_state = {
                 **started_state,
                 "status": "completed",
+                "dataset_sha256": dataset_hash,
+                "dataset_identity": identity,
                 "report_filename": rep_filename,
                 "report_sha256": report_hash,
             }

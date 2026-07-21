@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -62,15 +63,11 @@ def fake_settings(tmp_path: Path) -> Settings:
 
 @pytest.fixture
 def isolated_holdout_paths(tmp_path: Path) -> Iterator[tuple[Path, Path, Path]]:
-    h_dir = tmp_path / "holdout_artifacts"
+    h_dir = tmp_path / "artifacts" / "holdout"
     h_dir.mkdir(parents=True, exist_ok=True)
     state_path = h_dir / "HOLDOUT_STATE.json"
     lock_path = h_dir / ".holdout.lock"
-    with (
-        patch("obsidian_rl.evaluation.holdout.HOLDOUT_DIR", h_dir),
-        patch("obsidian_rl.evaluation.holdout.HOLDOUT_STATE_PATH", state_path),
-        patch("obsidian_rl.evaluation.holdout.HOLDOUT_LOCK_PATH", lock_path),
-    ):
+    with patch("obsidian_rl.evaluation.holdout.resolve_repo_root", return_value=tmp_path):
         yield h_dir, state_path, lock_path
 
 
@@ -289,21 +286,21 @@ def test_immutable_report_verification_and_path_traversal(
 
     traversal_path = Path("artifacts/holdout/../../secret.json")
     with pytest.raises(RuntimeError, match="path traversal detected"):
-        holdout_module._verify_report_file(traversal_path, "a" * 64)
+        holdout_module._verify_report_file(traversal_path, "a" * 64, holdout_dir=h_dir)
 
-    rep_data = {"schema_version": 1, "value": 123}
-    rep_hash = _compute_report_hash(rep_data)
-    rep_full = {**rep_data, "report_sha256": rep_hash}
+    st = _valid_base_state()
+    rep_full = _valid_report_data(st)
+    rep_hash = str(rep_full["report_sha256"])
 
     test_rep_path = h_dir / "report-test.json"
     test_rep_path.write_text(_json_dumps(rep_full) + "\n", encoding="utf-8")
 
-    holdout_module._verify_report_file(test_rep_path, rep_hash)
+    holdout_module._verify_report_file(test_rep_path, rep_hash, holdout_dir=h_dir)
 
-    tampered_full = {**rep_data, "value": 999, "report_sha256": rep_hash}
+    tampered_full = {**rep_full, "symbol": "ETHUSDT", "report_sha256": rep_hash}
     test_rep_path.write_text(_json_dumps(tampered_full) + "\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="holdout report hash mismatch"):
-        holdout_module._verify_report_file(test_rep_path, rep_hash)
+        holdout_module._verify_report_file(test_rep_path, rep_hash, holdout_dir=h_dir)
 
 
 def test_cmd_holdout_zero_leakage(
@@ -380,20 +377,38 @@ def test_holdout_concurrency_lock(
 
 
 def test_holdout_repo_anchor_and_cwd_change(tmp_path: Path) -> None:
-    with patch("obsidian_rl.evaluation.holdout.HOLDOUT_DIR", Path("artifacts/holdout")):
-        orig_cwd = Path.cwd()
-        dir1 = holdout_module.get_holdout_dir()
-        state1 = holdout_module.get_holdout_state_path()
-        try:
-            os.chdir(tmp_path)
-            dir2 = holdout_module.get_holdout_dir()
-            state2 = holdout_module.get_holdout_state_path()
-            assert dir1 == dir2
-            assert state1 == state2
-            assert dir1.is_absolute()
-            assert state1.is_absolute()
-        finally:
-            os.chdir(orig_cwd)
+    orig_cwd = Path.cwd()
+    dir1 = holdout_module.get_holdout_dir()
+    state1 = holdout_module.get_holdout_state_path()
+    lock1 = holdout_module.get_holdout_lock_path()
+
+    with (
+        patch("obsidian_rl.evaluation.holdout.HOLDOUT_DIR", tmp_path / "hijacked"),
+        patch(
+            "obsidian_rl.evaluation.holdout.HOLDOUT_STATE_PATH",
+            tmp_path / "hijacked" / "s.json",
+        ),
+        patch(
+            "obsidian_rl.evaluation.holdout.HOLDOUT_LOCK_PATH",
+            tmp_path / "hijacked" / "l.lock",
+        ),
+    ):
+        assert holdout_module.get_holdout_dir() == dir1
+        assert holdout_module.get_holdout_state_path() == state1
+        assert holdout_module.get_holdout_lock_path() == lock1
+
+    try:
+        os.chdir(tmp_path)
+        dir2 = holdout_module.get_holdout_dir()
+        state2 = holdout_module.get_holdout_state_path()
+        lock2 = holdout_module.get_holdout_lock_path()
+        assert dir1 == dir2
+        assert state1 == state2
+        assert lock1 == lock2
+        assert dir1.is_absolute()
+        assert state1.is_absolute()
+    finally:
+        os.chdir(orig_cwd)
 
 
 def test_holdout_utc_boundaries() -> None:
@@ -424,7 +439,7 @@ def test_holdout_utc_boundaries() -> None:
 
 def _valid_base_state() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": holdout_module.HOLDOUT_SCHEMA_VERSION,
         "consumption_id": "0123456789abcdef0123456789abcdef",
         "started_at_utc": "2025-07-01T00:00:00Z",
         "status": "started",
@@ -443,6 +458,64 @@ def _valid_base_state() -> dict[str, object]:
         "report_filename": None,
         "report_sha256": None,
     }
+
+
+def _valid_report_data(st: dict[str, object]) -> dict[str, object]:
+    ident = {
+        "dataset_sha256": "c" * 64,
+        "row_count": 100,
+        "first_open_ms": 1000,
+        "last_open_ms": 2000,
+        "columns": ["open_time", "price"],
+        "dtypes": ["int64", "float64"],
+        "index_type": "RangeIndex",
+    }
+    mock_metrics = {
+        "net_return": 0.5,
+        "gross_return": 0.6,
+        "fees": 0.01,
+        "spread": 0.01,
+        "slippage": 0.01,
+        "funding": 0.0,
+        "turnover": 1000.0,
+        "trade_count": 10,
+        "mean_abs_exposure": 0.8,
+        "max_drawdown": 0.05,
+        "sharpe": 3.5,
+        "n_candles": 10,
+    }
+    mock_row = {
+        "fold_id": -1,
+        "strategy_id": "ppo:m1",
+        "scenario": "base",
+        "val_buy_hold_return": 0.1,
+        **mock_metrics,
+    }
+    rep = {
+        "schema_version": holdout_module.HOLDOUT_SCHEMA_VERSION,
+        "consumption_id": st["consumption_id"],
+        "created_at_utc": "2025-07-01T00:01:00Z",
+        "symbol": st["symbol"],
+        "interval": st["interval"],
+        "reserved_start_utc": st["reserved_start_utc"],
+        "fixed_end_utc": st["fixed_end_utc"],
+        "model_id": st["model_id"],
+        "model_artifact_sha256": st["model_artifact_sha256"],
+        "feature_schema": st["feature_schema"],
+        "source_commit": st["source_commit"],
+        "source_tree_clean": st["source_tree_clean"],
+        "costs": st["costs"],
+        "baselines": st["baselines"],
+        "scenarios": st["scenarios"],
+        "first_open_ms": 1000,
+        "last_open_ms": 2000,
+        "row_count": 100,
+        "dataset_sha256": "c" * 64,
+        "dataset_identity": ident,
+        "rows": [mock_row],
+    }
+    rep["report_sha256"] = _compute_report_hash(rep)
+    return rep
 
 
 def test_holdout_source_tree_clean_false(isolated_holdout_paths: tuple[Path, Path, Path]) -> None:
@@ -508,28 +581,110 @@ def test_holdout_state_strict_validation(isolated_holdout_paths: tuple[Path, Pat
     st["metrics"] = {"net_return": 0.5}
     _assert_invalid(st, "failed state must not contain metrics")
 
-    # Completed state field disagreement
+    # Completed state field disagreement across bound fields
+    def _test_state_disagreement(field: str, wrong_val: object, match: str) -> None:
+        st_test = _valid_base_state()
+        st_test["status"] = "completed"
+        rep_test = _valid_report_data(st_test)
+        rep_test[field] = wrong_val
+        rep_test["report_sha256"] = _compute_report_hash(rep_test)
+        rep_name = f"rep-test-{field}.json"
+        (h_dir / rep_name).write_text(_json_dumps(rep_test) + "\n", encoding="utf-8")
+        st_test["report_filename"] = rep_name
+        st_test["report_sha256"] = rep_test["report_sha256"]
+        st_test["dataset_sha256"] = rep_test["dataset_sha256"]
+        st_test["dataset_identity"] = rep_test["dataset_identity"]
+        _assert_invalid(st_test, match)
+
+    _test_state_disagreement(
+        "consumption_id",
+        "00000000000000000000000000000000",
+        "report consumption_id does not match state",
+    )
+    _test_state_disagreement(
+        "costs",
+        {"taker_fee": 0.1, "half_spread": 0.0, "slippage": 0.0},
+        "report costs does not match state",
+    )
+    _test_state_disagreement("baselines", ["buy_hold"], "report baselines does not match state")
+    _test_state_disagreement(
+        "symbol",
+        "ETHUSDT",
+        "report symbol does not match state",
+    )
+
+
+def test_holdout_strict_report_verification(
+    isolated_holdout_paths: tuple[Path, Path, Path],
+) -> None:
+    h_dir, _, _ = isolated_holdout_paths
     st = _valid_base_state()
-    st["status"] = "completed"
-    rep_data = {
-        "schema_version": 1,
-        "consumption_id": "differentconsumptionid1234567890",
-        "symbol": "BTCUSDT",
-        "interval": "15m",
-        "reserved_start_utc": "2025-07-01T00:00:00Z",
-        "fixed_end_utc": "2025-07-02T00:00:00Z",
-        "model_id": "m1",
-        "model_artifact_sha256": "a" * 64,
-        "source_commit": "b" * 40,
-        "costs": st["costs"],
-    }
-    rep_hash = _compute_report_hash(rep_data)
-    rep_full = {**rep_data, "report_sha256": rep_hash}
-    rep_filename = "report-test-complete.json"
-    (h_dir / rep_filename).write_text(_json_dumps(rep_full) + "\n", encoding="utf-8")
-    st["report_filename"] = rep_filename
-    st["report_sha256"] = rep_hash
-    _assert_invalid(st, "report consumption_id does not match state")
+    base_rep = _valid_report_data(st)
+    rep_path = h_dir / "report_strict_check.json"
+
+    def _assert_rep_invalid(rep_dict: dict[str, object], match: str) -> None:
+        rep_path.write_text(json.dumps(rep_dict, allow_nan=True) + "\n", encoding="utf-8")
+        expected_h = str(rep_dict.get("report_sha256", "a" * 64))
+        with pytest.raises(RuntimeError, match=match):
+            holdout_module._verify_report_file(rep_path, expected_h, holdout_dir=h_dir)
+
+    # Missing keys
+    rep = dict(base_rep)
+    rep.pop("symbol")
+    _assert_rep_invalid(rep, "holdout report keys mismatch")
+
+    # Extra keys
+    rep = dict(base_rep)
+    rep["extra_key"] = "bad"
+    _assert_rep_invalid(rep, "holdout report keys mismatch")
+
+    # source_tree_clean=False in report
+    rep = dict(base_rep)
+    rep["source_tree_clean"] = False
+    rep["report_sha256"] = _compute_report_hash(rep)
+    _assert_rep_invalid(rep, "holdout report source_tree_clean must be exactly True")
+
+    # Malformed commit in report
+    rep = dict(base_rep)
+    rep["source_commit"] = "INVALIDCOMMIT"
+    rep["report_sha256"] = _compute_report_hash(rep)
+    _assert_rep_invalid(rep, "holdout report source_commit must be lowercase 40-char hex")
+
+    # Feature schema mismatch in report
+    rep = dict(base_rep)
+    rep["feature_schema"] = {"version": "mismatched"}
+    rep["report_sha256"] = _compute_report_hash(rep)
+    _assert_rep_invalid(
+        rep, "holdout report feature_schema does not match current complete schema fingerprint"
+    )
+
+    # Cost non-finite in report
+    rep = dict(base_rep)
+    rep["costs"] = {"taker_fee": float("nan"), "half_spread": 0.0, "slippage": 0.0}
+    _assert_rep_invalid(rep, "non-finite")
+
+    # Baseline empty
+    rep = dict(base_rep)
+    rep["baselines"] = []
+    rep["report_sha256"] = _compute_report_hash(rep)
+    _assert_rep_invalid(
+        rep, "holdout report baselines must be a non-empty list of unique non-empty strings"
+    )
+
+    # Scenario mismatch
+    rep = dict(base_rep)
+    rep["scenarios"] = ["base", "other"]
+    rep["report_sha256"] = _compute_report_hash(rep)
+    _assert_rep_invalid(
+        rep, r"holdout report scenarios must exactly equal \['base', 'costs2x', 'delay1'\]"
+    )
+
+    # Malformed / non-finite rows in report
+    rep = dict(base_rep)
+    bad_row = dict(cast(list[dict[str, object]], base_rep["rows"])[0])
+    bad_row["net_return"] = float("inf")
+    rep["rows"] = [bad_row]
+    _assert_rep_invalid(rep, "non-finite")
 
 
 def test_holdout_dataset_identity() -> None:
@@ -583,6 +738,44 @@ def test_holdout_dataset_identity() -> None:
     )
     with pytest.raises(ValueError, match="open_time values must be unique and strictly increasing"):
         holdout_module.compute_dataset_identity(df_dup, start_ms=1000, end_ms=2000)
+
+
+def test_holdout_typed_hashing_vs_ambiguous_strings() -> None:
+    # Prove that typed hashing distinguishes materially different DataFrames and is deterministic
+    df1 = pd.DataFrame(
+        {
+            "open_time": pd.Series([1000, 2000], dtype="int64"),
+            "val": pd.Series(["1, 2", "3, 4"], dtype="object"),
+        }
+    )
+    df2 = pd.DataFrame(
+        {
+            "open_time": pd.Series([1000, 2000], dtype="int64"),
+            "val": pd.Series(["('1', '2')", "('3', '4')"], dtype="object"),
+        }
+    )
+    id1 = holdout_module.compute_dataset_identity(df1, start_ms=1000, end_ms=2000)
+    id1_again = holdout_module.compute_dataset_identity(df1.copy(), start_ms=1000, end_ms=2000)
+    id2 = holdout_module.compute_dataset_identity(df2, start_ms=1000, end_ms=2000)
+
+    assert id1["dataset_sha256"] == id1_again["dataset_sha256"]
+    assert id1["dataset_sha256"] != id2["dataset_sha256"]
+
+    df3 = pd.DataFrame(
+        {
+            "open_time": pd.Series([1000, 2000], dtype="int64"),
+            "val": pd.Series([1, 2], dtype="int64"),
+        }
+    )
+    df4 = pd.DataFrame(
+        {
+            "open_time": pd.Series([1000, 2000], dtype="int64"),
+            "val": pd.Series([1.0, 2.0], dtype="float64"),
+        }
+    )
+    id3 = holdout_module.compute_dataset_identity(df3, start_ms=1000, end_ms=2000)
+    id4 = holdout_module.compute_dataset_identity(df4, start_ms=1000, end_ms=2000)
+    assert id3["dataset_sha256"] != id4["dataset_sha256"]
 
 
 def test_holdout_lock_integrity_and_symlinks(

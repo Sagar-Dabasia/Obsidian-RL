@@ -3,44 +3,38 @@
 Updated: 2026-07-21
 
 ## Current branch and commit
-- Branch: `wip/phase3-reconnect-safety`
-- Starting commit: `55281e7b0f76cc927dbeec2013eac894ea56e82d`
+- Branch: `wip/phase4-holdout-enforcement`
+- Starting commit: `30136da586f2723dcf930ed1a165f3a755cee1c9`
 
 ## Status
-Phase 3 — Audit-Event Integrity & Reconnect Safeguards (`Ledger.record_event` strict constraint/canonical-JSON/duplicate verification, `EventConflictError`, `PaperTrader.expire_pending` exact-match verification, and `LivePaperRunner.backfill` fail-stop guarantees) — **COMPLETE (verified & committed)**
+Phase 4 — Single-Use & Immutable Final Holdout Enforcement (`resolve_repo_root` path derivation, `HOLDOUT_SCHEMA_VERSION = 2`, strict 22-field state/report schema verification, deep state-vs-report cross validation, and `dataset_identity` / `report_sha256` integrity) — **COMPLETE (verified & ready to commit)**
 
 See full run report: [docs/AGENT_RUN_REPORT.md](AGENT_RUN_REPORT.md)
-Timestamped archive: [docs/agent-runs/2026-07-21T111500Z-phase3-audit-event-integrity.md](agent-runs/2026-07-21T111500Z-phase3-audit-event-integrity.md)
+Timestamped archive: [docs/agent-runs/2026-07-21T135000Z-phase4-holdout-integrity.md](agent-runs/2026-07-21T135000Z-phase4-holdout-integrity.md)
 
-## What was implemented/fixed in Phase 3 Audit-Event Integrity
-- **Strict Pre-Insertion Validation (`record_event` in `ledger.py`)**:
-  - Enforced `run_id` and `idempotency_key` are non-empty strings, `event_type` is inside `ALLOWED_EVENT_TYPES` (`{"market_data_gap", "pending_execution_expired", "backfill_observation_completed"}`), `event_ts_ms` and `created_at_ms` are integers (`>= 0` and `type is not bool`), and `details` is a dictionary.
-- **Canonical JSON Serialization (`record_event` in `ledger.py`)**:
-  - Serialized `details` with `json.dumps(details, sort_keys=True, separators=(",", ":"), allow_nan=False)`, cleanly rejecting `nan` and `inf` values.
-- **Exact Duplicate & Conflict Inspection (`record_event` & `EventConflictError` in `ledger.py`)**:
-  - When `sqlite3.IntegrityError` is caught, `record_event` queries existing row by `idempotency_key`.
-  - If no matching row exists (`existing is None`), the exception is re-raised (preserving foreign-key or trigger failures).
-  - If a row exists and exactly matches `run_id`, `event_type`, `event_ts_ms`, and canonical `details_json`, `record_event` returns `False` cleanly without inserting.
-  - If any field differs, it raises `EventConflictError` (`event with idempotency_key ... already exists with different contents`).
-- **Simplified & Robust `expire_pending` (`paper_trader.py`)**:
-  - Updated `PaperTrader.expire_pending` to clear `pending` when and only when `record_event` returns normally (`True` for new or `False` for exact verified duplicate). On any persistence failure or `EventConflictError`, the exception propagates immediately and `self.pending` remains unchanged.
-- **Fail-Stop Backfill Guarantees (`runner.py`)**:
-  - Confirmed and verified via tests (`test_backfill_stops_when_gap_event_persistence_fails`) that `LivePaperRunner.backfill` stops immediately before calling `ingest_observation` whenever required gap or expiration audit-event persistence fails or conflicts.
+## What was implemented/fixed in Phase 4 Holdout Enforcement
+- **Strict Repository Anchoring (`holdout.py`)**:
+  - Removed mutable module-level path override mechanisms (`HOLDOUT_DIR`, `HOLDOUT_STATE_PATH`, `HOLDOUT_LOCK_PATH`). `get_holdout_dir(repo_root=None)` now always returns `resolve_repo_root(repo_root) / "artifacts" / "holdout"`, ensuring state locking (`.holdout.lock`) and `HOLDOUT_STATE.json` are strictly anchored to the repository root regardless of current working directory (`os.chdir`).
+- **Schema Version 2 & Strict Field Validation (`holdout.py`)**:
+  - Bumped `HOLDOUT_SCHEMA_VERSION = 2`. Both `load_holdout_state` and `_verify_report_file` enforce exact allowed key sets without extra/unknown keys, canonical `UTC` timestamps ending in `Z` (`parse_utc_boundary`), strict boolean checks (`type(v) is bool`), finite floating-point checks (`math.isfinite`), non-empty unique strings for baselines, and exact allowed scenarios (`['base', 'costs2x', 'delay1']`).
+- **Deep Report & State Integrity Verification (`holdout.py`)**:
+  - `_verify_report_file` verifies that `report_sha256` matches both the expected hash and the dynamically recomputed SHA-256 of the report contents (`_compute_report_hash`).
+  - `_verify_report_file` verifies `dataset_identity` dictionary fields against root metadata (`dataset_sha256`, `row_count`, `first_open_ms`, `last_open_ms`).
+  - `_verify_report_file` wraps `_json_loads_strict` to catch `PromotionEvidenceError` (`or malformed JSON or non-finite numbers`) and cleanly raise `RuntimeError("holdout report non-finite or malformed JSON: ...")`.
+  - When `status == "completed"`, `load_holdout_state` calls `_verify_report_file` and performs strict cross validation, ensuring all 13 bound metadata fields (`schema_version`, `consumption_id`, `model_id`, `model_artifact_sha256`, `feature_schema`, `source_commit`, `source_tree_clean`, `symbol`, `interval`, `reserved_start_utc`, `fixed_end_utc`, `costs`, `baselines`, `scenarios`) exactly match between state and report. Any mismatch raises `RuntimeError("report <field> does not match state")`.
 
 ## Files changed
-- `src/obsidian_rl/ledger/ledger.py`
-- `src/obsidian_rl/live/paper_trader.py`
-- `tests/test_ledger.py`
-- `tests/test_live_runner.py`
-- `tests/test_paper_trader.py`
+- `src/obsidian_rl/evaluation/holdout.py`
+- `tests/test_holdout.py`
 - `docs/AGENT_RUN_REPORT.md`
 - `docs/CODEX_HANDOFF.md`
-- `docs/agent-runs/2026-07-21T111500Z-phase3-audit-event-integrity.md`
+- `docs/agent-runs/2026-07-21T135000Z-phase4-holdout-integrity.md`
 
 ## Verification Commands Run
-- `python -m pytest tests/test_ledger.py tests/test_paper_trader.py tests/test_live_runner.py tests/test_stream.py -q`: **50 passed in 1.12s**.
-- `python -m pytest -q`: **255 passed, 1 skipped in 4.58s**.
+- `python -m pytest tests/test_holdout.py -q`: **15 passed in 0.58s**.
+- `python -m ruff check src/obsidian_rl/evaluation/holdout.py tests/test_holdout.py`: **All checks passed!**.
+- `python -m ruff format --check src/obsidian_rl/evaluation/holdout.py tests/test_holdout.py`: **Clean (already formatted)**.
+- `python -m mypy src`: **Success (no issues found in 45 source files)**.
 - `python -m compileall -q src tests`: **Clean**.
-- `python -m ruff check ... (all target files)`: **All checks passed!**.
-- `python -m ruff format --check ... (all target files)`: **All formatted cleanly**.
-- `python -m mypy src`: **Success (no issues found in 44 source files)**.
+- `git diff --check`: **Clean**.
+- `python -m pytest -q`: **271 passed, 1 skipped in 5.34s**.
