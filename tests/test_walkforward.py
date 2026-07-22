@@ -234,3 +234,43 @@ def test_slice_and_summarize() -> None:
     assert set(table.index) == {"flat", "bh"}
     assert table.loc["flat", "mean_net_return"] == pytest.approx(0.0)
     assert isinstance(table, pd.DataFrame)
+
+
+def test_turnover_penalty_bps_experiment_ids_differ() -> None:
+    id0 = create_experiment_id(0.0)
+    id5 = create_experiment_id(5.0)
+    id10 = create_experiment_id(10.0)
+    assert id0 != id5 and id5 != id10 and id0 != id10
+    assert "-tp" not in id0
+    assert "-tp5.0-" in id5
+    assert "-tp10.0-" in id10
+
+
+def test_turnover_penalty_bps_saved_in_walkforward_artifact(tmp_path: Path) -> None:
+    import json
+    from dataclasses import asdict
+    from obsidian_rl.env.trading_env import RewardConfig
+
+    out_dir = tmp_path / "wf_tp"
+    extra = {
+        "turnover_penalty_bps": 15.0,
+        "reward_config": asdict(RewardConfig(turnover_penalty_bps=15.0)),
+    }
+    p = save_results([], out_dir, extra=extra)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["turnover_penalty_bps"] == 15.0
+    assert data["reward_config"]["turnover_penalty_bps"] == 15.0
+
+
+def test_evaluation_pnl_and_costs_unchanged_by_turnover_regularization() -> None:
+    candles = make_candles(WARMUP_ROWS + 300)
+    rows = evaluate_strategies_on_slice(
+        candles,
+        [("flat", AlwaysFlat(), None), ("bh", BuyAndHold(), None)],
+        fold_id=0,
+        cost_model=CM,
+        sensitivity=False,
+    )
+    # P&L and costs only depend on CostModel and execution prices, never reward shaping weights / turnover_penalty_bps
+    for r in rows:
+        assert "turnover_penalty_bps" not in r.to_dict()

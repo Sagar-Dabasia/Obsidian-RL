@@ -32,11 +32,12 @@ logger = logging.getLogger(__name__)
 DAY_MS = 86_400_000
 
 
-def create_experiment_id() -> str:
+def create_experiment_id(turnover_penalty_bps: float = 0.0) -> str:
     """Create a collision-resistant walk-forward experiment ID."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     us = int(time.time() * 1_000_000) % 1_000_000
-    return f"wf-{stamp}-{us:06d}-{uuid.uuid4().hex[:8]}"
+    pen_str = f"-tp{turnover_penalty_bps}" if turnover_penalty_bps > 0 else ""
+    return f"wf-{stamp}-{us:06d}{pen_str}-{uuid.uuid4().hex[:8]}"
 
 
 def slice_sha256(df: pd.DataFrame) -> str:
@@ -394,7 +395,8 @@ def save_results(
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     if experiment_id is None:
-        experiment_id = (extra or {}).get("experiment_id") or create_experiment_id()
+        tp_bps = (extra or {}).get("turnover_penalty_bps", 0.0)
+        experiment_id = (extra or {}).get("experiment_id") or create_experiment_id(tp_bps)
     path = out_dir / f"{experiment_id}.json"
     if path.exists():
         raise FileExistsError(f"walkforward artifact {path} already exists; refusing to overwrite")
@@ -416,6 +418,8 @@ def save_results(
         "dirty_paths": dirty_paths,
         "feature_schema": schema_fingerprint(),
         "cost_model": (extra or {}).get("cost_model", {}),
+        "reward_config": (extra or {}).get("reward_config", {}),
+        "turnover_penalty_bps": (extra or {}).get("turnover_penalty_bps", 0.0),
         "seeds": (extra or {}).get("seeds", []),
         "timesteps": (extra or {}).get("timesteps", 0),
         "n_envs": (extra or {}).get("n_envs", 0),

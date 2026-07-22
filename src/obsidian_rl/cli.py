@@ -78,6 +78,7 @@ def _load_range(start: str | None, end: str | None) -> "object":
 
 
 def cmd_train(args: argparse.Namespace) -> int:
+    from obsidian_rl.env.trading_env import RewardConfig
     from obsidian_rl.evaluation.holdout import check_reserved_period_overlap
     from obsidian_rl.training.ppo import PpoHyperparams, TrainConfig, train_ppo
 
@@ -108,10 +109,15 @@ def cmd_train(args: argparse.Namespace) -> int:
             checkpoint_freq=2048,
             eval_freq=2048,
             hyperparams=PpoHyperparams(n_steps=256, batch_size=64, net_arch=(32, 32)),
+            reward=RewardConfig(turnover_penalty_bps=args.turnover_penalty_bps),
         )
     else:
         cfg = TrainConfig(
-            total_timesteps=args.timesteps, n_envs=args.n_envs, seed=args.seed, device=args.device
+            total_timesteps=args.timesteps,
+            n_envs=args.n_envs,
+            seed=args.seed,
+            device=args.device,
+            reward=RewardConfig(turnover_penalty_bps=args.turnover_penalty_bps),
         )
     result = train_ppo(train_candles, eval_candles, cfg, settings.models_dir)
     print(
@@ -133,6 +139,7 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
     from dataclasses import asdict
     from pathlib import Path
 
+    from obsidian_rl.env.trading_env import RewardConfig
     from obsidian_rl.evaluation.holdout import check_reserved_period_overlap, get_holdout_start_ms
     from obsidian_rl.evaluation.walkforward import (
         create_experiment_id,
@@ -172,7 +179,8 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
     )
     seeds = [int(s) for s in args.seeds.split(",")] if not args.skip_ppo else []
     cost_model = CostModel()
-    experiment_id = create_experiment_id()
+    reward_config = RewardConfig(turnover_penalty_bps=args.turnover_penalty_bps)
+    experiment_id = create_experiment_id(args.turnover_penalty_bps)
     all_rows = []
     for fold in folds:
         val = slice_candles(candles, fold.val_start_ms, fold.val_end_ms)
@@ -192,6 +200,7 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
                 seed=seed,
                 device=args.device,
                 costs=cost_model,
+                reward=reward_config,
             )
             model_id = f"{experiment_id}-f{fold.fold_id}-s{seed}"
             result = train_ppo(
@@ -221,6 +230,8 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
         Path("artifacts/walkforward"),
         extra={
             "cost_model": asdict(cost_model),
+            "reward_config": asdict(reward_config),
+            "turnover_penalty_bps": args.turnover_penalty_bps,
             "seeds": seeds,
             "timesteps": args.timesteps,
             "n_envs": args.n_envs,
@@ -407,6 +418,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-envs", type=int, default=8)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    p.add_argument(
+        "--turnover-penalty-bps",
+        type=float,
+        default=0.0,
+        help="turnover regularization penalty in bps (default: 0.0)",
+    )
     p.set_defaults(func=cmd_train)
 
     p = sub.add_parser("walk-forward", help="walk-forward evaluation of PPO vs baselines")
@@ -421,6 +438,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-envs", type=int, default=8)
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--skip-ppo", action="store_true", help="baselines only")
+    p.add_argument(
+        "--turnover-penalty-bps",
+        type=float,
+        default=0.0,
+        help="turnover regularization penalty in bps (default: 0.0)",
+    )
     p.set_defaults(func=cmd_walk_forward)
 
     p = sub.add_parser("holdout", help="run the untouched final holdout ONCE for one model")

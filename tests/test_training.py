@@ -395,3 +395,64 @@ def test_immutable_model_directory_and_registration_protection(
     assert res1.record.model_id != res2.record.model_id
     assert res1.record.model_dir != res2.record.model_dir
     assert res1.record.model_dir.exists() and res2.record.model_dir.exists()
+
+
+def test_turnover_penalty_bps_metadata_and_model_ids(tmp_path: Path) -> None:
+    from obsidian_rl.env.trading_env import RewardConfig
+
+    train_candles = make_candles(160, seed=31)
+    eval_candles = make_candles(120, seed=32, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000)
+    cfg_zero = replace(SMOKE_CFG, reward=RewardConfig(turnover_penalty_bps=0.0))
+    cfg_pen = replace(SMOKE_CFG, reward=RewardConfig(turnover_penalty_bps=12.5))
+
+    models_dir = tmp_path / "tp_models"
+    res_zero = train_ppo(train_candles, eval_candles, cfg_zero, models_dir, model_id=None)
+    res_pen = train_ppo(train_candles, eval_candles, cfg_pen, models_dir, model_id=None)
+
+    # metadata binds the exact value
+    assert res_zero.record.metadata["config"]["reward"]["turnover_penalty_bps"] == 0.0
+    assert res_pen.record.metadata["config"]["reward"]["turnover_penalty_bps"] == 12.5
+
+    # model identities differ and encode the penalty when > 0
+    assert "-tp" not in res_zero.record.model_id
+    assert "-tp12.5-" in res_pen.record.model_id
+
+
+def test_turnover_penalty_bps_resume_compatibility_rejection(trained_model_dir: Path, tmp_path: Path) -> None:
+    from obsidian_rl.env.trading_env import RewardConfig
+
+    train_candles = make_candles(160, seed=41)
+    eval_candles = make_candles(120, seed=42, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000)
+    # trained_model_dir has turnover_penalty_bps = 0.0 (from SMOKE_CFG)
+    incompat_cfg = replace(SMOKE_CFG, total_timesteps=32, eval_freq=10_000, reward=RewardConfig(turnover_penalty_bps=20.0))
+
+    models_dir = tmp_path / "resume_models"
+    with pytest.raises(ModelCompatibilityError, match="turnover_penalty_bps mismatch"):
+        train_ppo(
+            train_candles,
+            eval_candles,
+            incompat_cfg,
+            models_dir,
+            model_id="resumed-model-v1",
+            resume_from=trained_model_dir,
+        )
+
+
+def test_cli_parser_turnover_penalty_bps() -> None:
+    from obsidian_rl.cli import build_parser
+
+    parser = build_parser()
+    args_train = parser.parse_args([
+        "train",
+        "--train-start", "2023-01-01",
+        "--train-end", "2023-02-01",
+        "--eval-start", "2023-02-01",
+        "--turnover-penalty-bps", "15.5",
+    ])
+    assert args_train.turnover_penalty_bps == 15.5
+
+    args_wf = parser.parse_args([
+        "walk-forward",
+        "--turnover-penalty-bps", "25.0",
+    ])
+    assert args_wf.turnover_penalty_bps == 25.0

@@ -21,6 +21,7 @@ from obsidian_rl.portfolio.engine import PortfolioConfig
 from obsidian_rl.training.device import DeviceReport, detect_device
 from obsidian_rl.training.registry import (
     MODEL_FILE,
+    ModelCompatibilityError,
     ModelRecord,
     load_record,
     register_model,
@@ -115,8 +116,9 @@ def train_ppo(
         import uuid
 
         us = int(time.time() * 1_000_000) % 1_000_000
+        pen_tag = f"-tp{cfg.reward.turnover_penalty_bps}" if cfg.reward.turnover_penalty_bps > 0 else ""
         model_id = (
-            f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-{us:06d}-seed{cfg.seed}-{uuid.uuid4().hex[:8]}"
+            f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-{us:06d}-seed{cfg.seed}{pen_tag}-{uuid.uuid4().hex[:8]}"
         )
     model_id = validate_model_id(model_id)
     model_dir = Path(models_dir) / model_id
@@ -131,6 +133,14 @@ def train_ppo(
             raise FileExistsError(
                 f"resumed training output must use a new model_id and new directory; cannot overwrite resume_from ({resume_from})"
             )
+        resumed_config = resume_record.metadata.get("config", {})
+        resumed_reward_cfg = resumed_config.get("reward", {})
+        if isinstance(resumed_reward_cfg, dict):
+            resumed_pen = resumed_reward_cfg.get("turnover_penalty_bps", 0.0)
+            if resumed_pen != cfg.reward.turnover_penalty_bps:
+                raise ModelCompatibilityError(
+                    f"incompatible training config when resuming: turnover_penalty_bps mismatch (resumed={resumed_pen}, current={cfg.reward.turnover_penalty_bps})"
+                )
 
     Path(models_dir).mkdir(parents=True, exist_ok=True)
     try:
