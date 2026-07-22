@@ -146,17 +146,21 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
     from obsidian_rl.strategies.baselines import default_baselines
 
     settings = get_settings()
-    candles = _load_range(args.data_start, args.holdout_start)
+    holdout_ms = _parse_utc_date(args.holdout_start)
+    if holdout_ms > get_holdout_start_ms(settings):
+        raise ValueError("walkforward holdout_start cannot exceed central reserved boundary")
+    end_val_ms = holdout_ms - 1
+    store = CandleStore(settings.data_dir, settings.symbol, settings.interval)
+    candles = store.read(_parse_utc_date(args.data_start), end_val_ms)
+    if candles.empty:
+        raise SystemExit("no candles in requested range — run data-download first")
     check_reserved_period_overlap(
         _parse_utc_date(args.data_start),
-        _parse_utc_date(args.holdout_start),
+        end_val_ms,
         candles,
         purpose="walkforward",
         settings=settings,
     )
-    holdout_ms = _parse_utc_date(args.holdout_start)
-    if holdout_ms > get_holdout_start_ms(settings):
-        raise ValueError("walkforward holdout_start cannot exceed central reserved boundary")
     folds = make_folds(
         _parse_utc_date(args.data_start),
         holdout_ms,
