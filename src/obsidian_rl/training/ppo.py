@@ -6,6 +6,8 @@ model, and full metadata are written under models/<model_id>/.
 """
 
 import logging
+import math
+import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -17,9 +19,19 @@ from obsidian_rl.env.trading_env import RewardConfig, TradingEnv
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig
 from obsidian_rl.training.device import DeviceReport, detect_device
-from obsidian_rl.training.registry import MODEL_FILE, ModelRecord, load_record, register_model
+from obsidian_rl.training.registry import (
+    MODEL_FILE,
+    ModelCompatibilityError,
+    ModelRecord,
+    load_record,
+    register_model,
+    validate_model_id,
+)
 
 logger = logging.getLogger(__name__)
+
+FINAL_MODEL_FILE = "final_model.zip"
+BEST_VALIDATION_MODEL_FILE = "best_model.zip"
 
 
 @dataclass(frozen=True)
@@ -100,9 +112,43 @@ def train_ppo(
     device_report = detect_device(cfg.device)
     logger.info("device: %s", device_report.to_dict())
 
-    model_id = model_id or f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-seed{cfg.seed}"
+    if model_id is None:
+        import uuid
+
+        us = int(time.time() * 1_000_000) % 1_000_000
+        pen_tag = f"-tp{cfg.reward.turnover_penalty_bps}" if cfg.reward.turnover_penalty_bps > 0 else ""
+        model_id = (
+            f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-{us:06d}-seed{cfg.seed}{pen_tag}-{uuid.uuid4().hex[:8]}"
+        )
+    model_id = validate_model_id(model_id)
     model_dir = Path(models_dir) / model_id
-    model_dir.mkdir(parents=True, exist_ok=True)
+
+    resume_record = None
+    if resume_from is not None:
+        resume_record = load_record(resume_from)  # validates schema + checksum
+        if (
+            model_id == resume_record.model_id
+            or model_dir.resolve() == resume_record.model_dir.resolve()
+        ):
+            raise FileExistsError(
+                f"resumed training output must use a new model_id and new directory; cannot overwrite resume_from ({resume_from})"
+            )
+        resumed_config = resume_record.metadata.get("config", {})
+        resumed_reward_cfg = resumed_config.get("reward", {})
+        if isinstance(resumed_reward_cfg, dict):
+            resumed_pen = resumed_reward_cfg.get("turnover_penalty_bps", 0.0)
+            if resumed_pen != cfg.reward.turnover_penalty_bps:
+                raise ModelCompatibilityError(
+                    f"incompatible training config when resuming: turnover_penalty_bps mismatch (resumed={resumed_pen}, current={cfg.reward.turnover_penalty_bps})"
+                )
+
+    Path(models_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        model_dir.mkdir(parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"model directory {model_dir} already exists; refusing to reuse or overwrite"
+        ) from exc
 
     venv = DummyVecEnv(
         [
@@ -115,14 +161,13 @@ def train_ppo(
     )
 
     hp = cfg.hyperparams
-    if resume_from is not None:
-        record = load_record(resume_from)  # validates schema + checksum
+    if resume_record is not None:
         model = PPO.load(
-            record.model_dir / MODEL_FILE,
+            resume_record.model_dir / MODEL_FILE,
             env=venv,
             device=device_report.selected_device,
         )
-        logger.info("resumed from %s", record.model_id)
+        logger.info("resumed from %s", resume_record.model_id)
     else:
         model = PPO(
             "MlpPolicy",
@@ -141,37 +186,54 @@ def train_ppo(
             verbose=0,
         )
 
+    checkpoint_callback = CheckpointCallback(
+        save_freq=max(cfg.checkpoint_freq // cfg.n_envs, 1),
+        save_path=str(model_dir / "checkpoints"),
+        name_prefix="ckpt",
+    )
+
+    class TrackingEvalCallback(EvalCallback):
+        """Remember the step at which EvalCallback writes its selected checkpoint."""
+
+        best_timestep: int | None = None
+
+        def _on_step(self) -> bool:
+            previous_best = self.best_mean_reward
+            should_continue = super()._on_step()
+            if self.best_mean_reward > previous_best:
+                self.best_timestep = self.num_timesteps
+            return should_continue
+
+    eval_callback = TrackingEvalCallback(
+        eval_env,
+        best_model_save_path=str(model_dir / "best"),
+        eval_freq=max(cfg.eval_freq // cfg.n_envs, 1),
+        n_eval_episodes=1,
+        deterministic=True,
+        verbose=0,
+    )
     callbacks = [
-        CheckpointCallback(
-            save_freq=max(cfg.checkpoint_freq // cfg.n_envs, 1),
-            save_path=str(model_dir / "checkpoints"),
-            name_prefix="ckpt",
-        ),
-        EvalCallback(
-            eval_env,
-            best_model_save_path=str(model_dir / "best"),
-            eval_freq=max(cfg.eval_freq // cfg.n_envs, 1),
-            n_eval_episodes=1,
-            deterministic=True,
-            verbose=0,
-        ),
+        checkpoint_callback,
+        eval_callback,
     ]
 
     started = time.time()
     model.learn(total_timesteps=cfg.total_timesteps, callback=callbacks, progress_bar=False)
     wall = time.time() - started
 
-    model.save(model_dir / MODEL_FILE)
+    final_checkpoint = model_dir / FINAL_MODEL_FILE
+    model.save(final_checkpoint)
 
-    eval_mean = None
-    best_eval = model_dir / "best" / "evaluations.npz"  # EvalCallback log location varies
-    try:
-        from stable_baselines3.common.evaluation import evaluate_policy
-
-        mean_r, _ = evaluate_policy(model, eval_env, n_eval_episodes=1, deterministic=True)
-        eval_mean = float(mean_r if isinstance(mean_r, float | int) else mean_r[0])
-    except Exception as exc:
-        logger.warning("post-training evaluation failed: %s (%s)", exc, best_eval)
+    best_checkpoint = model_dir / "best" / BEST_VALIDATION_MODEL_FILE
+    if not best_checkpoint.is_file() or best_checkpoint.stat().st_size == 0:
+        raise RuntimeError(
+            "EvalCallback did not create a valid best validation checkpoint; "
+            f"refusing to register the final checkpoint (diagnostic retained at {final_checkpoint})"
+        )
+    eval_mean = float(eval_callback.best_mean_reward)
+    if not math.isfinite(eval_mean):
+        raise RuntimeError("EvalCallback selected a checkpoint without a finite validation score")
+    shutil.copy2(best_checkpoint, model_dir / MODEL_FILE)
 
     record = register_model(
         Path(models_dir),
@@ -193,10 +255,18 @@ def train_ppo(
             "train_end_ms": t_end_train,
             "eval_start_ms": t_start_eval,
             "eval_end_ms": int(eval_candles["open_time"].iloc[-1]),
+            "inner_eval_start_ms": t_start_eval,
+            "inner_eval_end_ms": int(eval_candles["open_time"].iloc[-1]),
             "n_train_candles": len(train_candles),
             "n_eval_candles": len(eval_candles),
+            "n_inner_eval_candles": len(eval_candles),
         },
-        metrics={"eval_mean_reward": eval_mean, "wall_seconds": wall},
+        metrics={
+            "eval_mean_reward": eval_mean,
+            "best_validation_mean_reward": eval_mean,
+            "best_validation_timestep": eval_callback.best_timestep,
+            "wall_seconds": wall,
+        },
     )
     return TrainResult(record, device_report, eval_mean, wall)
 

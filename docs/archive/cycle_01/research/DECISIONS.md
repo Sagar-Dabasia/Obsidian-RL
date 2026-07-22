@@ -2,7 +2,7 @@
 
 ## ADR-001: Rebuild in-place under `src/obsidian_rl`, quarantine legacy (2026-07-19)
 Legacy flat modules moved to `legacy/` (git mv, history preserved), never imported by new
-code. Rationale: every legacy subsystem has correctness-critical defects (docs/AUDIT.md);
+code. Rationale: every legacy subsystem has correctness-critical defects (../reports/AUDIT.md);
 characterization tests would certify wrong behavior. Legacy artifacts (`*.pkl`) untrusted —
 never loaded. Removal only after replacement parity (see Legacy policy in prompt/CLAUDE.md).
 
@@ -15,7 +15,7 @@ run per phase). SQLite via stdlib `sqlite3` (no SQLAlchemy until a measured need
 One Binance integration: hand-rolled public REST + websocket client behind an interface
 (python-binance rejected: pulls auth surface we must never use).
 
-## ADR-003: Market product (Phase 1) — see docs/adr/ADR-003-market-product.md
+## ADR-003: Market product (Phase 1) — see ../../../docs/adr/ADR-003-market-product.md
 
 ## ADR-004: PyTorch CUDA install (2026-07-19)
 torch 2.11.0+cu128 installed from https://download.pytorch.org/whl/cu128 into .venv

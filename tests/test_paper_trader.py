@@ -1,6 +1,7 @@
 """Live-paper trader tests: replay/backtest parity, idempotency, gaps, restart recovery,
 fail-flat, websocket event parsing."""
 
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -9,8 +10,13 @@ import pytest
 from obsidian_rl.evaluation.backtest import run_backtest
 from obsidian_rl.features.observation import PortfolioObs
 from obsidian_rl.features.pipeline import WARMUP_ROWS
-from obsidian_rl.ledger.ledger import Ledger
-from obsidian_rl.live.paper_trader import CandleSequenceError, PaperTrader, replay_candles
+from obsidian_rl.ledger.ledger import EventConflictError, Ledger
+from obsidian_rl.live.paper_trader import (
+    BUFFER_SIZE,
+    CandleSequenceError,
+    PaperTrader,
+    replay_candles,
+)
 from obsidian_rl.live.stream import parse_kline_event
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.strategies.baselines import ThresholdMomentum
@@ -41,6 +47,7 @@ def test_replay_matches_backtest_exactly(tmp_path: Path) -> None:
     assert n == bt.n_decisions
     s = trader.engine.state
     bs = bt.final_state_summary
+    assert s.qty == 0.0
     assert s.net_equity(float(candles["close"].iloc[-1])) == pytest.approx(
         bs["final_equity"], abs=1e-9
     )
@@ -50,6 +57,15 @@ def test_replay_matches_backtest_exactly(tmp_path: Path) -> None:
     assert s.turnover == pytest.approx(bs["turnover"], abs=1e-9)
     assert s.trade_count == int(bs["trade_count"])
     assert len(ledger.decisions(run_id)) == n
+
+    closure = ledger.get_closure(run_id)
+    assert closure is not None
+    assert closure["position_qty"] == 0.0
+    assert closure["net_equity"] == pytest.approx(bs["final_equity"], abs=1e-9)
+    assert closure["realized_pnl_total"] == pytest.approx(bs["realized_pnl"], abs=1e-9)
+    assert closure["fees_total"] == pytest.approx(bs["fees"], abs=1e-9)
+    assert closure["turnover_total"] == pytest.approx(bs["turnover"], abs=1e-9)
+    assert closure["trade_count"] == int(bs["trade_count"])
 
 
 def test_duplicate_candles_ignored(tmp_path: Path) -> None:
@@ -194,3 +210,235 @@ def test_ledger_survives_full_replay_twice(tmp_path: Path) -> None:
     n2 = replay_candles(trader, candles)
     assert n2 == 0
     assert len(ledger.decisions(run_id)) == rows1 == n1
+
+
+def test_close_session_idempotence(tmp_path: Path) -> None:
+    candles = make_candles(WARMUP_ROWS + 30)
+    trader, ledger, run_id = make_trader(tmp_path)
+    replay_candles(trader, candles)
+    mark = float(candles["close"].iloc[-1])
+    trader.close_session(mark)
+    fees1 = trader.engine.state.fees_paid
+    trades1 = trader.engine.state.trade_count
+    c1 = dict(ledger.get_closure(run_id))  # type: ignore[arg-type]
+
+    # second call with same or different price must not double-charge or duplicate closure
+    trader.close_session(mark + 10.0)
+    assert trader.engine.state.fees_paid == pytest.approx(fees1)
+    assert trader.engine.state.trade_count == trades1
+    c2 = dict(ledger.get_closure(run_id))  # type: ignore[arg-type]
+    assert c1["terminal_ts_ms"] == c2["terminal_ts_ms"]
+    assert c1["net_equity"] == c2["net_equity"]
+
+
+def test_close_session_invalid_mark_price(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    for bad_price in (float("nan"), float("inf"), -10.0, 0.0):
+        with pytest.raises(ValueError, match="invalid mark_price"):
+            trader.close_session(bad_price)
+    assert ledger.get_closure(run_id) is None
+    run_row = ledger.get_run(run_id)
+    assert run_row is not None
+    assert run_row["ended_at_ms"] is None
+
+
+def test_close_session_already_flat(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 2)
+    replay_candles(trader, candles)
+    # force portfolio flat if not already
+    if trader.engine.state.qty != 0.0:
+        trader.engine.rebalance(0.0, 100.0)
+    assert trader.engine.state.qty == 0.0
+    trader.close_session(100.0)
+    closure = ledger.get_closure(run_id)
+    assert closure is not None
+    assert closure["position_qty"] == 0.0
+    assert closure["fee"] == 0.0
+    assert closure["spread_cost"] == 0.0
+    assert closure["slippage_cost"] == 0.0
+
+
+def test_close_session_persistence_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 10)
+    replay_candles(trader, candles)
+
+    def _fail(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("db error")
+
+    monkeypatch.setattr(ledger, "finalize_run", _fail)
+    pre_state = copy.copy(trader.engine.state)
+    pre_pending = copy.copy(trader.pending)
+    with pytest.raises(RuntimeError, match="db error"):
+        trader.close_session(100.0)
+    assert trader.engine.state == copy.copy(pre_state)
+    assert trader.pending == pre_pending
+    run_row = ledger.get_run(run_id)
+    assert run_row is not None and run_row["ended_at_ms"] is None
+
+
+def test_close_session_retry_after_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 10)
+    replay_candles(trader, candles)
+
+    orig_finalize = ledger.finalize_run
+
+    def _fail(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("db error")
+
+    monkeypatch.setattr(ledger, "finalize_run", _fail)
+    with pytest.raises(RuntimeError, match="db error"):
+        trader.close_session(100.0)
+
+    monkeypatch.setattr(ledger, "finalize_run", orig_finalize)
+    trader.close_session(100.0)
+    closure = ledger.get_closure(run_id)
+    assert closure is not None
+    assert closure["position_qty"] == 0.0
+    run_row = ledger.get_run(run_id)
+    assert run_row is not None and run_row["ended_at_ms"] is not None
+
+
+def test_closed_run_restore_and_replay_no_op(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 10)
+    replay_candles(trader, candles)
+    trader.close_session(100.0)
+
+    # Re-instantiate and restore closed run
+    trader2 = PaperTrader(trader.strategy, ledger, run_id)
+    state = ledger.restore_state(run_id)
+    assert state is not None
+    assert state.qty == 0.0
+    trader2.restore(state, candles)
+    assert trader2.pending is None
+
+    n = replay_candles(trader2, candles)
+    assert n == 0
+    assert trader2.pending is None
+    assert trader2.engine.state.qty == 0.0
+
+
+def test_replay_candles_inconsistent_state_raises(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 10)
+    replay_candles(trader, candles)
+
+    # Manually set ended_at_ms without creating a closure
+    ledger._conn.execute("UPDATE runs SET ended_at_ms = 12345 WHERE run_id = ?", (run_id,))
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        replay_candles(trader, candles)
+
+
+def test_ingest_observation_and_expire_pending(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 5)
+    for i in range(len(candles)):
+        c = dict(candles.iloc[i])
+        trader.ingest_observation(c)
+
+    assert len(trader.buffer) == min(len(candles), BUFFER_SIZE)
+    assert trader.pending is None
+    assert trader.last_finalized_ms == int(candles["open_time"].iloc[-1])
+    assert trader.engine.state.trade_count == 0
+
+    # Now create a pending decision via on_finalized_candle
+    next_c = dict(make_candles(1, start_ms=trader.last_finalized_ms + trader.interval_ms).iloc[0])
+    trader.on_finalized_candle(next_c)
+    assert trader.pending is not None
+
+    # Expire pending
+    expired = trader.expire_pending("missed_test_window", now_ms=1700000000000)
+    assert expired is True
+    assert trader.pending is None
+    assert ledger.has_event(f"{run_id}:pending_expired:{int(next_c['open_time'])}") is True
+
+
+def test_restore_stale_pending_expiration(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 5)
+    replay_candles(trader, candles)
+    # Replay left trader.pending set or processed up to last candle
+    last_ms = int(candles["open_time"].iloc[-1])
+    if trader.pending is None:
+        trader.pending = trader._decide(dict(candles.iloc[-1]))
+
+    # Restore with now_ms well past the execution window + max_live_open_lag_ms
+    state = trader.engine.state
+    trader2 = PaperTrader(trader.strategy, ledger, run_id, max_live_open_lag_ms=5000)
+    stale_now = last_ms + trader.interval_ms + 10_000
+    trader2.restore(state, candles, now_ms=stale_now)
+    assert trader2.pending is None
+    assert ledger.has_event(f"{run_id}:pending_expired:{last_ms}") is True
+
+
+def test_expire_pending_failure_or_conflict_leaves_pending_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 5)
+    replay_candles(trader, candles)
+    if trader.pending is None:
+        trader.pending = trader._decide(dict(candles.iloc[-1]))
+    assert trader.pending is not None
+    pending_backup = copy.deepcopy(trader.pending)
+
+    # 1. DB persistence failure leaves pending unchanged and re-raises
+    def _raise(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("db persistence error")
+
+    monkeypatch.setattr(ledger, "record_event", _raise)
+    with pytest.raises(RuntimeError, match="db persistence error"):
+        trader.expire_pending("test_reason")
+    assert trader.pending == pending_backup
+
+    monkeypatch.undo()
+
+    # 2. Conflicting existing event raises EventConflictError and leaves pending unchanged
+    idempotency_key = f"{run_id}:pending_expired:{trader.pending.candle_open_ms}"
+    ledger.record_event(
+        run_id=run_id,
+        event_type="pending_execution_expired",
+        event_ts_ms=1700000000000,
+        idempotency_key=idempotency_key,
+        details={"conflicting": "details"},
+    )
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        trader.expire_pending("test_reason", now_ms=1700000000000)
+    assert trader.pending == pending_backup
+    ledger.close()
+
+
+def test_expire_pending_identical_retry_clears_pending(tmp_path: Path) -> None:
+    trader, ledger, run_id = make_trader(tmp_path)
+    candles = make_candles(WARMUP_ROWS + 5)
+    replay_candles(trader, candles)
+    if trader.pending is None:
+        trader.pending = trader._decide(dict(candles.iloc[-1]))
+    assert trader.pending is not None
+
+    expected_open = trader.pending.candle_open_ms + trader.interval_ms
+    idempotency_key = f"{run_id}:pending_expired:{trader.pending.candle_open_ms}"
+    details = {
+        "pending_source_open_ms": trader.pending.candle_open_ms,
+        "expected_execution_open_ms": expected_open,
+        "expiration_reason": "retry_reason",
+        "proposed_target": trader.pending.proposed_target,
+    }
+    # Pre-insert exact identical event
+    ledger.record_event(
+        run_id=run_id,
+        event_type="pending_execution_expired",
+        event_ts_ms=1700000000000,
+        idempotency_key=idempotency_key,
+        details=details,
+        created_at_ms=1700000000000,
+    )
+
+    # Now expire_pending should see identical existing event and clear pending without raising
+    success = trader.expire_pending("retry_reason", now_ms=1700000000000)
+    assert success is True
+    assert trader.pending is None
+    ledger.close()

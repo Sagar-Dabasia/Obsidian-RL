@@ -1,4 +1,14 @@
-"""Gate-composed strategies for ablation: base+gate, and gate-only direct policy."""
+"""Gate-composed strategies for ablation: base+gate, and gate-only direct policy.
+
+Gate predictions represent signed directional net edge:
+  > +margin -> long permitted
+  < -margin -> short permitted
+  otherwise -> flat (no position)
+
+Margin must be non-negative. Cost is NOT subtracted again (already encoded in the label).
+"""
+
+import math
 
 import numpy as np
 
@@ -14,6 +24,13 @@ class GatedStrategy:
     """
 
     def __init__(self, base: Strategy, gate: AlphaGate, margin: float = 0.0) -> None:
+        if (
+            isinstance(margin, bool)
+            or not isinstance(margin, (int, float))
+            or not math.isfinite(margin)
+            or margin < 0
+        ):
+            raise ValueError("margin must be a finite non-bool numeric >= 0")
         self.base = base
         self.gate = gate
         self.margin = margin
@@ -24,10 +41,10 @@ class GatedStrategy:
 
     def propose(self, market_row: np.ndarray, portfolio: PortfolioObs) -> float:
         proposal = float(self.base.propose(market_row, portfolio))
-        pred = self.gate.predict_row(market_row)
-        if pred > self.margin:
+        direction = self.gate.decide(market_row, self.margin)
+        if direction > 0:
             return max(proposal, 0.0)
-        if pred < -self.margin:
+        if direction < 0:
             return min(proposal, 0.0)
         return 0.0
 
@@ -36,6 +53,13 @@ class GateDirectStrategy:
     """Direct supervised target-position policy: full long/short beyond the margin."""
 
     def __init__(self, gate: AlphaGate, margin: float = 0.0) -> None:
+        if (
+            isinstance(margin, bool)
+            or not isinstance(margin, (int, float))
+            or not math.isfinite(margin)
+            or margin < 0
+        ):
+            raise ValueError("margin must be a finite non-bool numeric >= 0")
         self.gate = gate
         self.margin = margin
         self.strategy_id = f"gate-direct-m{margin}"
@@ -44,9 +68,9 @@ class GateDirectStrategy:
         return None
 
     def propose(self, market_row: np.ndarray, portfolio: PortfolioObs) -> float:
-        pred = self.gate.predict_row(market_row)
-        if pred > self.margin:
+        direction = self.gate.decide(market_row, self.margin)
+        if direction > 0:
             return 1.0
-        if pred < -self.margin:
+        if direction < 0:
             return -1.0
         return 0.0

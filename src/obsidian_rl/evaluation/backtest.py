@@ -13,6 +13,7 @@ import pandas as pd
 
 from obsidian_rl.features.observation import PortfolioObs
 from obsidian_rl.features.pipeline import WARMUP_ROWS, compute_market_features
+from obsidian_rl.features.schema import PORTFOLIO_BOUNDS
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 from obsidian_rl.strategies.base import Strategy
@@ -20,7 +21,7 @@ from obsidian_rl.strategies.base import Strategy
 DEFAULT_TARGETS: tuple[float, ...] = (-1.0, -0.5, 0.0, 0.5, 1.0)
 
 #: window (in candles) for "recent turnover" and "time in position" normalization
-ROLLING_WINDOW = 96
+ROLLING_WINDOW = int(PORTFOLIO_BOUNDS["time_in_position"]["norm_window"])
 
 
 @dataclass
@@ -64,10 +65,31 @@ class PortfolioFeatureTracker:
         equity = s.net_equity(mark_price)
         safe_equity = max(equity, 1e-9)
         return PortfolioObs(
-            exposure=float(np.clip(s.exposure(mark_price), -3.0, 3.0)),
-            unrealized_return=float(np.clip(s.unrealized_pnl(mark_price) / safe_equity, -3, 3)),
-            time_in_position=min(self.steps_in_position / ROLLING_WINDOW, 1.0),
-            recent_turnover=float(np.clip(sum(self._turnover_history) / safe_equity, 0, 10)),
+            exposure=float(
+                np.clip(
+                    s.exposure(mark_price),
+                    PORTFOLIO_BOUNDS["exposure"]["clip_low"],
+                    PORTFOLIO_BOUNDS["exposure"]["clip_high"],
+                )
+            ),
+            unrealized_return=float(
+                np.clip(
+                    s.unrealized_pnl(mark_price) / safe_equity,
+                    PORTFOLIO_BOUNDS["unrealized_return"]["clip_low"],
+                    PORTFOLIO_BOUNDS["unrealized_return"]["clip_high"],
+                )
+            ),
+            time_in_position=min(
+                self.steps_in_position / ROLLING_WINDOW,
+                PORTFOLIO_BOUNDS["time_in_position"]["clip_high"],
+            ),
+            recent_turnover=float(
+                np.clip(
+                    sum(self._turnover_history) / safe_equity,
+                    PORTFOLIO_BOUNDS["recent_turnover"]["clip_low"],
+                    PORTFOLIO_BOUNDS["recent_turnover"]["clip_high"],
+                )
+            ),
             drawdown=s.drawdown(mark_price),
         )
 
@@ -115,7 +137,7 @@ def run_backtest(
         funding_events.sort()
     f_idx = 0
 
-    records: list[tuple[int, float, float, float, float]] = []
+    records: list[tuple[int, float, float, float, float, bool, str]] = []
     n_decisions = 0
 
     for t in range(WARMUP_ROWS + signal_delay, len(candles) - 1):
@@ -148,12 +170,29 @@ def run_backtest(
                 float(eq),
                 float(engine.state.exposure(close_px[t + 1])),
                 float(engine.state.drawdown(close_px[t + 1])),
+                False,
+                "decision",
             )
         )
 
     engine.liquidate(close_px[-1])
+    engine.mark_to_market(close_px[-1])
+    records.append(
+        (
+            int(close_time[-1]),
+            float(close_px[-1]),
+            float(engine.state.net_equity(close_px[-1])),
+            0.0,
+            float(engine.state.drawdown(close_px[-1])),
+            True,
+            "terminal_liquidation",
+        )
+    )
 
-    curve = pd.DataFrame(records, columns=["open_time", "close", "equity", "exposure", "drawdown"])
+    curve = pd.DataFrame(
+        records,
+        columns=["open_time", "close", "equity", "exposure", "drawdown", "is_terminal", "event"],
+    )
     s = engine.state
     summary = {
         "initial_cash": engine.config.initial_cash,

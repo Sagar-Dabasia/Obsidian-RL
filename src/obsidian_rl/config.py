@@ -7,6 +7,7 @@ its configuration.
 
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
 
     symbol: str = "BTCUSDT"
     interval: str = "15m"
+    holdout_start_utc: str = "2025-07-01"
 
     # Public market-data endpoints (ADR-003). No authenticated endpoint is ever used.
     fapi_base_url: str = "https://fapi.binance.com"
@@ -27,6 +29,7 @@ class Settings(BaseSettings):
 
     request_timeout_s: float = 30.0
     max_retries: int = 5
+    max_live_open_lag_ms: int = Field(default=5000, ge=0)
 
 
 def get_settings() -> Settings:

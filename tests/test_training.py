@@ -2,6 +2,7 @@
 deterministic inference, GPU detection. All tiny and CPU-only."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,28 @@ SMOKE_CFG = TrainConfig(
 )
 
 
+from typing import Iterator
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _mock_clean_git_state_module() -> Iterator[None]:
+    from unittest.mock import patch
+    from obsidian_rl.training.registry import GitSourceState, get_git_source_state as real_get_git_source_state
+
+    clean_state = GitSourceState(commit="a" * 40, is_clean=True, dirty_paths=[])
+
+    def fake_get_git_source_state(path: Path | None = None) -> GitSourceState:
+        if path is not None:
+            return real_get_git_source_state(path)
+        return clean_state
+
+    with (
+        patch("obsidian_rl.training.registry.get_git_source_state", fake_get_git_source_state),
+        patch("obsidian_rl.training.promotion.get_git_source_state", fake_get_git_source_state),
+    ):
+        yield
+
+
 @pytest.fixture(scope="module")
 def trained_model_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     models_dir = tmp_path_factory.mktemp("models")
@@ -59,10 +82,34 @@ def test_gpu_detection_report() -> None:
 def test_smoke_training_produces_valid_registry_entry(trained_model_dir: Path) -> None:
     record = load_record(trained_model_dir)
     assert record.metadata["algorithm"] == "ppo-mlp-discrete5"
-    assert record.metadata["feature_schema"]["version"] == "fs-v1"
+    assert record.metadata["feature_schema"]["version"] == "fs-v2"
     assert record.metadata["data"]["eval_start_ms"] > record.metadata["data"]["train_end_ms"]
     assert record.metadata["promotion"] == "candidate"
     assert (trained_model_dir / MODEL_FILE).exists()
+    assert (trained_model_dir / "final_model.zip").exists()
+    assert (trained_model_dir / MODEL_FILE).read_bytes() == (
+        trained_model_dir / "best" / "best_model.zip"
+    ).read_bytes()
+    assert record.metadata["metrics"]["best_validation_timestep"] is not None
+    assert (
+        record.metadata["metrics"]["best_validation_mean_reward"]
+        == record.metadata["metrics"]["eval_mean_reward"]
+    )
+
+
+def test_training_requires_a_best_validation_checkpoint(tmp_path: Path) -> None:
+    train_candles = make_candles(160, seed=13)
+    eval_candles = make_candles(
+        120, seed=14, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000
+    )
+    no_eval_cfg = replace(SMOKE_CFG, total_timesteps=64, eval_freq=10_000)
+    model_id = "no-best-checkpoint"
+
+    with pytest.raises(RuntimeError, match="did not create a valid best validation checkpoint"):
+        train_ppo(train_candles, eval_candles, no_eval_cfg, tmp_path, model_id=model_id)
+
+    assert (tmp_path / model_id / "final_model.zip").exists()
+    assert not (tmp_path / model_id / MODEL_FILE).exists()
 
 
 def test_deterministic_inference(trained_model_dir: Path) -> None:
@@ -147,3 +194,265 @@ def test_ppo_strategy_adapter(trained_model_dir: Path) -> None:
     res = run_backtest(candles, strat, cost_model=CM)
     assert res.n_decisions > 0
     assert np.isfinite(res.final_state_summary["final_equity"])
+
+
+def test_invalid_model_id_path_construction_rejected(tmp_path: Path) -> None:
+    train_candles = make_candles(160, seed=15)
+    eval_candles = make_candles(
+        120, seed=16, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000
+    )
+    models_dir = tmp_path / "safe_models"
+    models_dir.mkdir()
+    invalid_ids = [
+        "../escape",
+        "/abs/path",
+        "foo/bar",
+        "CON",
+    ]
+    for bad_id in invalid_ids:
+        with pytest.raises(ValueError):
+            train_ppo(train_candles, eval_candles, SMOKE_CFG, models_dir, model_id=bad_id)
+    assert not (tmp_path / "escape").exists()
+    assert not (tmp_path / "abs").exists()
+    assert list(models_dir.iterdir()) == []
+
+
+def test_load_record_strict_metadata_checks(trained_model_dir: Path, tmp_path: Path) -> None:
+    import shutil
+
+    meta_path = trained_model_dir / METADATA_FILE
+    original_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    # integer model_id rejected
+    copy_dir = tmp_path / "int_id_model"
+    shutil.copytree(trained_model_dir, copy_dir)
+    meta = dict(original_meta)
+    meta["model_id"] = 12345
+    (copy_dir / METADATA_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="must be a string without coercion"):
+        load_record(copy_dir)
+
+    # directory/metadata ID mismatch rejected
+    copy_dir2 = tmp_path / "mismatch_dir"
+    shutil.copytree(trained_model_dir, copy_dir2)
+    meta = dict(original_meta)
+    meta["model_id"] = "different-id"
+    (copy_dir2 / METADATA_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="does not match directory name"):
+        load_record(copy_dir2)
+
+    # malformed metadata root rejected
+    copy_dir3 = tmp_path / "malformed_root"
+    shutil.copytree(trained_model_dir, copy_dir3)
+    (copy_dir3 / METADATA_FILE).write_text('["not", "an", "object"]', encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="root must be a JSON object"):
+        load_record(copy_dir3)
+
+    # incomplete or reordered feature schema rejected
+    copy_dir4 = tmp_path / "reordered_schema"
+    shutil.copytree(trained_model_dir, copy_dir4)
+    meta = dict(original_meta)
+    meta["model_id"] = copy_dir4.name
+    fs = dict(meta["feature_schema"])
+    fs["market_features"] = list(reversed(fs["market_features"]))
+    meta["feature_schema"] = fs
+    (copy_dir4 / METADATA_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="feature schema mismatch"):
+        load_record(copy_dir4)
+
+    # malformed SHA-256 rejected
+    copy_dir5 = tmp_path / "malformed_sha"
+    shutil.copytree(trained_model_dir, copy_dir5)
+    meta = dict(original_meta)
+    meta["model_id"] = copy_dir5.name
+    meta["artifact_sha256"] = "ABCDEF"
+    (copy_dir5 / METADATA_FILE).write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ModelCompatibilityError, match="valid 64-char lowercase SHA-256"):
+        load_record(copy_dir5)
+
+
+def test_git_source_root_resolution_in_temp_repos(tmp_path: Path) -> None:
+    import subprocess
+    from obsidian_rl.training.registry import (
+        _resolve_repo_root,
+        current_git_commit,
+        get_git_source_state,
+    )
+
+    repo_dir = tmp_path / "temp_git_repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+    (repo_dir / "file.txt").write_text("hello", encoding="utf-8")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_dir, check=True)
+
+    sub_dir = repo_dir / "sub" / "folder"
+    sub_dir.mkdir(parents=True)
+    assert _resolve_repo_root(sub_dir) == repo_dir.resolve()
+
+    commit = current_git_commit(repo_dir)
+    assert len(commit) == 40
+    assert all(c in "0123456789abcdef" for c in commit.lower())
+
+    state = get_git_source_state(repo_dir)
+    assert state.commit == commit
+    assert state.is_clean is True
+    assert state.dirty_paths == []
+
+    (repo_dir / "file.txt").write_text("modified", encoding="utf-8")
+    dirty_state = get_git_source_state(repo_dir)
+    assert dirty_state.commit == commit
+    assert dirty_state.is_clean is False
+    assert "file.txt" in dirty_state.dirty_paths
+
+
+def test_immutable_model_directory_and_registration_protection(
+    trained_model_dir: Path, tmp_path: Path
+) -> None:
+    import shutil
+    from obsidian_rl.training.registry import register_model
+
+    models_dir = tmp_path / "protected_models"
+    models_dir.mkdir()
+    existing_id = "existing-model-v1"
+    existing_dir = models_dir / existing_id
+    shutil.copytree(trained_model_dir, existing_dir)
+    meta_json = json.loads((existing_dir / METADATA_FILE).read_text(encoding="utf-8"))
+    meta_json["model_id"] = existing_id
+    (existing_dir / METADATA_FILE).write_text(json.dumps(meta_json), encoding="utf-8")
+
+    ckpts_dir = existing_dir / "checkpoints"
+    ckpts_dir.mkdir(exist_ok=True)
+    ckpt_file = ckpts_dir / "ckpt_1.zip"
+    ckpt_file.write_bytes(b"dummy-checkpoint-bytes")
+
+    evals_dir = existing_dir / "evaluations"
+    evals_dir.mkdir(exist_ok=True)
+    eval_file = evals_dir / "eval_report.json"
+    eval_file.write_text('{"dummy": "evaluation"}', encoding="utf-8")
+
+    orig_model_bytes = (existing_dir / MODEL_FILE).read_bytes()
+    orig_meta_bytes = (existing_dir / METADATA_FILE).read_bytes()
+    orig_ckpt_bytes = ckpt_file.read_bytes()
+    orig_eval_text = eval_file.read_text(encoding="utf-8")
+    orig_files_set = set(p.relative_to(existing_dir) for p in existing_dir.rglob("*"))
+
+    train_candles = make_candles(160, seed=21)
+    eval_candles = make_candles(
+        120, seed=22, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000
+    )
+    tiny_cfg = replace(SMOKE_CFG, total_timesteps=32, eval_freq=10_000)
+
+    # 1. training with an existing explicit model ID is rejected, existing files unchanged, no new files created
+    with pytest.raises(FileExistsError, match="already exists"):
+        train_ppo(train_candles, eval_candles, tiny_cfg, models_dir, model_id=existing_id)
+
+    assert (existing_dir / MODEL_FILE).read_bytes() == orig_model_bytes
+    assert (existing_dir / METADATA_FILE).read_bytes() == orig_meta_bytes
+    assert ckpt_file.read_bytes() == orig_ckpt_bytes
+    assert eval_file.read_text(encoding="utf-8") == orig_eval_text
+    assert set(p.relative_to(existing_dir) for p in existing_dir.rglob("*")) == orig_files_set
+
+    # 2. direct duplicate register_model is rejected
+    meta = json.loads(orig_meta_bytes.decode("utf-8"))
+    with pytest.raises(FileExistsError, match="already registered|already exists"):
+        register_model(
+            models_dir,
+            existing_id,
+            algorithm="ppo-mlp-discrete5",
+            config=meta["config"],
+            seeds=meta["seeds"],
+            data_info=meta["data"],
+            metrics=meta["metrics"],
+        )
+    assert (existing_dir / MODEL_FILE).read_bytes() == orig_model_bytes
+    assert (existing_dir / METADATA_FILE).read_bytes() == orig_meta_bytes
+    assert set(p.relative_to(existing_dir) for p in existing_dir.rglob("*")) == orig_files_set
+
+    # 3. an empty pre-existing target directory is rejected
+    empty_id = "preexisting-empty"
+    (models_dir / empty_id).mkdir()
+    with pytest.raises(FileExistsError, match="already exists"):
+        train_ppo(train_candles, eval_candles, tiny_cfg, models_dir, model_id=empty_id)
+    assert list((models_dir / empty_id).iterdir()) == []
+
+    # 4. resume_from requires a different output model ID (cannot reuse same ID or same directory)
+    with pytest.raises(FileExistsError, match="new model_id|overwrite"):
+        train_ppo(
+            train_candles,
+            eval_candles,
+            tiny_cfg,
+            models_dir,
+            model_id=existing_id,
+            resume_from=existing_dir,
+        )
+
+    # 5. automatically generated model IDs are collision-resistant
+    res1 = train_ppo(train_candles, eval_candles, SMOKE_CFG, models_dir, model_id=None)
+    res2 = train_ppo(train_candles, eval_candles, SMOKE_CFG, models_dir, model_id=None)
+    assert res1.record.model_id != res2.record.model_id
+    assert res1.record.model_dir != res2.record.model_dir
+    assert res1.record.model_dir.exists() and res2.record.model_dir.exists()
+
+
+def test_turnover_penalty_bps_metadata_and_model_ids(tmp_path: Path) -> None:
+    from obsidian_rl.env.trading_env import RewardConfig
+
+    train_candles = make_candles(160, seed=31)
+    eval_candles = make_candles(120, seed=32, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000)
+    cfg_zero = replace(SMOKE_CFG, reward=RewardConfig(turnover_penalty_bps=0.0))
+    cfg_pen = replace(SMOKE_CFG, reward=RewardConfig(turnover_penalty_bps=12.5))
+
+    models_dir = tmp_path / "tp_models"
+    res_zero = train_ppo(train_candles, eval_candles, cfg_zero, models_dir, model_id=None)
+    res_pen = train_ppo(train_candles, eval_candles, cfg_pen, models_dir, model_id=None)
+
+    # metadata binds the exact value
+    assert res_zero.record.metadata["config"]["reward"]["turnover_penalty_bps"] == 0.0
+    assert res_pen.record.metadata["config"]["reward"]["turnover_penalty_bps"] == 12.5
+
+    # model identities differ and encode the penalty when > 0
+    assert "-tp" not in res_zero.record.model_id
+    assert "-tp12.5-" in res_pen.record.model_id
+
+
+def test_turnover_penalty_bps_resume_compatibility_rejection(trained_model_dir: Path, tmp_path: Path) -> None:
+    from obsidian_rl.env.trading_env import RewardConfig
+
+    train_candles = make_candles(160, seed=41)
+    eval_candles = make_candles(120, seed=42, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000)
+    # trained_model_dir has turnover_penalty_bps = 0.0 (from SMOKE_CFG)
+    incompat_cfg = replace(SMOKE_CFG, total_timesteps=32, eval_freq=10_000, reward=RewardConfig(turnover_penalty_bps=20.0))
+
+    models_dir = tmp_path / "resume_models"
+    with pytest.raises(ModelCompatibilityError, match="turnover_penalty_bps mismatch"):
+        train_ppo(
+            train_candles,
+            eval_candles,
+            incompat_cfg,
+            models_dir,
+            model_id="resumed-model-v1",
+            resume_from=trained_model_dir,
+        )
+
+
+def test_cli_parser_turnover_penalty_bps() -> None:
+    from obsidian_rl.cli import build_parser
+
+    parser = build_parser()
+    args_train = parser.parse_args([
+        "train",
+        "--train-start", "2023-01-01",
+        "--train-end", "2023-02-01",
+        "--eval-start", "2023-02-01",
+        "--turnover-penalty-bps", "15.5",
+    ])
+    assert args_train.turnover_penalty_bps == 15.5
+
+    args_wf = parser.parse_args([
+        "walk-forward",
+        "--turnover-penalty-bps", "25.0",
+    ])
+    assert args_wf.turnover_penalty_bps == 25.0

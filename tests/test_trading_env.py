@@ -150,3 +150,74 @@ def test_executed_action_reported_in_info() -> None:
     _, _, _, _, info = env.step(FULL_LONG)
     assert info["proposed_target"] == 1.0
     assert info["executed_target"] == pytest.approx(1.0, abs=0.05)
+
+
+def test_reward_config_validation_rejects_invalid_turnover_penalty_bps() -> None:
+    # bool rejected
+    with pytest.raises(ValueError, match="must be int or float"):
+        RewardConfig(turnover_penalty_bps=True)  # type: ignore[arg-type]
+    # negative rejected
+    with pytest.raises(ValueError, match="must be non-negative"):
+        RewardConfig(turnover_penalty_bps=-1.0)
+    # NaN rejected
+    with pytest.raises(ValueError, match="must be finite"):
+        RewardConfig(turnover_penalty_bps=float("nan"))
+    # Infinity rejected
+    with pytest.raises(ValueError, match="must be finite"):
+        RewardConfig(turnover_penalty_bps=float("inf"))
+    # valid values pass
+    assert RewardConfig(turnover_penalty_bps=0.0).turnover_penalty_bps == 0.0
+    assert RewardConfig(turnover_penalty_bps=5.5).turnover_penalty_bps == 5.5
+
+
+def test_turnover_regularization_zero_penalty_behavior_identical() -> None:
+    candles = make_candles(WARMUP_ROWS + 30)
+    env_zero = TradingEnv(candles, reward_config=RewardConfig(turnover_penalty_bps=0.0), episode_length=15, random_start=False)
+    env_default = TradingEnv(candles, reward_config=RewardConfig(), episode_length=15, random_start=False)
+    obs_z, info_z = env_zero.reset(seed=42)
+    obs_d, info_d = env_default.reset(seed=42)
+    np.testing.assert_array_equal(obs_z, obs_d)
+    assert info_z == info_d
+
+    for action in (FULL_LONG, FLAT, HALF_SHORT, 0, FULL_LONG):
+        obs_z, r_z, term_z, trunc_z, info_z = env_zero.step(action)
+        obs_d, r_d, term_d, trunc_d, info_d = env_default.step(action)
+        np.testing.assert_array_equal(obs_z, obs_d)
+        assert r_z == r_d
+        assert term_z == term_d and trunc_z == trunc_d
+        assert info_z["penalty"] == 0.0
+        assert info_z["reward_components"]["turnover_regularization_penalty"] == -0.0
+        assert info_z["raw_reward"] == r_z
+
+
+def test_turnover_regularization_hand_calculated_target_changes() -> None:
+    candles = make_candles(WARMUP_ROWS + 30)
+    tp_bps = 10.0  # 10 bps -> 0.001 per unit target change
+    env = TradingEnv(
+        candles,
+        reward_config=RewardConfig(turnover_penalty_bps=tp_bps),
+        episode_length=15,
+        random_start=False,
+    )
+    env.reset(seed=0)
+
+    # Step 1: flat (0.0) -> FULL_LONG (1.0). Target change = |1.0 - 0.0| = 1.0. Penalty = 0.001 * 1.0 = 0.001.
+    _, r1, _, _, info1 = env.step(FULL_LONG)
+    expected_pen1 = (tp_bps / 10000.0) * 1.0
+    assert info1["penalty"] == pytest.approx(expected_pen1)
+    assert info1["raw_reward"] - info1["penalty"] == pytest.approx(r1)
+    assert info1["final_reward"] == pytest.approx(r1)
+    assert info1["reward_components"]["turnover_regularization_penalty"] == pytest.approx(-expected_pen1)
+
+    # Step 2: no target change (FULL_LONG -> FULL_LONG). Target change = |1.0 - 1.0| = 0.0. Penalty = 0.0.
+    _, r2, _, _, info2 = env.step(FULL_LONG)
+    assert info2["penalty"] == pytest.approx(0.0)
+    assert info2["reward_components"]["turnover_regularization_penalty"] == pytest.approx(0.0)
+    assert r2 == pytest.approx(info2["raw_reward"])
+
+    # Step 3: long-to-short (FULL_LONG 1.0 -> FULL_SHORT -1.0, index 0). Target change = |-1.0 - 1.0| = 2.0.
+    _, r3, _, _, info3 = env.step(0)
+    expected_pen3 = (tp_bps / 10000.0) * 2.0
+    assert info3["penalty"] == pytest.approx(expected_pen3)
+    assert info3["raw_reward"] - info3["penalty"] == pytest.approx(r3)
+    assert info3["reward_components"]["turnover_regularization_penalty"] == pytest.approx(-expected_pen3)

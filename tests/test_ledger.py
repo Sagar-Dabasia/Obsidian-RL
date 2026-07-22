@@ -1,10 +1,16 @@
 """Ledger tests: idempotency, restart recovery, session separation."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from obsidian_rl.ledger.ledger import DuplicateDecisionError, Ledger
+from obsidian_rl.ledger.ledger import (
+    DuplicateClosureError,
+    DuplicateDecisionError,
+    EventConflictError,
+    Ledger,
+)
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 
@@ -106,3 +112,489 @@ def test_run_metadata_persisted(tmp_path: Path) -> None:
     ledger.end_run(run.run_id)
     row2 = ledger.get_run(run.run_id)
     assert row2 is not None and row2["ended_at_ms"] is not None
+
+
+def test_sqlite_schema_migration(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS runs ("
+        "run_id TEXT PRIMARY KEY, strategy_id TEXT NOT NULL, model_id TEXT, "
+        "mode TEXT NOT NULL, started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER, "
+        "initial_cash REAL NOT NULL, cost_model_json TEXT NOT NULL, "
+        "config_json TEXT, git_commit TEXT);"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS decisions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), "
+        "idempotency_key TEXT NOT NULL UNIQUE, candle_open_ms INTEGER NOT NULL, "
+        "candle_close_ms INTEGER NOT NULL, decision_ts_ms INTEGER NOT NULL, "
+        "data_source TEXT NOT NULL, proposed_target REAL NOT NULL, approved_target REAL NOT NULL, "
+        "executed_target REAL NOT NULL, delta_qty REAL NOT NULL, exec_price REAL NOT NULL, "
+        "traded_notional REAL NOT NULL, fee REAL NOT NULL, spread_cost REAL NOT NULL, "
+        "slippage_cost REAL NOT NULL, funding REAL NOT NULL DEFAULT 0.0, "
+        "realized_pnl_delta REAL NOT NULL, rejection_reason TEXT, position_qty REAL NOT NULL, "
+        "avg_entry_price REAL NOT NULL, cash REAL NOT NULL, unrealized_pnl REAL NOT NULL, "
+        "net_equity REAL NOT NULL, gross_equity REAL NOT NULL, realized_pnl_total REAL NOT NULL, "
+        "fees_total REAL NOT NULL, spread_total REAL NOT NULL, slippage_total REAL NOT NULL, "
+        "funding_total REAL NOT NULL, turnover_total REAL NOT NULL, trade_count INTEGER NOT NULL, "
+        "peak_equity REAL NOT NULL, created_at_ms INTEGER NOT NULL);"
+    )
+    conn.commit()
+    conn.close()
+
+    ledger = Ledger(path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+    row = ledger.record_closure(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    assert row["run_id"] == run.run_id
+    assert ledger.get_closure(run.run_id) is not None
+    ledger.close()
+
+
+def test_record_closure_duplicate(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+    ledger.record_closure(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    with pytest.raises(DuplicateClosureError):
+        ledger.record_closure(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+    ledger.close()
+
+
+def test_finalize_run_idempotence(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    row1 = ledger.finalize_run(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    assert row1 is not None
+    assert row1["run_id"] == run.run_id
+    row_after = ledger.get_run(run.run_id)
+    assert row_after is not None
+    assert row_after["ended_at_ms"] == 100_000
+
+    row2 = ledger.finalize_run(
+        run.run_id,
+        terminal_ts_ms=200_000,
+        mark_price=200.0,
+        result=res,
+        state=eng.state,
+    )
+    assert row2 is not None
+    assert row2["terminal_ts_ms"] == 100_000
+    assert row2["mark_price"] == 100.0
+    cur = ledger._conn.execute(
+        "SELECT COUNT(*) as cnt FROM run_closures WHERE run_id = ?",
+        (run.run_id,),
+    )
+    assert cur.fetchone()["cnt"] == 1
+    ledger.close()
+
+
+def test_finalize_run_inconsistent_closure_without_ended(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    ledger.record_closure(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        ledger.finalize_run(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+    ledger.close()
+
+
+def test_finalize_run_inconsistent_ended_without_closure(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    ledger._conn.execute("UPDATE runs SET ended_at_ms = ? WHERE run_id = ?", (100_000, run.run_id))
+    ledger._conn.commit()
+
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        ledger.finalize_run(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+    ledger.close()
+
+
+def test_finalize_run_rollback_on_failure(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    # Create a trigger that causes UPDATE on runs to fail
+    ledger._conn.execute(
+        "CREATE TRIGGER fail_runs BEFORE UPDATE ON runs BEGIN "
+        "SELECT RAISE(FAIL, 'update failed'); END;"
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(sqlite3.DatabaseError, match="update failed"):
+        ledger.finalize_run(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+
+    # Verify both closure insertion and ended_at_ms update rolled back
+    assert ledger.get_closure(run.run_id) is None
+    row_rb = ledger.get_run(run.run_id)
+    assert row_rb is not None
+    assert row_rb["ended_at_ms"] is None
+    ledger.close()
+
+
+def test_record_closure_unrelated_integrity_error(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    ledger._conn.execute(
+        "CREATE TRIGGER fail_check BEFORE INSERT ON run_closures BEGIN "
+        "SELECT RAISE(FAIL, 'CHECK constraint failed: positive_cash'); END;"
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        ledger.record_closure(
+            run.run_id,
+            terminal_ts_ms=100_000,
+            mark_price=100.0,
+            result=res,
+            state=eng.state,
+        )
+    ledger.close()
+
+
+def test_restore_state_consistency_checks(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "backtest", 10_000.0, {})
+    eng = PortfolioEngine(PortfolioConfig(), CM)
+    res = eng.liquidate(100.0)
+
+    # 1. Closure exists without ended_at_ms
+    ledger.record_closure(
+        run.run_id,
+        terminal_ts_ms=100_000,
+        mark_price=100.0,
+        result=res,
+        state=eng.state,
+    )
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        ledger.restore_state(run.run_id)
+
+    # 2. Both exist -> restores cleanly
+    ledger._conn.execute("UPDATE runs SET ended_at_ms = ? WHERE run_id = ?", (100_000, run.run_id))
+    ledger._conn.commit()
+    state = ledger.restore_state(run.run_id)
+    assert state is not None
+    assert state.qty == 0.0
+
+    # 3. ended_at_ms exists without closure
+    run2 = ledger.start_run("s2", "backtest", 10_000.0, {})
+    ledger._conn.execute("UPDATE runs SET ended_at_ms = ? WHERE run_id = ?", (100_000, run2.run_id))
+    ledger._conn.commit()
+    with pytest.raises(RuntimeError, match="inconsistent closure/ended state"):
+        ledger.restore_state(run2.run_id)
+    ledger.close()
+
+
+def test_record_and_get_events_idempotency(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    success = ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1700000000000,
+        idempotency_key="gap_key_1",
+        details={"missing": 5},
+    )
+    assert success is True
+    assert ledger.has_event("gap_key_1") is True
+
+    # Duplicate insertion should return False and not raise
+    success_dup = ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1700000000000,
+        idempotency_key="gap_key_1",
+        details={"missing": 5},
+    )
+    assert success_dup is False
+    events = ledger.get_events(run.run_id)
+    assert len(events) == 1
+    assert events[0]["event_type"] == "market_data_gap"
+    ledger.close()
+
+
+def test_record_event_rejects_bool_timestamps(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="invalid event_ts_ms"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=True,  # type: ignore[arg-type]
+            idempotency_key="k1",
+            details={},
+        )
+    with pytest.raises(ValueError, match="invalid created_at_ms"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k2",
+            details={},
+            created_at_ms=False,  # type: ignore[arg-type]
+        )
+    ledger.close()
+
+
+def test_record_event_rejects_negative_timestamps(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="invalid event_ts_ms"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=-1,
+            idempotency_key="k1",
+            details={},
+        )
+    with pytest.raises(ValueError, match="invalid created_at_ms"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k2",
+            details={},
+            created_at_ms=-5,
+        )
+    ledger.close()
+
+
+def test_record_event_rejects_nan_and_inf(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="invalid details JSON"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_nan",
+            details={"val": float("nan")},
+        )
+    with pytest.raises(ValueError, match="invalid details JSON"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_inf",
+            details={"val": float("inf")},
+        )
+    with pytest.raises(ValueError, match="invalid details JSON"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_neginf",
+            details={"val": float("-inf")},
+        )
+    ledger.close()
+
+
+def test_record_event_rejects_non_dict_details(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="details must be a dictionary"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k1",
+            details="not_a_dict",  # type: ignore[arg-type]
+        )
+    ledger.close()
+
+
+def test_record_event_rejects_unknown_event_types(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    with pytest.raises(ValueError, match="invalid event_type"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="unknown_event",
+            event_ts_ms=1000,
+            idempotency_key="k1",
+            details={},
+        )
+    ledger.close()
+
+
+def test_record_event_foreign_key_error_not_duplicate(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    ledger._conn.execute("PRAGMA foreign_keys = ON;")
+    with pytest.raises(sqlite3.IntegrityError):
+        ledger.record_event(
+            run_id="nonexistent_run",
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_fk",
+            details={},
+        )
+    ledger.close()
+
+
+def test_record_event_trigger_integrity_error(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    ledger._conn.execute(
+        "CREATE TRIGGER fail_event BEFORE INSERT ON run_events BEGIN "
+        "SELECT RAISE(FAIL, 'trigger check failure'); END;"
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="trigger check failure"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_trig",
+            details={},
+        )
+    ledger.close()
+
+
+def test_record_event_identical_retry(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    s1 = ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1000,
+        idempotency_key="k_idem",
+        details={"a": 1, "b": 2},
+    )
+    assert s1 is True
+    s2 = ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1000,
+        idempotency_key="k_idem",
+        details={"b": 2, "a": 1},
+    )
+    assert s2 is False
+    assert len(ledger.get_events(run.run_id)) == 1
+    ledger.close()
+
+
+def test_record_event_conflict_different_run_id(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    r1 = ledger.start_run("s1", "live", 10_000.0, {})
+    r2 = ledger.start_run("s2", "live", 10_000.0, {})
+    ledger.record_event(
+        run_id=r1.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1000,
+        idempotency_key="k_shared",
+        details={"x": 1},
+    )
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        ledger.record_event(
+            run_id=r2.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_shared",
+            details={"x": 1},
+        )
+    ledger.close()
+
+
+def test_record_event_conflict_different_contents(tmp_path: Path) -> None:
+    ledger = make_ledger(tmp_path)
+    run = ledger.start_run("s1", "live", 10_000.0, {})
+    ledger.record_event(
+        run_id=run.run_id,
+        event_type="market_data_gap",
+        event_ts_ms=1000,
+        idempotency_key="k_conflict",
+        details={"a": 1},
+    )
+    # Different event_type
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="backfill_observation_completed",
+            event_ts_ms=1000,
+            idempotency_key="k_conflict",
+            details={"a": 1},
+        )
+    # Different event_ts_ms
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=2000,
+            idempotency_key="k_conflict",
+            details={"a": 1},
+        )
+    # Different details
+    with pytest.raises(EventConflictError, match="already exists with different contents"):
+        ledger.record_event(
+            run_id=run.run_id,
+            event_type="market_data_gap",
+            event_ts_ms=1000,
+            idempotency_key="k_conflict",
+            details={"a": 2},
+        )
+    ledger.close()

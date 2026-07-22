@@ -23,11 +23,12 @@ orders and never uses private API credentials.
 
 ## Setup
 
-```powershell
+```bash
 python -m venv .venv
-.venv\Scripts\python -m pip install -e .[rl,gate,dashboard,dev]
+# On Windows PowerShell: .venv\Scripts\Activate.ps1
+# On Linux / macOS: source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev,rl,gate,dashboard]"
 ```
 
-See `CLAUDE.md` for the command reference and `docs/` for architecture, decisions,
-and validation reports. Historical results are simulated and net-of-assumed-costs;
-past simulated performance does not predict future results.
+See [docs/development.md](docs/development.md) for full reproducible environment setup, CI verification commands, and packaging guidelines. See `CLAUDE.md` for the command reference and `docs/` for architecture, decisions, and validation reports. Historical results are simulated and net-of-assumed-costs; past simulated performance does not predict future results.

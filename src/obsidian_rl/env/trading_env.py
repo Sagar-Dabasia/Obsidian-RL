@@ -24,8 +24,9 @@ import pandas as pd
 from gymnasium import spaces
 
 from obsidian_rl.evaluation.backtest import DEFAULT_TARGETS, PortfolioFeatureTracker
-from obsidian_rl.features.observation import OBSERVATION_DIM, build_observation
+from obsidian_rl.features.observation import build_observation
 from obsidian_rl.features.pipeline import WARMUP_ROWS, compute_market_features
+from obsidian_rl.features.schema import OBSERVATION_DIM, OBSERVATION_DTYPE
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 
@@ -38,11 +39,27 @@ class RewardConfig:
       pushing the policy toward parsimonious position changes.
     - drawdown_weight: penalizes sitting in drawdown, encouraging capital preservation.
     - exposure_weight: optional risk-aversion term on absolute exposure (default off).
+    - turnover_penalty_bps: additional training regularizer charged on absolute target change.
     """
 
     turnover_weight: float = 0.02
     drawdown_weight: float = 0.005
     exposure_weight: float = 0.0
+    turnover_penalty_bps: float = 0.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.turnover_penalty_bps, bool) or not isinstance(
+            self.turnover_penalty_bps, (int, float)
+        ):
+            raise ValueError(
+                f"turnover_penalty_bps={self.turnover_penalty_bps!r} must be int or float, not {type(self.turnover_penalty_bps).__name__}"
+            )
+        if not math.isfinite(self.turnover_penalty_bps):
+            raise ValueError(f"turnover_penalty_bps={self.turnover_penalty_bps!r} must be finite")
+        if self.turnover_penalty_bps < 0:
+            raise ValueError(
+                f"turnover_penalty_bps={self.turnover_penalty_bps} must be non-negative"
+            )
 
 
 class TradingEnv(gym.Env):
@@ -86,6 +103,7 @@ class TradingEnv(gym.Env):
         self._tracker = PortfolioFeatureTracker()
         self._t = 0
         self._steps = 0
+        self._previous_target = 0.0
 
     # ------------------------------------------------------------------ internals
     def _max_start(self) -> int:
@@ -114,6 +132,7 @@ class TradingEnv(gym.Env):
             self._t = int(self.np_random.integers(WARMUP_ROWS, self._max_start() + 1))
         else:
             self._t = WARMUP_ROWS
+        self._previous_target = 0.0
         return self._obs(), {"start_index": self._t, "open_time": int(self._open_time[self._t])}
 
     def step(
@@ -158,7 +177,13 @@ class TradingEnv(gym.Env):
         exposure_pen = self.reward_config.exposure_weight * abs(
             self._engine.state.exposure(next_close)
         )
-        reward = equity_return - turnover_pen - drawdown_pen - exposure_pen
+        existing_reward = equity_return - turnover_pen - drawdown_pen - exposure_pen
+
+        turnover_reg_pen = (self.reward_config.turnover_penalty_bps / 10000.0) * abs(
+            target - self._previous_target
+        )
+        self._previous_target = target
+        reward = existing_reward - turnover_reg_pen
 
         info: dict[str, Any] = {
             "reward_components": {
@@ -166,7 +191,11 @@ class TradingEnv(gym.Env):
                 "turnover_penalty": -turnover_pen,
                 "drawdown_penalty": -drawdown_pen,
                 "exposure_penalty": -exposure_pen,
+                "turnover_regularization_penalty": -turnover_reg_pen,
             },
+            "raw_reward": existing_reward,
+            "penalty": turnover_reg_pen,
+            "final_reward": reward,
             "proposed_target": target,
             "executed_target": result.executed_target,
             "execution": {

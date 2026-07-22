@@ -7,6 +7,7 @@ import pytest
 from obsidian_rl.dashboard.queries import (
     closed_trade_events,
     equity_and_drawdown,
+    get_run_closure,
     kpis,
     list_run_summaries,
     run_frame,
@@ -87,3 +88,38 @@ def test_warnings(populated_ledger: tuple[Path, str, str]) -> None:
     ended = warnings_for_run(frame, now_ms=last_candle + 20 * 900_000, run_ended=True)
     assert not any("stale" in w for w in ended)
     assert warnings_for_run(frame.iloc[0:0]) == ["no decisions recorded yet"]
+
+
+def test_closed_run_terminal_snapshot_in_kpis_and_curves(tmp_path: Path) -> None:
+    path = tmp_path / "ledger_closed.sqlite3"
+    ledger = Ledger(path)
+    run = ledger.start_run("threshold-momentum", "replay", 10_000.0, {})
+    trader = PaperTrader(ThresholdMomentum(0.002), ledger, run.run_id, cost_model=CM)
+    candles = make_candles(WARMUP_ROWS + 40, seed=7)
+    replay_candles(trader, candles)
+    mark = float(candles["close"].iloc[-1])
+    trader.close_session(mark)
+    ledger.close()
+
+    frame = run_frame(path, run.run_id)
+    closure = get_run_closure(path, run.run_id)
+    assert closure is not None
+
+    k = kpis(frame, 10_000.0, closure=closure)
+    assert k["position_qty"] == 0.0
+    assert k["unrealized_pnl"] == 0.0
+    assert k["net_equity"] == pytest.approx(float(closure["net_equity"]))
+    assert k["realized_pnl"] == pytest.approx(float(closure["realized_pnl_total"]))
+
+    curves = equity_and_drawdown(frame, closure=closure)
+    assert len(curves) == len(frame) + 1
+    assert curves["candle_open_ms"].iloc[-1] == closure["terminal_ts_ms"]
+    assert curves["net_equity"].iloc[-1] == pytest.approx(float(closure["net_equity"]))
+
+    events = closed_trade_events(frame, closure=closure)
+    if float(closure["realized_pnl_delta"]) != 0.0:
+        assert events["candle_open_ms"].iloc[-1] == closure["terminal_ts_ms"]
+
+    # warnings operate only on normal decisions and do not raise false gaps/warnings for closed runs
+    warnings = warnings_for_run(frame, run_ended=True)
+    assert not any("stale" in w or "gap" in w for w in warnings)

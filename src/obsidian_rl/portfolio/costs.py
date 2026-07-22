@@ -7,6 +7,7 @@ cash on the traded notional. This is P&L-equivalent to adjusting the fill price 
 every component separately attributable.
 """
 
+import math
 from dataclasses import dataclass
 
 
@@ -21,6 +22,12 @@ class CostModel:
     def __post_init__(self) -> None:
         for name in ("taker_fee", "half_spread", "slippage"):
             value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"{name}={value!r} must be int or float, not {type(value).__name__}"
+                )
+            if not math.isfinite(value):
+                raise ValueError(f"{name}={value!r} must be finite")
             if value < 0 or value > 0.05:
                 raise ValueError(f"{name}={value} outside sane range [0, 0.05]")
 

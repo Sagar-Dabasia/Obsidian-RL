@@ -1,7 +1,7 @@
 # Obsidian-RL — working notes for Claude
 
 Deep-RL crypto research + live-paper-trading platform. Research software; no profit claims.
-Read `docs/SESSION_HANDOFF.md` first for current state; `docs/DECISIONS.md` for ADRs.
+Read `docs/archive/cycle_01/research/SESSION_HANDOFF.md` first for current state; `docs/archive/cycle_01/research/DECISIONS.md` for ADRs.
 
 ## Hard rules
 - NEVER read/print `.env` or any secret. Public market-data endpoints only; no authenticated calls.
@@ -18,7 +18,7 @@ Read `docs/SESSION_HANDOFF.md` first for current state; `docs/DECISIONS.md` for 
   - `portfolio/` engine + costs · `ledger/` SQLite ledger · `strategies/` baselines
   - `env/` Gymnasium env · `training/` PPO · `evaluation/` walk-forward · `live/` paper trader
   - `dashboard/` Streamlit · `cli.py` entry points
-- `legacy/` — deprecated Q-learning system (audited defects: `docs/AUDIT.md`). Do not import.
+- `legacy/` — deprecated Q-learning system (audited defects: `docs/archive/cycle_01/reports/AUDIT.md`). Do not import.
 - `tests/` — pytest; network always mocked; CPU-only; no credentials required.
 - `data/`, `artifacts/`, `models/` — local only, gitignored.
 
