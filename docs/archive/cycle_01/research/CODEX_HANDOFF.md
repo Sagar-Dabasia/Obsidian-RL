@@ -9,7 +9,7 @@ Updated: 2026-07-22
 ## Status
 PPO Walk-Forward Research Protocol Hardening — **COMPLETE (verified)**
 
-See full readiness agent run report: [docs/AGENT_RUN_REPORT.md](AGENT_RUN_REPORT.md)
+See full readiness agent run report: [docs/archive/cycle_01/reports/AGENT_RUN_REPORT.md](../reports/AGENT_RUN_REPORT.md)
 
 ## What was verified in the Walk-Forward Protocol Hardening
 - **Outer Validation Leakage Eliminated**: Implemented nested chronological folds (`train` -> `purge_1` -> `inner_eval` -> `purge_2` -> `outer_val`) with `--inner-eval-days` (default `60`). PPO training and checkpoint selection (`EvalCallback`) receive only `(train, inner_eval)`. `outer_val` is isolated strictly for final strategy comparison (`evaluate_strategies_on_slice`).

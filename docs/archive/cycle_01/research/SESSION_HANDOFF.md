@@ -3,8 +3,8 @@
 Updated: 2026-07-20 · Branch: `rebuild/deep-rl-platform` (never pushed)
 
 ## State: rebuild COMPLETE (all phases 0-12) + adversarial review pass
-- 146 tests green; ruff/mypy/compileall clean. Results: docs/VALIDATION_REPORT.md.
-- Multi-agent correctness review done (docs/REVIEW.md): 6 confirmed defects fixed with
+- 146 tests green; ruff/mypy/compileall clean. Results: ../reports/VALIDATION_REPORT.md.
+- Multi-agent correctness review done (../reports/REVIEW.md): 6 confirmed defects fixed with
   regression tests (funding drop, gap-index, store conflict, CRITICAL carried-pending
   loss on backfill, double-rollback, no-trade-band close).
 - Data: 2020-01-01→2026-07-19 BTCUSDT 15m in data/ (local, gitignored); update via
@@ -15,7 +15,7 @@ Updated: 2026-07-20 · Branch: `rebuild/deep-rl-platform` (never pushed)
   vs buy&hold −39.1% — one realization, not evidence of an edge.
 
 ## Blocking external action
-- Revoke the Binance API key committed+pushed in 8c5cec9 (see docs/AUDIT.md).
+- Revoke the Binance API key committed+pushed in 8c5cec9 (see ../reports/AUDIT.md).
 
 ## Key commands (run with .venv\Scripts\python.exe -m obsidian_rl.cli ...)
 data-download/-update/-validate/-summary · gpu-check · train [--smoke] ·
