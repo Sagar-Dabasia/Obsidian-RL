@@ -130,10 +130,12 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 
 def cmd_walk_forward(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
     from pathlib import Path
 
     from obsidian_rl.evaluation.holdout import check_reserved_period_overlap, get_holdout_start_ms
     from obsidian_rl.evaluation.walkforward import (
+        create_experiment_id,
         evaluate_strategies_on_slice,
         make_folds,
         save_results,
@@ -144,10 +146,10 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
     from obsidian_rl.strategies.baselines import default_baselines
 
     settings = get_settings()
-    candles = _load_range(args.data_start, None)
+    candles = _load_range(args.data_start, args.holdout_start)
     check_reserved_period_overlap(
         _parse_utc_date(args.data_start),
-        None,
+        _parse_utc_date(args.holdout_start),
         candles,
         purpose="walkforward",
         settings=settings,
@@ -158,12 +160,15 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
     folds = make_folds(
         _parse_utc_date(args.data_start),
         holdout_ms,
+        candles=candles,
         train_days=args.train_days,
+        inner_eval_days=args.inner_eval_days,
         val_days=args.val_days,
         step_days=args.step_days,
     )
     seeds = [int(s) for s in args.seeds.split(",")] if not args.skip_ppo else []
     cost_model = CostModel()
+    experiment_id = create_experiment_id()
     all_rows = []
     for fold in folds:
         val = slice_candles(candles, fold.val_start_ms, fold.val_end_ms)
@@ -176,6 +181,7 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
             from obsidian_rl.training.ppo import TrainConfig, train_ppo
 
             train = slice_candles(candles, fold.train_start_ms, fold.train_end_ms)
+            inner_val = slice_candles(candles, fold.inner_eval_start_ms, fold.inner_eval_end_ms)
             cfg = TrainConfig(
                 total_timesteps=args.timesteps,
                 n_envs=args.n_envs,
@@ -183,12 +189,13 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
                 device=args.device,
                 costs=cost_model,
             )
+            model_id = f"{experiment_id}-f{fold.fold_id}-s{seed}"
             result = train_ppo(
                 train,
-                val,
+                inner_val,
                 cfg,
                 settings.models_dir,
-                model_id=f"wf-f{fold.fold_id}-s{seed}-{args.timesteps}",
+                model_id=model_id,
             )
             strategies.append(
                 (
@@ -208,7 +215,14 @@ def cmd_walk_forward(args: argparse.Namespace) -> int:
     path = save_results(
         all_rows,
         Path("artifacts/walkforward"),
-        extra={"folds": len(folds), "seeds": seeds, "timesteps": args.timesteps},
+        extra={
+            "cost_model": asdict(cost_model),
+            "seeds": seeds,
+            "timesteps": args.timesteps,
+            "n_envs": args.n_envs,
+            "fold_specs": [f.to_dict() for f in folds],
+        },
+        experiment_id=experiment_id,
     )
     print(f"results: {path}")
     print(summarize(all_rows).to_string())
@@ -395,6 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-start", default="2020-01-01")
     p.add_argument("--holdout-start", default="2025-07-01", help="folds never touch this period")
     p.add_argument("--train-days", type=int, default=720)
+    p.add_argument("--inner-eval-days", type=int, default=60, help="inner selection/evaluation window in days")
     p.add_argument("--val-days", type=int, default=180)
     p.add_argument("--step-days", type=int, default=270)
     p.add_argument("--seeds", default="42,43,44")

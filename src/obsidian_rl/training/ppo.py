@@ -245,8 +245,11 @@ def train_ppo(
             "train_end_ms": t_end_train,
             "eval_start_ms": t_start_eval,
             "eval_end_ms": int(eval_candles["open_time"].iloc[-1]),
+            "inner_eval_start_ms": t_start_eval,
+            "inner_eval_end_ms": int(eval_candles["open_time"].iloc[-1]),
             "n_train_candles": len(train_candles),
             "n_eval_candles": len(eval_candles),
+            "n_inner_eval_candles": len(eval_candles),
         },
         metrics={
             "eval_mean_reward": eval_mean,

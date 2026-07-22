@@ -1,29 +1,24 @@
 # Codex handoff
 
-Updated: 2026-07-21
+Updated: 2026-07-22
 
 ## Current branch and commit
-- Branch: `wip/phase8-ci-reproducibility`
-- Starting commit: `d1c0ed55273be5cab0e0b00eba32c50d1f7b6907`
+- Branch: `research/nested-walkforward-protocol`
+- Starting commit: `8de572c9b843e937e96a70822365b354f84331b1`
 
 ## Status
-Final System Audit & Readiness Verification — **COMPLETE (verified)**
+PPO Walk-Forward Research Protocol Hardening — **COMPLETE (verified)**
 
-See full readiness audit report: [docs/FINAL_SYSTEM_AUDIT.md](FINAL_SYSTEM_AUDIT.md)
-See full agent run report: [docs/AGENT_RUN_REPORT.md](AGENT_RUN_REPORT.md)
-Timestamped archive: [docs/agent-runs/2026-07-21T203000Z-phase8-ci-reproducibility.md](agent-runs/2026-07-21T203000Z-phase8-ci-reproducibility.md)
+See full readiness agent run report: [docs/AGENT_RUN_REPORT.md](AGENT_RUN_REPORT.md)
 
-## What was verified in the Final System Audit
-- **Repository & Security**: Confirmed zero tracked `.env` files (`git ls-files -- .env`), complete `.gitignore` coverage, least-privilege offline CI workflow, and clean-environment dependency installation (`python -m pip install -e ".[dev,rl,gate,dashboard]"`).
-- **Data Integrity & Model Lifecycle**: Confirmed strict float32/time alignment candle validation, single-use holdout segregation (`HOLDOUT_LOCK.json`), validation-selected checkpoint registration, immutable `metadata.json` (`schema_version="1.0.0"`), and atomic cross-process promotion locking (`.champion.lock`).
-- **Feature Contracts & Accounting Parity**: Confirmed schema-bound feature normalization (`expected_feature_fingerprint`), directional Alpha Gate target handling (`Long`/`Short` with fees), exact W+1 open fill timing across backtest/replay/live-paper, terminal liquidation curves, and signed chronological funding idempotency.
-- **Reconnect & Operational Readiness**: Confirmed reconnect gap recovery without synthetic fills, pending order expiration (`EXPIRED`), durable failure event sanitization (`failure_events` table), authoritative ledger configuration persistence, and zero `TODO`, `FIXME`, or `NotImplementedError` placeholders across `src/obsidian_rl`.
-- **Strategy Evidence & Final Verdict**: Confirmed strict separation between algorithmic/accounting correctness (`383 passed`) and trading edge claims, keeping real holdout unobserved. **Verdict: READY FOR CONTROLLED HISTORICAL TRAINING**.
+## What was verified in the Walk-Forward Protocol Hardening
+- **Outer Validation Leakage Eliminated**: Implemented nested chronological folds (`train` -> `purge_1` -> `inner_eval` -> `purge_2` -> `outer_val`) with `--inner-eval-days` (default `60`). PPO training and checkpoint selection (`EvalCallback`) receive only `(train, inner_eval)`. `outer_val` is isolated strictly for final strategy comparison (`evaluate_strategies_on_slice`).
+- **Reproducible Fold Evidence & Rejections**: `FoldSpec` now persists exact start/end ms boundaries, actual row counts, typed SHA-256 slice identities (`slice_sha256`), and exact durations for all 5 slices. Added strict rejections for empty slices, overlapping bounds, purge gap mismatches (`rows != WARMUP_ROWS`), rows outside declared bounds, and `outer_val` touching holdout (`get_holdout_start_ms()`).
+- **Collision-Resistant Experiment IDs & Multi-Seed Tracking**: Generated unique `experiment_id` (`wf-{stamp}-{us:06d}-{uuid.hex[:8]}`) used across artifact filenames, candidate model IDs (`{experiment_id}-f{fold_id}-s{seed}`), and `metadata.json` (`inner_eval_start_ms` / `inner_eval_end_ms`), preventing collisions and overwrites across reruns while storing complete Git state, cost models, seeds, and fold definitions.
 
 ## Verification Commands & Status
-- `pytest -q`: **383 passed, 1 skipped in 25.86s**
-- `compileall -q src tests`: **Clean syntax across 118 files**
-- `ruff check src tests` & `ruff format --check src tests`: **Clean**
-- `mypy src`: **Success: no issues found in 46 source files**
-- `pip check` & `build`: **No broken requirements, clean sdist & wheel build**
-- `git diff --check` & `git ls-files -- .env`: **Clean (0 tracked secrets)**
+- `python -m pytest -q`: **398 passed, 1 skipped (100% pass across entire repository)**
+- `python -m pytest tests/test_walkforward.py -q`: **7 passed (verified all 10 required proof properties)**
+
+## Verdict
+READY FOR CONTROLLED HISTORICAL TRAINING
