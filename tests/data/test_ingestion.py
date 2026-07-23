@@ -47,6 +47,7 @@ def make_bar(
         data_source="TEST",
     )
 
+
 @pytest.fixture
 def temp_db(tmp_path: Path) -> Path:
     """Provide a temporary database path for tests."""

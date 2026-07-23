@@ -370,9 +370,7 @@ def evaluate_strategies_on_slice(
     """Evaluate (label, strategy, seed) tuples under identical conditions + scenarios."""
     if val_candles.empty or len(val_candles) <= WARMUP_ROWS:
         raise ValueError("validation candles must have more rows than WARMUP_ROWS")
-    bh_return = float(
-        val_candles["close"].iloc[-1] / val_candles["close"].iloc[WARMUP_ROWS] - 1.0
-    )
+    bh_return = float(val_candles["close"].iloc[-1] / val_candles["close"].iloc[WARMUP_ROWS] - 1.0)
     scenarios = _scenarios(cost_model) if sensitivity else [("base", cost_model, 0)]
     rows: list[EvalRow] = []
     for label, strategy, seed in strategies:

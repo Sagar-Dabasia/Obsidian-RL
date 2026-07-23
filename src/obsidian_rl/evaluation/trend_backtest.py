@@ -160,9 +160,7 @@ def _run_single_backtest(
             history = bars[: i + 1]
             try:
                 sig = calculate_trend_signal(
-                    history,
-                    observed_before_ms=bar.observed_at_utc,
-                    config=config
+                    history, observed_before_ms=bar.observed_at_utc, config=config
                 )
                 if sig.direction == "LONG":
                     target_exposure = 1.0
