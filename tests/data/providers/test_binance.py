@@ -135,7 +135,9 @@ def test_binance_malformed_payload_and_non_finite_rejection() -> None:
         provider.fetch_bars("BTCUSDT", "15m", start_ms=0, end_ms=100)
 
     # Shorter than 12
-    mock_resp.json.return_value = [[1000, "100.0", "105.0", "99.0", "102.0", "10.0", 1999, "0", 10, "0", "0"]]
+    mock_resp.json.return_value = [
+        [1000, "100.0", "105.0", "99.0", "102.0", "10.0", 1999, "0", 10, "0", "0"]
+    ]
     with pytest.raises(
         MalformedResponseError,
         match="Malformed Binance row: expected exactly 12 items",
@@ -143,7 +145,9 @@ def test_binance_malformed_payload_and_non_finite_rejection() -> None:
         provider.fetch_bars("BTCUSDT", "15m", start_ms=0, end_ms=100)
 
     # Longer than 12
-    mock_resp.json.return_value = [[1000, "100.0", "105.0", "99.0", "102.0", "10.0", 1999, "0", 10, "0", "0", "0", "extra"]]
+    mock_resp.json.return_value = [
+        [1000, "100.0", "105.0", "99.0", "102.0", "10.0", 1999, "0", 10, "0", "0", "0", "extra"]
+    ]
     with pytest.raises(
         MalformedResponseError,
         match="Malformed Binance row: expected exactly 12 items",

@@ -99,8 +99,9 @@ class BinanceSpotProvider(BaseRestProvider, MarketDataProvider):
 
             for row in payload:
                 if not isinstance(row, (list, tuple)) or len(row) != 12:
+                    actual_len = len(row) if isinstance(row, (list, tuple)) else type(row).__name__
                     raise MalformedResponseError(
-                        f"Malformed Binance row: expected exactly 12 items, got {len(row) if isinstance(row, (list, tuple)) else type(row).__name__}"
+                        f"Malformed Binance row: expected exactly 12 items, got {actual_len}"
                     )
 
                 try:

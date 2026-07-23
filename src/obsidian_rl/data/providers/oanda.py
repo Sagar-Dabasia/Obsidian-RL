@@ -210,15 +210,18 @@ class OandaPracticeProvider(BaseRestProvider, MarketDataProvider):
                         f"Malformed OANDA numerical component or missing key: {row!r}"
                     ) from exc
 
-                if not (
-                    math.isfinite(open_val)
-                    and math.isfinite(high_val)
-                    and math.isfinite(low_val)
-                    and math.isfinite(close_val)
-                    and math.isfinite(bid_val)
-                    and math.isfinite(ask_val)
-                    and math.isfinite(vol_val)
-                ) or vol_val < 0.0:
+                if (
+                    not (
+                        math.isfinite(open_val)
+                        and math.isfinite(high_val)
+                        and math.isfinite(low_val)
+                        and math.isfinite(close_val)
+                        and math.isfinite(bid_val)
+                        and math.isfinite(ask_val)
+                        and math.isfinite(vol_val)
+                    )
+                    or vol_val < 0.0
+                ):
                     raise MalformedResponseError(
                         f"Non-finite price or invalid volume detected in OANDA candle: {row!r}"
                     )
