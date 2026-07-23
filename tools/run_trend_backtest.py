@@ -18,6 +18,7 @@ import argparse
 import sys
 
 from obsidian_rl.data.contracts import AssetClass, Timeframe
+from obsidian_rl.data.outages import default_registry
 from obsidian_rl.data.storage import SQLiteStorage
 from obsidian_rl.evaluation.trend_backtest import TrendBacktestResult, run_trend_backtest
 from obsidian_rl.portfolio.costs import CostModel
@@ -55,6 +56,7 @@ def main() -> None:
     )
     parser.add_argument("--half-spread", type=float, required=True, help="Half spread")
     parser.add_argument("--slippage", type=float, required=True, help="Slippage model factor")
+    parser.add_argument("--outage-aware", action="store_true", help="Use default outage registry")
 
     args = parser.parse_args()
 
@@ -84,9 +86,10 @@ def main() -> None:
         slippage=args.slippage,
     )
     config = TrendConfig()
+    registry = default_registry() if args.outage_aware else None
 
     try:
-        report = run_trend_backtest(tuple(bars), config, cost_model)
+        report = run_trend_backtest(tuple(bars), config, cost_model, outage_registry=registry)
     except Exception as e:
         print(f"Backtest failed: {e}")
         sys.exit(1)

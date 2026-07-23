@@ -116,10 +116,10 @@ def train_ppo(
         import uuid
 
         us = int(time.time() * 1_000_000) % 1_000_000
-        pen_tag = f"-tp{cfg.reward.turnover_penalty_bps}" if cfg.reward.turnover_penalty_bps > 0 else ""
-        model_id = (
-            f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-{us:06d}-seed{cfg.seed}{pen_tag}-{uuid.uuid4().hex[:8]}"
+        pen_tag = (
+            f"-tp{cfg.reward.turnover_penalty_bps}" if cfg.reward.turnover_penalty_bps > 0 else ""
         )
+        model_id = f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-{us:06d}-seed{cfg.seed}{pen_tag}-{uuid.uuid4().hex[:8]}"
     model_id = validate_model_id(model_id)
     model_dir = Path(models_dir) / model_id
 

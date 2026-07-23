@@ -7,6 +7,7 @@ from pathlib import Path
 
 from obsidian_rl.data.contracts import AssetClass, Timeframe
 from obsidian_rl.data.historical_dataset import ingest_historical_range
+from obsidian_rl.data.outages import default_registry
 from obsidian_rl.data.storage import SQLiteStorage
 
 START_MS = 1546300800000  # 2019-01-01T00:00:00Z
@@ -38,6 +39,7 @@ def main() -> None:
                     start_ms=START_MS,
                     end_ms=END_MS,
                     storage=storage,
+                    outage_registry=default_registry(),
                 )
                 manifests.append(manifest)
                 print(f"Done {symbol}. Rows: {manifest.row_count}")
@@ -52,7 +54,7 @@ def main() -> None:
     manifest_dir.mkdir(parents=True, exist_ok=True)
 
     combined = {
-        "dataset_id": "TREND_PILOT_01_COMBINED",
+        "dataset_id": "TREND_PILOT_02_COMBINED",
         "created_at_utc": int(datetime.now(UTC).timestamp() * 1000),
         "start_ms": START_MS,
         "end_ms": END_MS,
@@ -68,7 +70,7 @@ def main() -> None:
         ],
     }
 
-    manifest_path = manifest_dir / "TREND_PILOT_01R_COMBINED.json"
+    manifest_path = manifest_dir / "TREND_PILOT_02_COMBINED.json"
     with open(manifest_path, "w") as f:
         json.dump(combined, f, indent=2)
     print(f"Combined manifest written to {manifest_path}")

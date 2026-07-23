@@ -7,6 +7,7 @@ from typing import Any
 
 from obsidian_rl.data.contracts import AssetClass, MarketBar, Timeframe
 from obsidian_rl.data.fingerprint import compute_market_bar_hash
+from obsidian_rl.data.outages import OutageRegistry
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ def validate_market_bars(
     expected_venue: str | None = None,
     is_forex: bool | None = None,
     forex_session_config: ForexSessionConfig | None = None,
+    outage_registry: OutageRegistry | None = None,
 ) -> DataQualityReport:
     """Inspect a sequence of MarketBar objects for data quality violations."""
     if not bars:
@@ -185,6 +187,9 @@ def validate_market_bars(
         elif diff > step_ms:
             if is_forex_series and is_forex_weekend_gap(ts1, ts2, forex_session_config):
                 # Expected Forex weekend closure - ignore
+                pass
+            elif outage_registry and outage_registry.covers_gap(target_venue, ts1 + step_ms, ts2):
+                # Expected venue outage - ignore
                 pass
             else:
                 missing_intervals.append((ts1 + step_ms, diff))

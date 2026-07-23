@@ -91,9 +91,7 @@ def artifact_sha256(path: Path) -> str:
 
 
 def resolve_repo_root(repo_root: Path | None = None) -> Path:
-    target = (
-        Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parent
-    )
+    target = Path(repo_root).resolve() if repo_root is not None else Path(__file__).resolve().parent
     try:
         out = subprocess.run(
             ["git", "-c", "safe.directory=*", "rev-parse", "--show-toplevel"],
@@ -230,6 +228,7 @@ def register_model(
             fh.write(payload)
             fh.flush()
             import os
+
             os.fsync(fh.fileno())
     except FileExistsError as exc:
         raise FileExistsError(

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,13 +37,14 @@ from obsidian_rl.training.registry import (
     register_model,
 )
 from tests.conftest import make_candles
-from typing import Iterator
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _mock_clean_git_state_module() -> Iterator[None]:
     from unittest.mock import patch
-    from obsidian_rl.training.registry import GitSourceState, get_git_source_state as real_get_git_source_state
+
+    from obsidian_rl.training.registry import GitSourceState
+    from obsidian_rl.training.registry import get_git_source_state as real_get_git_source_state
 
     clean_state = GitSourceState(commit="a" * 40, is_clean=True, dirty_paths=[])
 
@@ -1292,7 +1294,9 @@ def test_promote_commit_mismatch_rejected(
         "get_git_source_state",
         lambda: GitSourceState(commit="b" * 40, is_clean=True, dirty_paths=[]),
     )
-    with pytest.raises(PromotionEvidenceError, match="current source commit differs from evaluation source commit"):
+    with pytest.raises(
+        PromotionEvidenceError, match="current source commit differs from evaluation source commit"
+    ):
         promote(models_dir, candidate_id)
 
 

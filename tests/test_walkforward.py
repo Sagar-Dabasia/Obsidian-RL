@@ -2,19 +2,16 @@
 identical evaluation conditions, delay sensitivity, typed slice identities,
 collision-resistant experiment IDs, and nested evaluation separation."""
 
-import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from obsidian_rl.data.schema import interval_to_ms
 from obsidian_rl.evaluation.backtest import run_backtest
-from obsidian_rl.evaluation.holdout import get_holdout_start_ms
 from obsidian_rl.evaluation.walkforward import (
     DAY_MS,
-    FoldSlice,
-    FoldSpec,
     create_experiment_id,
     evaluate_strategies_on_slice,
     make_folds,
@@ -249,6 +246,7 @@ def test_turnover_penalty_bps_experiment_ids_differ() -> None:
 def test_turnover_penalty_bps_saved_in_walkforward_artifact(tmp_path: Path) -> None:
     import json
     from dataclasses import asdict
+
     from obsidian_rl.env.trading_env import RewardConfig
 
     out_dir = tmp_path / "wf_tp"

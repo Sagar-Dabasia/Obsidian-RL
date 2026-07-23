@@ -1,0 +1,125 @@
+"""Deterministic venue-outage registry.
+
+Records confirmed, independently verified exchange outages so that
+data-quality validation and backtesting can distinguish genuine venue
+downtime from unexplained data gaps.
+
+Rules enforced here:
+- No synthetic candles are ever created.
+- Entries are immutable and append-only.
+- Each entry must have a verification source and content hash.
+- Only venue-wide outages are accepted for the pilot policy.
+"""
+
+import hashlib
+import json
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class VenueOutage:
+    """A single confirmed venue outage interval."""
+
+    venue: str
+    start_ms: int
+    end_ms: int
+    source_id: str
+    verification_timestamp_ms: int
+    source_content_hash: str
+    reason: str
+    affected_symbols: tuple[str, ...]
+    venue_wide: bool
+
+    def __post_init__(self) -> None:
+        if not self.venue or not isinstance(self.venue, str):
+            raise ValueError("venue must be a non-empty string")
+        if self.start_ms >= self.end_ms:
+            raise ValueError(f"start_ms ({self.start_ms}) must be < end_ms ({self.end_ms})")
+        if not self.source_id:
+            raise ValueError("source_id is required")
+        if not isinstance(self.source_content_hash, str) or len(self.source_content_hash) != 64:
+            raise ValueError("source_content_hash must be 64-char hex")
+        if not isinstance(self.affected_symbols, tuple):
+            raise TypeError("affected_symbols must be a tuple")
+        if not self.affected_symbols:
+            raise ValueError("affected_symbols must be non-empty")
+
+    @property
+    def identity(self) -> str:
+        """Deterministic hash of this outage entry."""
+        data = json.dumps(
+            {
+                "venue": self.venue,
+                "start_ms": self.start_ms,
+                "end_ms": self.end_ms,
+                "source_id": self.source_id,
+                "source_content_hash": self.source_content_hash,
+            },
+            sort_keys=True,
+        )
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+class OutageRegistry:
+    """Immutable registry of confirmed venue outages."""
+
+    def __init__(self, outages: tuple[VenueOutage, ...] = ()) -> None:
+        self._outages = outages
+
+    @property
+    def outages(self) -> tuple[VenueOutage, ...]:
+        return self._outages
+
+    def is_known_outage(self, venue: str, timestamp_ms: int) -> bool:
+        """Check if a specific timestamp falls within a known outage."""
+        for o in self._outages:
+            if o.venue == venue and o.start_ms <= timestamp_ms < o.end_ms:
+                return True
+        return False
+
+    def get_outage(self, venue: str, timestamp_ms: int) -> VenueOutage | None:
+        """Return the outage entry covering a timestamp, or None."""
+        for o in self._outages:
+            if o.venue == venue and o.start_ms <= timestamp_ms < o.end_ms:
+                return o
+        return None
+
+    def covers_gap(self, venue: str, gap_start_ms: int, gap_end_ms: int) -> bool:
+        """Check if the entire gap is covered by a known outage.
+
+        The gap [gap_start_ms, gap_end_ms) must be fully contained
+        within a single outage interval.
+        """
+        for o in self._outages:
+            if o.venue == venue and o.start_ms <= gap_start_ms and gap_end_ms <= o.end_ms:
+                return True
+        return False
+
+    def is_venue_wide(self, venue: str, timestamp_ms: int) -> bool:
+        """Check if the outage at timestamp is venue-wide."""
+        o = self.get_outage(venue, timestamp_ms)
+        return o is not None and o.venue_wide
+
+
+# ─── Pre-registered outage entries ───────────────────────────────────
+
+# Verified using Binance public kline archive:
+#   BTCUSDT-4h-2020-02.zip SHA-256: efd2cb8a08b9238315213ba2ba2ff23ca3a295e07ff29ae75e1115c56f9555b9
+#   ETHUSDT-4h-2020-02.zip SHA-256: 88172794c16ce8de20358a881f8cd39118bc0fc95f00f92f73fa11ee11719d46
+# Both archives confirm timestamp 1582113600000 is missing.
+BINANCE_2020_02_19_OUTAGE = VenueOutage(
+    venue="BINANCE_SPOT",
+    start_ms=1582113600000,  # 2020-02-19T12:00:00Z
+    end_ms=1582128000000,  # 2020-02-19T16:00:00Z (next 4h boundary)
+    source_id="binance-public-kline-archive-2020-02",
+    verification_timestamp_ms=1753279200000,  # 2025-07-23 (verification date)
+    source_content_hash="efd2cb8a08b9238315213ba2ba2ff23ca3a295e07ff29ae75e1115c56f9555b9",
+    reason="4h candle missing from both BTCUSDT and ETHUSDT in official archive",
+    affected_symbols=("BTCUSDT", "ETHUSDT"),
+    venue_wide=True,
+)
+
+
+def default_registry() -> OutageRegistry:
+    """Return the default outage registry with all pre-registered entries."""
+    return OutageRegistry(outages=(BINANCE_2020_02_19_OUTAGE,))

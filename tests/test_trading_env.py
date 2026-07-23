@@ -172,8 +172,15 @@ def test_reward_config_validation_rejects_invalid_turnover_penalty_bps() -> None
 
 def test_turnover_regularization_zero_penalty_behavior_identical() -> None:
     candles = make_candles(WARMUP_ROWS + 30)
-    env_zero = TradingEnv(candles, reward_config=RewardConfig(turnover_penalty_bps=0.0), episode_length=15, random_start=False)
-    env_default = TradingEnv(candles, reward_config=RewardConfig(), episode_length=15, random_start=False)
+    env_zero = TradingEnv(
+        candles,
+        reward_config=RewardConfig(turnover_penalty_bps=0.0),
+        episode_length=15,
+        random_start=False,
+    )
+    env_default = TradingEnv(
+        candles, reward_config=RewardConfig(), episode_length=15, random_start=False
+    )
     obs_z, info_z = env_zero.reset(seed=42)
     obs_d, info_d = env_default.reset(seed=42)
     np.testing.assert_array_equal(obs_z, obs_d)
@@ -207,7 +214,9 @@ def test_turnover_regularization_hand_calculated_target_changes() -> None:
     assert info1["penalty"] == pytest.approx(expected_pen1)
     assert info1["raw_reward"] - info1["penalty"] == pytest.approx(r1)
     assert info1["final_reward"] == pytest.approx(r1)
-    assert info1["reward_components"]["turnover_regularization_penalty"] == pytest.approx(-expected_pen1)
+    assert info1["reward_components"]["turnover_regularization_penalty"] == pytest.approx(
+        -expected_pen1
+    )
 
     # Step 2: no target change (FULL_LONG -> FULL_LONG). Target change = |1.0 - 1.0| = 0.0. Penalty = 0.0.
     _, r2, _, _, info2 = env.step(FULL_LONG)
@@ -220,4 +229,6 @@ def test_turnover_regularization_hand_calculated_target_changes() -> None:
     expected_pen3 = (tp_bps / 10000.0) * 2.0
     assert info3["penalty"] == pytest.approx(expected_pen3)
     assert info3["raw_reward"] - info3["penalty"] == pytest.approx(r3)
-    assert info3["reward_components"]["turnover_regularization_penalty"] == pytest.approx(-expected_pen3)
+    assert info3["reward_components"]["turnover_regularization_penalty"] == pytest.approx(
+        -expected_pen3
+    )

@@ -26,7 +26,7 @@ from gymnasium import spaces
 from obsidian_rl.evaluation.backtest import DEFAULT_TARGETS, PortfolioFeatureTracker
 from obsidian_rl.features.observation import build_observation
 from obsidian_rl.features.pipeline import WARMUP_ROWS, compute_market_features
-from obsidian_rl.features.schema import OBSERVATION_DIM, OBSERVATION_DTYPE
+from obsidian_rl.features.schema import OBSERVATION_DIM
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 

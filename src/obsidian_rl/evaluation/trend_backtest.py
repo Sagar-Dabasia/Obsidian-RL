@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 
 from obsidian_rl.data.contracts import AssetClass, MarketBar
+from obsidian_rl.data.outages import OutageRegistry
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 from obsidian_rl.signals.trend import TrendConfig, calculate_trend_signal
@@ -81,6 +82,7 @@ def _run_single_backtest(
     config: TrendConfig,
     cost_model: CostModel,
     mode: str,
+    outage_registry: OutageRegistry | None = None,
 ) -> TrendBacktestResult:
     """Run a single pass of the backtest logic."""
     if not bars:
@@ -99,7 +101,6 @@ def _run_single_backtest(
     ).hexdigest()
 
     asset_class = bars[0].asset_class
-    bars_per_year = (6 * 365) if bars[0].timeframe.value == "4h" else 365
 
     portfolio_config = PortfolioConfig(initial_cash=10000.0, max_abs_exposure=1.0, allow_short=True)
     engine = PortfolioEngine(portfolio_config, cost_model)
@@ -192,7 +193,9 @@ def _run_single_backtest(
     )
     sharpe = 0.0
     if var_log_ret > 0:
-        sharpe = (mean_log_ret / math.sqrt(var_log_ret)) * math.sqrt(bars_per_year)
+        years_elapsed = (last_ts - first_ts) / (365.25 * 24 * 3600 * 1000)
+        bars_per_year_effective = len(log_returns) / years_elapsed if years_elapsed > 0 else 0.0
+        sharpe = (mean_log_ret / math.sqrt(var_log_ret)) * math.sqrt(bars_per_year_effective)
 
     return TrendBacktestResult(
         starting_equity=10000.0,
@@ -222,6 +225,7 @@ def run_trend_backtest(
     bars: tuple[MarketBar, ...],
     config: TrendConfig,
     cost_model: CostModel,
+    outage_registry: OutageRegistry | None = None,
 ) -> TrendBacktestReport:
     """Run backtests for strategy, flat baseline, and long baseline."""
     if not bars:
@@ -248,9 +252,9 @@ def run_trend_backtest(
     if asset == AssetClass.FOREX:
         cost_model = CostModel(taker_fee=0.0, half_spread=0.0, slippage=0.0)
 
-    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy")
-    res_flat = _run_single_backtest(bars, config, cost_model, "flat")
-    res_long = _run_single_backtest(bars, config, cost_model, "long")
+    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy", outage_registry)
+    res_flat = _run_single_backtest(bars, config, cost_model, "flat", outage_registry)
+    res_long = _run_single_backtest(bars, config, cost_model, "long", outage_registry)
 
     return TrendBacktestReport(
         strategy=res_strategy,

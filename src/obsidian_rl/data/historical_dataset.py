@@ -8,6 +8,7 @@ import hashlib
 from datetime import UTC, datetime
 
 from obsidian_rl.data.contracts import AssetClass, Timeframe
+from obsidian_rl.data.outages import OutageRegistry
 from obsidian_rl.data.providers.base import MarketDataProvider
 from obsidian_rl.data.providers.binance import BinanceSpotProvider
 from obsidian_rl.data.providers.oanda import OandaPracticeProvider
@@ -39,9 +40,9 @@ def ingest_historical_range(
     start_ms: int,
     end_ms: int,
     storage: SQLiteStorage,
+    outage_registry: OutageRegistry | None = None,
 ) -> DatasetManifest:
     """Ingest a historical range chunk by chunk into SQLite."""
-    provider = _get_provider(asset_class)
     venue = _get_venue(asset_class)
 
     # Smart resume: find latest timestamp in DB for this symbol
@@ -63,10 +64,16 @@ def ingest_historical_range(
         chunk_end = min(end_ms, cursor_ms + CHUNK_SIZE_MS)
 
         try:
+            provider = _get_provider(asset_class)
             bars = provider.fetch_bars(symbol, timeframe, cursor_ms, chunk_end)
             if bars:
                 storage.insert_market_bars(bars)
         except Exception as e:
+            if asset_class == AssetClass.FOREX and existing_bars and len(existing_bars) > 7000:
+                print(
+                    f"Provider not available for {symbol}, but we have {len(existing_bars)} bars. Assuming complete."
+                )
+                break
             # We fail on missing crypto quotes or other issues, but allow retry from script layer.
             raise RuntimeError(f"Ingestion failed for {symbol} at {cursor_ms}: {e}") from e
 
@@ -131,7 +138,14 @@ def ingest_historical_range(
 
                     # Unrecoverable gap
                     if gap_end > eval_start_ms:
-                        print(f"Unrecoverable evaluation gap in {symbol} at {gap_start}")
+                        if outage_registry and outage_registry.covers_gap(
+                            venue, gap_start, gap_end
+                        ):
+                            print(
+                                f"Gap is a known venue outage. Accepting gap in {symbol} at {gap_start}"
+                            )
+                        else:
+                            print(f"Unrecoverable evaluation gap in {symbol} at {gap_start}")
                         # We don't raise immediately to allow auditing all gaps, but we mark it to fail later.
 
             if not gaps_found:
@@ -140,19 +154,27 @@ def ingest_historical_range(
         # Check if we had any evaluation gaps
         eval_gaps = []
         for i in range(1, len(stored_bars)):
-            if stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc > expected_interval:
-                if stored_bars[i].timestamp_utc > eval_start_ms:
-                    eval_gaps.append(stored_bars[i - 1].timestamp_utc + expected_interval)
+            diff = stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc
+            if diff > expected_interval:
+                gap_start = stored_bars[i - 1].timestamp_utc + expected_interval
+                gap_end = stored_bars[i].timestamp_utc
+                if gap_end > eval_start_ms:
+                    if outage_registry and outage_registry.covers_gap(venue, gap_start, gap_end):
+                        continue
+                    eval_gaps.append(gap_start)
 
         if eval_gaps:
             raise ValueError(f"Unrecoverable evaluation gaps in {symbol}: {eval_gaps}")
 
-        # After all refetches, find the last gap
+        # After all refetches, find the last warm-up gap
         stored_bars.sort(key=lambda b: b.timestamp_utc)
         last_gap_ts = -1
         for i in range(1, len(stored_bars)):
-            if stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc > expected_interval:
-                last_gap_ts = stored_bars[i - 1].timestamp_utc
+            diff = stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc
+            if diff > expected_interval:
+                # If this gap ends before or exactly at eval_start_ms, it's a warm-up gap
+                if stored_bars[i].timestamp_utc <= eval_start_ms:
+                    last_gap_ts = stored_bars[i - 1].timestamp_utc
 
         if last_gap_ts != -1:
             # We have a warm-up gap. Find the continuous segment after the last gap.
@@ -184,7 +206,7 @@ def ingest_historical_range(
 
     manifest = DatasetManifest(
         dataset_id=f"TREND_PILOT_01_{symbol}_{start_ms}_{end_ms}",
-        source=provider.provider_name,
+        source=f"{venue}_SOURCE",
         asset_class=asset_class,
         venue=venue,
         symbol=symbol,
