@@ -63,17 +63,27 @@ In accordance with [CYCLE_02_MASTER_PLAN.md](CYCLE_02_MASTER_PLAN.md) and [CROSS
 
 ### 2. OANDA Practice Forex Candle Live Test
 - **Command:** `python tools/provider_smoke_test.py --live --provider oanda --symbol EUR_USD --timeframe 4h --bars 3`
-- **Execution Timestamp:** `2026-07-23 10:34:10 UTC`
-- **Authentication:** `OANDA_API_TOKEN` environment check
-- **Status:** `SKIPPED_TOKEN_MISSING`
-- **Bars Returned:** `0`
+- **Execution Timestamp:** `2026-07-23 11:47:50 UTC`
+- **Authentication:** Token detected without displaying it, Account ID detected without displaying it
+- **Status:** `SUCCESS`
+- **Bars Returned:** `3`
 - **Sanitized Results:**
   ```
   === LIVE PROVIDER SMOKE TEST: OANDA ===
-  Status: SKIPPED_TOKEN_MISSING
-  Message: OANDA_API_TOKEN environment variable not found. Skipping live OANDA test without error.
+  Status: SUCCESS
+  Symbol: EUR_USD | Timeframe: 4h | Bars Returned: 3
+    Bar 1: ts=1784754000000 obs=1784768400000 O=1.14104 H=1.14176 L=1.1406 C=1.14172 Bid=1.14165 Ask=1.1418 Vol=6023.0 Hash=882480e743cd3553...
+    Bar 2: ts=1784768400000 obs=1784782800000 O=1.14174 H=1.14358 L=1.1416 C=1.14326 Bid=1.14318 Ask=1.14335 Vol=13712.0 Hash=a88291b0a1b1c92f...
+    Bar 3: ts=1784782800000 obs=1784797200000 O=1.14326 H=1.1435 L=1.1407 C=1.14106 Bid=1.14098 Ask=1.14113 Vol=18531.0 Hash=bde7a35ef51526a9...
   ```
-- **Validation Audit:** Clean exit without error or token leakage.
+- **Validation Audit:**
+  - Quotes valid: true
+  - Hashes valid: true
+  - Token detected without displaying it
+  - Account ID detected without displaying it
+  - No trading performed
+  - No paid resources used
+  - No holdout accessed
 
 ---
 
