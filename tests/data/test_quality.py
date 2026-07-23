@@ -118,6 +118,45 @@ def test_forex_weekend_gap_handling() -> None:
     assert len(report.missing_intervals) == 0
 
 
+def test_forex_configurable_session() -> None:
+    """Test Forex session configuration can be customized."""
+    from obsidian_rl.data.quality import ForexSessionConfig
+
+    # Shift standard open/close by 1 hour backwards
+    # Close: Friday 19:00 UTC
+    # Open: Sunday 19:00 UTC
+    config = ForexSessionConfig(
+        close_weekday=4,
+        close_hour=19,
+        open_weekday=6,
+        open_hour=19,
+        open_next_day_max_hour=3,
+        min_gap_ms=144_000_000,
+        max_gap_ms=201_600_000,
+    )
+
+    # Friday 2026-07-24 19:00 UTC (1784919600000 ms) - Custom close
+    # Sunday 2026-07-26 19:00 UTC (1785092400000 ms) - Custom open (~48h gap)
+    t_fri = 1784919600000
+    t_sun = 1785092400000
+
+    assert is_forex_weekend_gap(t_fri, t_sun, config) is True
+
+    # Check that a gap before 19:00 UTC fails (e.g., Friday 18:00 UTC)
+    t_fri_early = 1784916000000
+    assert is_forex_weekend_gap(t_fri_early, t_sun, config) is False
+
+    bar_fri = make_bar(
+        t_fri, symbol="EUR_USD", venue="OANDA", asset_class=AssetClass.FOREX, timeframe=Timeframe.H4
+    )
+    bar_sun = make_bar(
+        t_sun, symbol="EUR_USD", venue="OANDA", asset_class=AssetClass.FOREX, timeframe=Timeframe.H4
+    )
+
+    report = validate_market_bars([bar_fri, bar_sun], forex_session_config=config)
+    assert report.passed is True
+
+
 def test_duplicate_timestamp_detection() -> None:
     """Test duplicate timestamp in bar series is flagged."""
     t0 = 1784750400000

@@ -44,24 +44,43 @@ def timeframe_to_ms(tf: Timeframe | str) -> int:
     return mapping[tf_str]
 
 
-def is_forex_weekend_gap(ts_start_ms: int, ts_end_ms: int) -> bool:
+@dataclass(frozen=True)
+class ForexSessionConfig:
+    """Configurable hours and rules for Forex market weekend closures."""
+
+    close_weekday: int = 4  # Friday (weekday 4)
+    close_hour: int = 20  # 20:00 UTC
+    open_weekday: int = 6  # Sunday (weekday 6)
+    open_hour: int = 20  # 20:00 UTC
+    open_next_day_max_hour: int = 4  # Monday (weekday 0) 04:00 UTC
+    min_gap_ms: int = 144_000_000  # 40 hours
+    max_gap_ms: int = 201_600_000  # 56 hours
+
+
+def is_forex_weekend_gap(
+    ts_start_ms: int, ts_end_ms: int, config: ForexSessionConfig | None = None
+) -> bool:
     """Check if the gap between two timestamps represents a standard Forex weekend closure."""
+    config = config or ForexSessionConfig()
     dt_start = datetime.fromtimestamp(ts_start_ms / 1000.0, tz=UTC)
     dt_end = datetime.fromtimestamp(ts_end_ms / 1000.0, tz=UTC)
 
-    # Forex markets typically close Friday ~21:00 UTC and reopen Sunday ~21:00 UTC (~48h gap)
-    # Start must be Friday (weekday 4) after 20:00 UTC or Saturday (weekday 5)
-    # End must be Sunday (weekday 6) after 20:00 UTC or Monday (weekday 0) before 04:00 UTC
-    start_is_weekend_close = (dt_start.weekday() == 4 and dt_start.hour >= 20) or (
-        dt_start.weekday() == 5
-    )
-    end_is_weekend_open = (dt_end.weekday() == 6 and dt_end.hour >= 20) or (
-        dt_end.weekday() == 0 and dt_end.hour <= 4
+    # Allow closure to happen on the close day at or after close_hour, or the following day
+    start_is_weekend_close = (
+        dt_start.weekday() == config.close_weekday and dt_start.hour >= config.close_hour
+    ) or (dt_start.weekday() == (config.close_weekday + 1) % 7)
+
+    # Allow open to happen on the open day at or after open_hour,
+    # or the following day before next_day_max
+    end_is_weekend_open = (
+        dt_end.weekday() == config.open_weekday and dt_end.hour >= config.open_hour
+    ) or (
+        dt_end.weekday() == (config.open_weekday + 1) % 7
+        and dt_end.hour <= config.open_next_day_max_hour
     )
 
     gap_duration_ms = ts_end_ms - ts_start_ms
-    # 40 hours = 144_000_000 ms, 56 hours = 201_600_000 ms
-    is_valid_duration = 144_000_000 <= gap_duration_ms <= 201_600_000
+    is_valid_duration = config.min_gap_ms <= gap_duration_ms <= config.max_gap_ms
 
     return start_is_weekend_close and end_is_weekend_open and is_valid_duration
 
@@ -72,6 +91,7 @@ def validate_market_bars(
     expected_symbol: str | None = None,
     expected_venue: str | None = None,
     is_forex: bool | None = None,
+    forex_session_config: ForexSessionConfig | None = None,
 ) -> DataQualityReport:
     """Inspect a sequence of MarketBar objects for data quality violations."""
     if not bars:
@@ -163,7 +183,7 @@ def validate_market_bars(
             )
             errors.append(err_msg)
         elif diff > step_ms:
-            if is_forex_series and is_forex_weekend_gap(ts1, ts2):
+            if is_forex_series and is_forex_weekend_gap(ts1, ts2, forex_session_config):
                 # Expected Forex weekend closure - ignore
                 pass
             else:
