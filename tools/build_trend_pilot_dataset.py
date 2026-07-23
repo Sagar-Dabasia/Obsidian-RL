@@ -44,6 +44,9 @@ def main() -> None:
             except Exception as e:
                 print(f"Failed {symbol}: {e}")
 
+    if len(manifests) != 4:
+        raise ValueError("Not all markets ingested successfully.")
+
     # Combine manifests
     manifest_dir = Path("artifacts/cycle_02/manifests")
     manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -65,7 +68,7 @@ def main() -> None:
         ],
     }
 
-    manifest_path = manifest_dir / "TREND_PILOT_01_COMBINED.json"
+    manifest_path = manifest_dir / "TREND_PILOT_01R_COMBINED.json"
     with open(manifest_path, "w") as f:
         json.dump(combined, f, indent=2)
     print(f"Combined manifest written to {manifest_path}")
