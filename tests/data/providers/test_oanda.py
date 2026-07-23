@@ -159,6 +159,69 @@ def test_oanda_crossed_quotes_and_incomplete_candle_rejection() -> None:
     assert len(bars) == 1
     assert bars[0].timestamp_utc == 1800000
 
+    # 3. Invalid complete type (string)
+    mock_resp.json.return_value = {
+        "candles": [
+            {
+                "complete": "true",
+                "volume": 100,
+                "time": "1970-01-01T00:00:01.000000000Z",
+                "mid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.05"},
+                "bid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.04"},
+                "ask": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.06"},
+            }
+        ]
+    }
+    with pytest.raises(MalformedResponseError, match="OANDA 'complete' must be a boolean"):
+        provider.fetch_bars("EUR_USD", Timeframe.M1, start_ms=0, end_ms=100000)
+
+    # 4. Missing volume
+    mock_resp.json.return_value = {
+        "candles": [
+            {
+                "complete": True,
+                "time": "1970-01-01T00:00:01.000000000Z",
+                "mid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.05"},
+                "bid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.04"},
+                "ask": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.06"},
+            }
+        ]
+    }
+    with pytest.raises(MalformedResponseError, match="OANDA candle missing 'volume' field"):
+        provider.fetch_bars("EUR_USD", Timeframe.M1, start_ms=0, end_ms=100000)
+
+    # 5. Invalid volume type (boolean)
+    mock_resp.json.return_value = {
+        "candles": [
+            {
+                "complete": True,
+                "volume": True,
+                "time": "1970-01-01T00:00:01.000000000Z",
+                "mid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.05"},
+                "bid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.04"},
+                "ask": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.06"},
+            }
+        ]
+    }
+    with pytest.raises(MalformedResponseError, match="OANDA volume cannot be boolean"):
+        provider.fetch_bars("EUR_USD", Timeframe.M1, start_ms=0, end_ms=100000)
+
+    # 6. Negative volume
+    mock_resp.json.return_value = {
+        "candles": [
+            {
+                "complete": True,
+                "volume": -100,
+                "time": "1970-01-01T00:00:01.000000000Z",
+                "mid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.05"},
+                "bid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.04"},
+                "ask": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.06"},
+            }
+        ]
+    }
+    with pytest.raises(MalformedResponseError, match="Non-finite price or invalid volume detected"):
+        provider.fetch_bars("EUR_USD", Timeframe.M1, start_ms=0, end_ms=100000)
+
 
 def test_oanda_unsupported_granularity_rejection() -> None:
     """Verify Timeframe.M3 is rejected by OANDA adapter with UnsupportedSymbolTimeframeError."""

@@ -167,7 +167,12 @@ class OandaPracticeProvider(BaseRestProvider, MarketDataProvider):
                         f"Expected dict for OANDA candle item, got: {type(row).__name__}"
                     )
 
-                is_complete = row.get("complete") in (True, "true", "True")
+                is_complete = row.get("complete")
+                if not isinstance(is_complete, bool):
+                    raise MalformedResponseError(
+                        f"OANDA 'complete' must be a boolean, got {type(is_complete).__name__}"
+                    )
+
                 timestamp_utc = self._parse_timestamp_ms(row.get("time"))
                 observed_at_utc = timestamp_utc + tf_ms
 
@@ -194,7 +199,12 @@ class OandaPracticeProvider(BaseRestProvider, MarketDataProvider):
                     close_val = float(mid["c"])
                     bid_val = float(bid_dict["c"])
                     ask_val = float(ask_dict["c"])
-                    vol_val = float(row.get("volume", 0))
+                    if "volume" not in row:
+                        raise MalformedResponseError("OANDA candle missing 'volume' field")
+                    vol_raw = row["volume"]
+                    if isinstance(vol_raw, bool):
+                        raise MalformedResponseError("OANDA volume cannot be boolean")
+                    vol_val = float(vol_raw)
                 except (ValueError, TypeError, KeyError) as exc:
                     raise MalformedResponseError(
                         f"Malformed OANDA numerical component or missing key: {row!r}"
@@ -208,9 +218,9 @@ class OandaPracticeProvider(BaseRestProvider, MarketDataProvider):
                     and math.isfinite(bid_val)
                     and math.isfinite(ask_val)
                     and math.isfinite(vol_val)
-                ):
+                ) or vol_val < 0.0:
                     raise MalformedResponseError(
-                        f"Non-finite price or volume values detected in OANDA candle: {row!r}"
+                        f"Non-finite price or invalid volume detected in OANDA candle: {row!r}"
                     )
 
                 if ask_val < bid_val:
