@@ -19,7 +19,7 @@ def make_bar(
     timestamp_ms: int,
     close: float,
     asset_class: AssetClass = AssetClass.CRYPTO,
-    venue: str = "BINANCE_SPOT",
+    venue: str = "BINANCE_PERPETUAL",
     symbol: str = "BTCUSDT",
     timeframe: Timeframe = Timeframe.H4,
 ) -> MarketBar:
@@ -102,13 +102,23 @@ def test_crypto_costs_reduce_returns() -> None:
 
 
 def test_same_bar_execution_is_impossible() -> None:
-    # Verify that the signal generated on bar T does not execute on bar T's open/close,
-    # but rather we only trade if target_exposure changes.
+    # Verify that the signal generated on bar T does not execute on bar T's open/close.
+    # It must execute at the next bar's open.
+    # We can verify this by checking that first_exec_ts > first_decision_ts.
     bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(800))
-    # Wait, how to explicitly test same bar? The code logic evaluates the signal from bar[:i+1]
-    # and sets target_exposure, which is executed at the TOP of the NEXT loop iteration on bar i+1.
-    # We can check that the number of trades matches expected.
-    pass
+    config = TrendConfig()
+    cost = CostModel(taker_fee=0.001)
+    
+    # Run backtest
+    report = run_trend_backtest(bars, config, cost)
+    
+    # We must have made a decision and executed it
+    assert report.strategy.first_decision_ts is not None
+    assert report.strategy.first_exec_ts is not None
+    
+    # Execution must happen strictly after the decision bar!
+    assert report.strategy.first_exec_ts > report.strategy.first_decision_ts
+
 
 
 def test_tampered_hashes_fail() -> None:
@@ -287,7 +297,7 @@ def test_cli_boundaries(monkeypatch) -> None:
         "tools/run_trend_backtest.py",
         "--database", "test.sqlite",
         "--asset-class", "CRYPTO",
-        "--venue", "BINANCE_SPOT",
+        "--venue", "BINANCE_PERPETUAL",
         "--symbol", "BTCUSDT",
         "--timeframe", "4h",
         "--start-ms", "1000",

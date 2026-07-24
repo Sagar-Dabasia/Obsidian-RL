@@ -166,38 +166,70 @@ def test_march_2019_archive_fixture_confirms() -> None:
     # 5. The official archive fixture confirms the 04:00 candle is missing and adjacent bars exist.
     assert BINANCE_2019_03_12_OUTAGE.source_content_hash == "fed5735ec622a9a18ea5a131e7c334642a44e3a27a8fe2710d8009da8e21c6b9"
 
+import hashlib
+from obsidian_rl.data.historical_dataset import verify_and_digest_continuous_bars
+
+import hashlib
+from obsidian_rl.data.historical_dataset import verify_and_digest_continuous_bars
+
 def test_no_synthetic_row_introduced() -> None:
-    # 6. No synthetic row is introduced.
-    from obsidian_rl.data.outages import default_registry
     from obsidian_rl.data.contracts import MarketBar, AssetClass, Timeframe, QuoteStatus, VolumeType
+    from obsidian_rl.data.outages import default_registry
     reg = default_registry()
-    
-    def make_test_bar(ts: int) -> MarketBar:
-        return MarketBar(
+
+    def make_test_bar(ts: int, close: float) -> MarketBar:
+        b = MarketBar(
             asset_class=AssetClass.CRYPTO,
             venue="BINANCE_SPOT",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             timestamp_utc=ts,
             observed_at_utc=ts,
-            open=1.0,
-            high=1.0,
-            low=1.0,
-            close=1.0,
+            open=close,
+            high=close,
+            low=close,
+            close=close,
             quote_status=QuoteStatus.OBSERVED,
             volume=1.0,
-            
             volume_type=VolumeType.BASE,
-            bid=1.0,
-            ask=1.0,
+            bid=close,
+            ask=close,
             data_source="TEST",
             schema_version="SCHEMA_V2",
             row_hash=""
         )
+        object.__setattr__(b, "row_hash", "hash_" + str(ts))
+        return b
+        
+    bars = []
+    # Generate 800 continuous bars up to 1552348800000 (inclusive)
+    # So the last one is 1552348800000
+    ts = 1552348800000 - 799 * 4 * 3600 * 1000
+    for i in range(800):
+        bars.append(make_test_bar(ts + i * 4 * 3600 * 1000, 100.0))
+        
+    # the last one is exactly 1552348800000
     
-    b1 = make_test_bar(1552348800000)
-    b2 = make_test_bar(1552377600000)
-    assert reg.covers_gap("BINANCE_SPOT", b1.timestamp_utc + 14400000, b2.timestamp_utc)
+    # next one after the missing bar
+    b_after = make_test_bar(1552377600000, 100.0)
+    bars.append(b_after)
+    
+    # Eval start is some time before the gap
+    eval_start_ms = 1552348800000 - 10 * 4 * 3600 * 1000
+    
+    # This should pass without raising ValueError
+    digest = verify_and_digest_continuous_bars(bars, eval_start_ms, Timeframe.H4, "BINANCE_SPOT", outage_registry=reg, min_warmup_bars=720)
+    
+    # 1. returned row count equals authentic input count (it's in place, so len(bars) unchanged)
+    assert len(bars) == 801
+    # 2. returned timestamps equal authentic input timestamps
+    assert bars[-2].timestamp_utc == 1552348800000
+    assert bars[-1].timestamp_utc == 1552377600000
+    # 3. missing candle remains absent (no 1552363200000)
+    assert not any(b.timestamp_utc == 1552363200000 for b in bars)
+    # 4. row hashes remain unchanged
+    assert bars[-2].row_hash == "hash_1552348800000"
+    assert bars[-1].row_hash == "hash_1552377600000"
 
 def test_existing_feb_2020_outage_unchanged() -> None:
     from obsidian_rl.data.outages import default_registry, BINANCE_2020_02_19_OUTAGE

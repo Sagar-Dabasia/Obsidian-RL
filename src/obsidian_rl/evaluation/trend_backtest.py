@@ -9,7 +9,7 @@ from obsidian_rl.data.contracts import AssetClass, MarketBar
 from obsidian_rl.data.outages import OutageRegistry
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
-from obsidian_rl.signals.trend import TrendConfig, calculate_trend_signal
+from obsidian_rl.signals.trend import TrendConfig, calculate_trend_signal, InsufficientHistoryError
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,12 @@ class TrendBacktestResult:
     last_timestamp_utc: int
     input_dataset_digest: str
     trend_config_identity: str
+    market_model: str
+    first_decision_ts: int | None
+    first_exec_ts: int | None
+    first_exec_price: float | None
+    liq_ts: int | None
+    liq_price: float | None
     backtest_identity: str
 
 
@@ -84,10 +90,15 @@ def _run_single_backtest(
     mode: str,
     outage_registry: OutageRegistry | None = None,
     eval_start_ms: int = 0,
+    allow_short: bool = True,
+    market_model: str = "PERPETUAL",
 ) -> TrendBacktestResult:
     """Run a single pass of the backtest logic."""
     if not bars:
         raise ValueError("Empty dataset")
+
+    if market_model == "SPOT" and allow_short:
+        raise ValueError("SPOT market model cannot execute short positions")
 
     dataset_digest = _hash_dataset(bars)
     config_identity = config.identity
@@ -96,14 +107,34 @@ def _run_single_backtest(
             {
                 "mode": mode,
                 "dataset": dataset_digest,
+                "asset_class": bars[0].asset_class.value,
+                "venue": bars[0].venue,
+                "symbol": bars[0].symbol,
+                "timeframe": bars[0].timeframe.value,
+                "eval_start_ms": eval_start_ms,
+                "eval_end_ms": bars[-1].timestamp_utc,
                 "config": config_identity,
-            }
+                "portfolio": {
+                    "initial_cash": 10000.0,
+                    "max_abs_exposure": 1.0,
+                    "allow_short": allow_short
+                },
+                "cost_model": {
+                    "taker_fee": cost_model.taker_fee,
+                    "half_spread": cost_model.half_spread,
+                    "slippage": cost_model.slippage
+                },
+                "execution_timing": "NEXT_BAR_OPEN",
+                "terminal_liquidation": "LAST_BAR_CLOSE",
+                "market_model": market_model,
+                "outage_registry_present": outage_registry is not None
+            }, sort_keys=True
         ).encode("utf-8")
     ).hexdigest()
 
     asset_class = bars[0].asset_class
 
-    portfolio_config = PortfolioConfig(initial_cash=10000.0, max_abs_exposure=1.0, allow_short=True)
+    portfolio_config = PortfolioConfig(initial_cash=10000.0, max_abs_exposure=1.0, allow_short=allow_short)
     engine = PortfolioEngine(portfolio_config, cost_model)
 
     eval_bars = [b for b in bars if b.timestamp_utc >= eval_start_ms]
@@ -125,9 +156,9 @@ def _run_single_backtest(
     if mode == "long":
         target_exposure = 1.0
 
-    # Warmup tracking
-    # To mimic real conditions, we evaluate trend on bar[t], execute on bar[t+1]
-    # In 'strategy' mode, the target remains 0 until we have enough history to get a valid signal
+    first_decision_ts = None
+    first_exec_ts = None
+    first_exec_price = None
 
     for i in range(len(bars)):
         bar = bars[i]
@@ -137,26 +168,24 @@ def _run_single_backtest(
             if last_equity is None:
                 last_equity = engine.state.net_equity(bar.open)
 
-            # 1. Execute any pending target from the PREVIOUS bar
-            # For bar 0, target is 0 for strategy and flat, 1.0 for long.
             current_exp = engine.state.exposure(bar.open)
             if target_exposure != current_exp:
                 exec_px = _get_exec_price(asset_class, bar, current_exp, target_exposure)
-                # Before executing, record realized pnl to detect win/loss
                 old_realized = engine.state.realized_pnl
-                engine.rebalance(target_exposure, exec_px)
+                res = engine.rebalance(target_exposure, exec_px)
                 new_realized = engine.state.realized_pnl
                 delta = new_realized - old_realized
-                # If we closed some position, there was a PNL event
-                if delta > 0:
-                    winning_trades += 1
-                elif delta < 0:
-                    losing_trades += 1
+                if res.delta_qty != 0.0:
+                    if first_exec_ts is None:
+                        first_exec_ts = bar.timestamp_utc
+                        first_exec_price = exec_px
+                    if delta > 0:
+                        winning_trades += 1
+                    elif delta < 0:
+                        losing_trades += 1
 
-            # MTM at close
             engine.mark_to_market(bar.close)
 
-            # Record metrics
             eq = engine.state.net_equity(bar.close)
             if last_equity > 0:
                 log_returns.append(math.log(eq / last_equity))
@@ -165,9 +194,7 @@ def _run_single_backtest(
             exposure_sum += abs(engine.state.exposure(bar.close))
             valid_bars_for_exposure += 1
 
-        # 2. Evaluate signal for NEXT bar
         if mode == "strategy":
-            # Point in time: only provide history up to current bar, observed_before_ms = current bar's observed_at
             history = bars[: i + 1]
             try:
                 sig = calculate_trend_signal(
@@ -179,13 +206,17 @@ def _run_single_backtest(
                     target_exposure = -1.0
                 else:
                     target_exposure = 0.0
-            except Exception:
-                # E.g., InsufficientHistoryError
+                    
+                if first_decision_ts is None and target_exposure != 0.0:
+                    first_decision_ts = bar.timestamp_utc
+            except InsufficientHistoryError:
                 target_exposure = 0.0
 
-    # Final liquidation
-    engine.liquidate(bars[-1].close)
+    liq_res = engine.liquidate(bars[-1].close)
     engine.mark_to_market(bars[-1].close)
+    
+    liq_ts = bars[-1].timestamp_utc if liq_res.delta_qty != 0.0 else None
+    liq_price = bars[-1].close if liq_res.delta_qty != 0.0 else None
 
     s = engine.state
     net_return = s.net_equity(bars[-1].close) / 10000.0 - 1.0
@@ -222,11 +253,17 @@ def _run_single_backtest(
         if valid_bars_for_exposure
         else 0.0,
         annualized_sharpe=sharpe,
-        maximum_drawdown=s.drawdown(bars[-1].close),
+        maximum_drawdown=engine.path_maximum_drawdown_pct,
         first_timestamp_utc=first_ts,
         last_timestamp_utc=last_ts,
         input_dataset_digest=dataset_digest,
         trend_config_identity=config_identity,
+        market_model=market_model,
+        first_decision_ts=first_decision_ts,
+        first_exec_ts=first_exec_ts,
+        first_exec_price=first_exec_price,
+        liq_ts=liq_ts,
+        liq_price=liq_price,
         backtest_identity=backtest_identity,
     )
 
@@ -237,12 +274,13 @@ def run_trend_backtest(
     cost_model: CostModel,
     outage_registry: OutageRegistry | None = None,
     eval_start_ms: int = 0,
+    allow_short: bool = True,
+    market_model: str | None = None,
 ) -> TrendBacktestReport:
     """Run backtests for strategy, flat baseline, and long baseline."""
     if not bars:
         raise ValueError("Cannot run backtest on empty data.")
 
-    # Validate homogeneity
     asset = bars[0].asset_class
     venue = bars[0].venue
     symbol = bars[0].symbol
@@ -258,14 +296,15 @@ def run_trend_backtest(
             raise ValueError("Bars are out of order or duplicate.")
         last_ts = b.timestamp_utc
 
-    # Crypto requires explicit CostModel check in CLI. Here we just use the one passed.
-    # Forex MUST use CostModel(fee_bps=0...) so the engine doesn't double-charge
     if asset == AssetClass.FOREX:
         cost_model = CostModel(taker_fee=0.0, half_spread=0.0, slippage=0.0)
+        
+    if market_model is None:
+        market_model = "SPOT" if "SPOT" in venue else ("FOREX_MARGIN" if asset == AssetClass.FOREX else "PERPETUAL")
 
-    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy", outage_registry, eval_start_ms)
-    res_flat = _run_single_backtest(bars, config, cost_model, "flat", outage_registry, eval_start_ms)
-    res_long = _run_single_backtest(bars, config, cost_model, "long", outage_registry, eval_start_ms)
+    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy", outage_registry, eval_start_ms, allow_short, market_model)
+    res_flat = _run_single_backtest(bars, config, cost_model, "flat", outage_registry, eval_start_ms, allow_short, market_model)
+    res_long = _run_single_backtest(bars, config, cost_model, "long", outage_registry, eval_start_ms, allow_short, market_model)
 
     return TrendBacktestReport(
         strategy=res_strategy,
