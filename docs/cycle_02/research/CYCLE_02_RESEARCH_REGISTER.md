@@ -21,7 +21,7 @@ In accordance with Obsidian-RL research governance and validation rules (`AGENTS
 ---
 
 ## Continuation of the Obsidian-RL Repository
-The formal rejection of Cycle 01 hypotheses **does not** close or terminate the Obsidian-RL project. Rather, the empirical findings of Cycle 01 establish that high-turnover single-asset 15-minute cryptocurrency trading is dominated by execution fee drag and noise. 
+The formal rejection of Cycle 01 hypotheses **does not** close or terminate the Obsidian-RL project. Rather, the empirical findings of Cycle 01 establish that high-turnover single-asset 15-minute cryptocurrency trading is dominated by execution fee drag and noise.
 
 Obsidian-RL now advances to **Research Cycle 02**, deploying an institutional-grade, multi-engine architecture designed from the ground up to overcome the limitations discovered in Cycle 01.
 
@@ -68,6 +68,18 @@ To preserve absolute scientific integrity and prevent data dredging across cross
 ## Research Cycle 02 Governance Checklist
 - [x] Canonical Cross-Asset Contracts (`MarketBar`, `EventNewsItem`) finalized and tested (`Phase 1`).
 - [ ] Experimental window boundaries (`DEV_TRAIN`, `OUTER_VAL`, `CONFIRMATION`, `FINAL_HOLDOUT`) formally frozen before data download (`Phase 3`).
-- [ ] Cycle 01 hypotheses verified as retired and excluded from active strategy loops.
+- [x] Cycle 01 hypotheses verified as retired and excluded from active strategy loops.
 - [ ] Multi-engine composite evaluated under strict walk-forward isolation (`Phase 8`).
-- [ ] Zero access to `FINAL_HOLDOUT` verified across all audit logs.
+- [x] Zero access to `FINAL_HOLDOUT` verified across all audit logs.
+
+---
+
+## Phase 4C Final Status
+**Classification**: `EXPERIMENT INVALID — UNVERIFIED FOREX DATA GAPS`
+Phase 4C is officially closed and cannot be rerun using the current unverifiable Forex data constraints. The experiment was blocked by missing OANDA market data which lacked valid cryptographic proofs of API absence.
+
+## Phase 4D Final Status
+**Classification**: `CRYPTO TREND DEVELOPMENT SCREEN FAILS`
+Phase 4D was a valid experiment. The frozen BTCUSDT/ETHUSDT trend configuration failed the Phase 4D development screen because median maximum drawdown was 28.62%, above the 20% threshold.
+Confirmation and final holdout data remained completely untouched.
+The next task must require a genuinely new hypothesis before modifying or rerunning the strategy.
