@@ -119,7 +119,23 @@ BINANCE_2020_02_19_OUTAGE = VenueOutage(
     venue_wide=True,
 )
 
+# Verified using Binance public kline archive:
+#   BTCUSDT-4h-2019-03.zip SHA-256: fed5735ec622a9a18ea5a131e7c334642a44e3a27a8fe2710d8009da8e21c6b9
+#   ETHUSDT-4h-2019-03.zip SHA-256: 36851e330742a593a277324ae825f4d9a5718e814d609a8fd9de9f376649a797
+# Both archives confirm timestamp 1552363200000 is missing.
+BINANCE_2019_03_12_OUTAGE = VenueOutage(
+    venue="BINANCE_SPOT",
+    start_ms=1552356000000,  # 2019-03-12 02:00 UTC
+    end_ms=1552377600000,    # 2019-03-12 08:00 UTC
+    source_id="360024825992,360024907012",
+    verification_timestamp_ms=1753279200000,  # 2025-07-23 (verification date)
+    source_content_hash="fed5735ec622a9a18ea5a131e7c334642a44e3a27a8fe2710d8009da8e21c6b9",
+    reason="scheduled Binance system upgrade with trading suspended",
+    affected_symbols=("BTCUSDT", "ETHUSDT"),
+    venue_wide=True,
+)
+
 
 def default_registry() -> OutageRegistry:
     """Return the default outage registry with all pre-registered entries."""
-    return OutageRegistry(outages=(BINANCE_2020_02_19_OUTAGE,))
+    return OutageRegistry(outages=(BINANCE_2020_02_19_OUTAGE, BINANCE_2019_03_12_OUTAGE))

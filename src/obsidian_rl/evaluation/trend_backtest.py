@@ -83,6 +83,7 @@ def _run_single_backtest(
     cost_model: CostModel,
     mode: str,
     outage_registry: OutageRegistry | None = None,
+    eval_start_ms: int = 0,
 ) -> TrendBacktestResult:
     """Run a single pass of the backtest logic."""
     if not bars:
@@ -105,8 +106,12 @@ def _run_single_backtest(
     portfolio_config = PortfolioConfig(initial_cash=10000.0, max_abs_exposure=1.0, allow_short=True)
     engine = PortfolioEngine(portfolio_config, cost_model)
 
-    first_ts = bars[0].timestamp_utc
-    last_ts = bars[-1].timestamp_utc
+    eval_bars = [b for b in bars if b.timestamp_utc >= eval_start_ms]
+    if not eval_bars:
+        raise ValueError("No bars in evaluation period")
+
+    first_ts = eval_bars[0].timestamp_utc
+    last_ts = eval_bars[-1].timestamp_utc
 
     winning_trades = 0
     losing_trades = 0
@@ -114,7 +119,7 @@ def _run_single_backtest(
     valid_bars_for_exposure = 0
 
     log_returns = []
-    last_equity = engine.state.net_equity(bars[0].close)
+    last_equity = None
 
     target_exposure = 0.0
     if mode == "long":
@@ -126,34 +131,39 @@ def _run_single_backtest(
 
     for i in range(len(bars)):
         bar = bars[i]
+        is_eval = bar.timestamp_utc >= eval_start_ms
 
-        # 1. Execute any pending target from the PREVIOUS bar
-        # For bar 0, target is 0 for strategy and flat, 1.0 for long.
-        current_exp = engine.state.exposure(bar.open)
-        if target_exposure != current_exp:
-            exec_px = _get_exec_price(asset_class, bar, current_exp, target_exposure)
-            # Before executing, record realized pnl to detect win/loss
-            old_realized = engine.state.realized_pnl
-            engine.rebalance(target_exposure, exec_px)
-            new_realized = engine.state.realized_pnl
-            delta = new_realized - old_realized
-            # If we closed some position, there was a PNL event
-            if delta > 0:
-                winning_trades += 1
-            elif delta < 0:
-                losing_trades += 1
+        if is_eval:
+            if last_equity is None:
+                last_equity = engine.state.net_equity(bar.open)
 
-        # MTM at close
-        engine.mark_to_market(bar.close)
+            # 1. Execute any pending target from the PREVIOUS bar
+            # For bar 0, target is 0 for strategy and flat, 1.0 for long.
+            current_exp = engine.state.exposure(bar.open)
+            if target_exposure != current_exp:
+                exec_px = _get_exec_price(asset_class, bar, current_exp, target_exposure)
+                # Before executing, record realized pnl to detect win/loss
+                old_realized = engine.state.realized_pnl
+                engine.rebalance(target_exposure, exec_px)
+                new_realized = engine.state.realized_pnl
+                delta = new_realized - old_realized
+                # If we closed some position, there was a PNL event
+                if delta > 0:
+                    winning_trades += 1
+                elif delta < 0:
+                    losing_trades += 1
 
-        # Record metrics
-        eq = engine.state.net_equity(bar.close)
-        if last_equity > 0:
-            log_returns.append(math.log(eq / last_equity))
-        last_equity = eq
+            # MTM at close
+            engine.mark_to_market(bar.close)
 
-        exposure_sum += abs(engine.state.exposure(bar.close))
-        valid_bars_for_exposure += 1
+            # Record metrics
+            eq = engine.state.net_equity(bar.close)
+            if last_equity > 0:
+                log_returns.append(math.log(eq / last_equity))
+            last_equity = eq
+
+            exposure_sum += abs(engine.state.exposure(bar.close))
+            valid_bars_for_exposure += 1
 
         # 2. Evaluate signal for NEXT bar
         if mode == "strategy":
@@ -226,6 +236,7 @@ def run_trend_backtest(
     config: TrendConfig,
     cost_model: CostModel,
     outage_registry: OutageRegistry | None = None,
+    eval_start_ms: int = 0,
 ) -> TrendBacktestReport:
     """Run backtests for strategy, flat baseline, and long baseline."""
     if not bars:
@@ -252,9 +263,9 @@ def run_trend_backtest(
     if asset == AssetClass.FOREX:
         cost_model = CostModel(taker_fee=0.0, half_spread=0.0, slippage=0.0)
 
-    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy", outage_registry)
-    res_flat = _run_single_backtest(bars, config, cost_model, "flat", outage_registry)
-    res_long = _run_single_backtest(bars, config, cost_model, "long", outage_registry)
+    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy", outage_registry, eval_start_ms)
+    res_flat = _run_single_backtest(bars, config, cost_model, "flat", outage_registry, eval_start_ms)
+    res_long = _run_single_backtest(bars, config, cost_model, "long", outage_registry, eval_start_ms)
 
     return TrendBacktestReport(
         strategy=res_strategy,

@@ -9,6 +9,7 @@ from obsidian_rl.data.contracts import AssetClass, Timeframe
 from obsidian_rl.data.historical_dataset import ingest_historical_range
 from obsidian_rl.data.outages import default_registry
 from obsidian_rl.data.storage import SQLiteStorage
+from obsidian_rl.signals.trend import TrendConfig
 
 START_MS = 1546300800000  # 2019-01-01T00:00:00Z
 END_MS = 1704067200000  # 2024-01-01T00:00:00Z
@@ -24,6 +25,7 @@ MARKETS = [
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build Historical Dataset for Trend Pilot 01")
     parser.add_argument("--database", default="data/trend_pilot_01.sqlite", help="SQLite DB path")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing manifest")
     args = parser.parse_args()
 
     manifests = []
@@ -32,6 +34,11 @@ def main() -> None:
         for asset_class, symbol, timeframe in MARKETS:
             print(f"Ingesting {symbol}...")
             try:
+                # Pilot 02 preregistration requires exactly 721 bars strictly before evaluation
+                min_warmup_bars = 721
+
+                venue = "BINANCE_SPOT" if asset_class == AssetClass.CRYPTO else "OANDA_PRACTICE"
+
                 manifest = ingest_historical_range(
                     asset_class=asset_class,
                     symbol=symbol,
@@ -40,6 +47,7 @@ def main() -> None:
                     end_ms=END_MS,
                     storage=storage,
                     outage_registry=default_registry(),
+                    min_warmup_bars=min_warmup_bars,
                 )
                 manifests.append(manifest)
                 print(f"Done {symbol}. Rows: {manifest.row_count}")
@@ -63,6 +71,9 @@ def main() -> None:
                 "symbol": m.symbol,
                 "asset_class": m.asset_class.value,
                 "venue": m.venue,
+                "timeframe": m.timeframe.value,
+                "start_timestamp_utc": m.start_timestamp_utc,
+                "end_timestamp_utc": m.end_timestamp_utc,
                 "row_count": m.row_count,
                 "digest": m.digest,
             }
@@ -71,6 +82,9 @@ def main() -> None:
     }
 
     manifest_path = manifest_dir / "TREND_PILOT_02_COMBINED.json"
+    if manifest_path.exists() and not args.overwrite:
+        raise FileExistsError(f"Manifest {manifest_path} already exists. Refusing to overwrite without --overwrite flag.")
+
     with open(manifest_path, "w") as f:
         json.dump(combined, f, indent=2)
     print(f"Combined manifest written to {manifest_path}")

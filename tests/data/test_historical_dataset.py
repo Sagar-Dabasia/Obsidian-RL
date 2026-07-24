@@ -151,4 +151,5 @@ def test_warmup_gap_fails_short(tmp_path, monkeypatch) -> None:
             start_ms=start_ts - 2 * 14400000,
             end_ms=eval_start_ms + 14400000,
             storage=storage,
+            min_warmup_bars=721,
         )

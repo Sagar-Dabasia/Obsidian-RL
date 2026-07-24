@@ -1,110 +1,79 @@
-"""Verify the Binance 2020-02-19 outage using the official public kline archive.
-
-Downloads daily 4h kline CSVs from https://data.binance.vision/ and checks
-whether the 1582113600000 timestamp is present for BTCUSDT and ETHUSDT.
-
-No trading, no credentials, no paid resources.
-"""
-
-import csv
+import urllib.request
 import hashlib
-import io
-import sys
 import zipfile
-from urllib.request import urlopen
+import io
+from datetime import datetime, timezone
 
-# The outage timestamp we need to verify
-OUTAGE_TS_MS = 1582113600000  # 2020-02-19T12:00:00Z
+URLS = {
+    "BTCUSDT": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/4h/BTCUSDT-4h-2019-03.zip",
+    "ETHUSDT": "https://data.binance.vision/data/spot/monthly/klines/ETHUSDT/4h/ETHUSDT-4h-2019-03.zip"
+}
 
-# Binance public kline archive URLs (free, no auth)
-# Format: monthly klines for 4h
-BASE_URL = "https://data.binance.vision/data/spot/monthly/klines"
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-INTERVAL = "4h"
-MONTH = "2020-02"
+def verify_archive(symbol, url):
+    print(f"Downloading {url}")
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req) as response:
+        data = response.read()
 
+    timestamp = datetime.now(timezone.utc).isoformat()
+    sha256 = hashlib.sha256(data).hexdigest()
 
-def download_and_check(symbol: str) -> tuple[bool, str, int]:
-    """Download monthly kline zip, extract CSV, check for outage timestamp.
+    # Check rows
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        csv_filename = z.namelist()[0]
+        with z.open(csv_filename) as f:
+            content = f.read().decode('utf-8')
 
-    Returns (timestamp_missing, content_sha256, total_rows).
-    """
-    url = f"{BASE_URL}/{symbol}/{INTERVAL}/{symbol}-{INTERVAL}-{MONTH}.zip"
-    print(f"Downloading: {url}")
+    rows = [line.split(',') for line in content.split('\n') if line.strip()]
+    row_count = len(rows)
 
-    response = urlopen(url)
-    raw = response.read()
-    content_hash = hashlib.sha256(raw).hexdigest()
-    print(f"  SHA-256: {content_hash}")
-    print(f"  Size: {len(raw)} bytes")
+    timestamps = [int(r[0]) for r in rows]
 
-    # Extract CSV from zip
-    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-        csv_names = zf.namelist()
-        assert len(csv_names) == 1, f"Expected 1 CSV, got {csv_names}"
-        csv_name = csv_names[0]
-        csv_data = zf.read(csv_name).decode("utf-8")
+    has_00 = 1552348800000 in timestamps
+    has_04 = 1552363200000 in timestamps
+    has_08 = 1552377600000 in timestamps
 
-    # Parse CSV: columns are open_time, open, high, low, close, volume, ...
-    reader = csv.reader(io.StringIO(csv_data))
-    timestamps = []
-    for row in reader:
-        if not row:
-            continue
-        try:
-            ts = int(row[0])
-            timestamps.append(ts)
-        except (ValueError, IndexError):
-            continue
+    print(f"[{symbol}] SHA-256: {sha256}")
+    print(f"[{symbol}] Retrieval: {timestamp}")
+    print(f"[{symbol}] Row count: {row_count}")
+    print(f"[{symbol}] 00:00 (1552348800000) exists: {has_00}")
+    print(f"[{symbol}] 04:00 (1552363200000) missing: {not has_04}")
+    print(f"[{symbol}] 08:00 (1552377600000) exists: {has_08}")
 
-    total_rows = len(timestamps)
-    timestamp_missing = OUTAGE_TS_MS not in timestamps
+    return {
+        "symbol": symbol,
+        "url": url,
+        "sha256": sha256,
+        "timestamp": timestamp,
+        "row_count": row_count,
+        "00_exists": has_00,
+        "04_absent": not has_04,
+        "08_exists": has_08,
+    }
 
-    return timestamp_missing, content_hash, total_rows
+def main():
+    results = []
+    for sym, url in URLS.items():
+        results.append(verify_archive(sym, url))
 
+    # Write evidence record
+    evidence_path = "docs/cycle_02/research/BINANCE_2019_03_12_OUTAGE_EVIDENCE.md"
+    with open(evidence_path, "w") as f:
+        f.write("# Binance System Upgrade Evidence (March 12, 2019)\n\n")
+        f.write("Official notice ID: 360024825992\n")
+        f.write("Completion notice ID: 360024907012\n\n")
 
-def main() -> None:
-    print("=" * 60)
-    print("Binance Outage Verification: 2020-02-19T12:00:00Z")
-    print(f"Target timestamp: {OUTAGE_TS_MS}")
-    print("=" * 60)
-    print()
+        for r in results:
+            f.write(f"## {r['symbol']}\n")
+            f.write(f"- URL: {r['url']}\n")
+            f.write(f"- SHA-256: {r['sha256']}\n")
+            f.write(f"- Retrieval: {r['timestamp']}\n")
+            f.write(f"- Row count: {r['row_count']}\n")
+            f.write(f"- 1552348800000 exists: {r['00_exists']}\n")
+            f.write(f"- 1552363200000 absent: {r['04_absent']}\n")
+            f.write(f"- 1552377600000 exists: {r['08_exists']}\n\n")
 
-    results = {}
-    for symbol in SYMBOLS:
-        try:
-            missing, sha, rows = download_and_check(symbol)
-            results[symbol] = {
-                "missing": missing,
-                "sha256": sha,
-                "rows": rows,
-            }
-            status = "MISSING (outage confirmed)" if missing else "PRESENT (no outage)"
-            print(f"  {symbol}: {OUTAGE_TS_MS} is {status}")
-            print(f"  Total rows: {rows}")
-            print()
-        except Exception as e:
-            print(f"  {symbol}: DOWNLOAD FAILED: {e}")
-            results[symbol] = {"missing": None, "sha256": None, "rows": 0}
-            print()
-
-    # Verdict
-    print("=" * 60)
-    all_missing = all(r["missing"] is True for r in results.values())
-    if all_missing:
-        print("VERDICT: Outage INDEPENDENTLY VERIFIED")
-        print("  The timestamp 1582113600000 is missing from ALL symbols.")
-        print("  This confirms a venue-wide outage, not a symbol-specific issue.")
-    else:
-        print("VERDICT: Outage NOT confirmed venue-wide")
-        for sym, r in results.items():
-            print(f"  {sym}: missing={r['missing']}")
-
-    print("=" * 60)
-
-    if not all_missing:
-        sys.exit(1)
-
+    print(f"Evidence written to {evidence_path}")
 
 if __name__ == "__main__":
     main()

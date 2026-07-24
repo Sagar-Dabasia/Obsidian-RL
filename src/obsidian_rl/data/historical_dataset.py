@@ -7,7 +7,7 @@ safely with idempotency and interrupted-run resume.
 import hashlib
 from datetime import UTC, datetime
 
-from obsidian_rl.data.contracts import AssetClass, Timeframe
+from obsidian_rl.data.contracts import AssetClass, Timeframe, MarketBar
 from obsidian_rl.data.outages import OutageRegistry
 from obsidian_rl.data.providers.base import MarketDataProvider
 from obsidian_rl.data.providers.binance import BinanceSpotProvider
@@ -41,9 +41,16 @@ def ingest_historical_range(
     end_ms: int,
     storage: SQLiteStorage,
     outage_registry: OutageRegistry | None = None,
+    min_warmup_bars: int = 0,
 ) -> DatasetManifest:
     """Ingest a historical range chunk by chunk into SQLite."""
     venue = _get_venue(asset_class)
+    eval_start_ms = 1577836800000  # 2020-01-01T00:00:00Z
+
+    try:
+        provider = _get_provider(asset_class)
+    except Exception as e:
+        provider = None
 
     # Smart resume: find latest timestamp in DB for this symbol
     existing_bars = storage.query_market_bars(
@@ -64,7 +71,8 @@ def ingest_historical_range(
         chunk_end = min(end_ms, cursor_ms + CHUNK_SIZE_MS)
 
         try:
-            provider = _get_provider(asset_class)
+            if provider is None:
+                raise RuntimeError("No provider available")
             bars = provider.fetch_bars(symbol, timeframe, cursor_ms, chunk_end)
             if bars:
                 storage.insert_market_bars(bars)
@@ -92,26 +100,29 @@ def ingest_historical_range(
     if not stored_bars:
         raise ValueError(f"No data ingested for {symbol}")
 
-    # Validate and recover crypto gaps
-    if asset_class == AssetClass.CRYPTO:
-        expected_interval = _tf_to_ms(timeframe)
-        eval_start_ms = 1577836800000  # 2020-01-01T00:00:00Z
+    # Validate and recover gaps
+    expected_interval = _tf_to_ms(timeframe)
 
-        while True:
-            gaps_found = False
-            stored_bars.sort(key=lambda b: b.timestamp_utc)
-            for i in range(1, len(stored_bars)):
-                diff = stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc
-                if diff > expected_interval:
-                    gap_start = stored_bars[i - 1].timestamp_utc + expected_interval
-                    gap_end = stored_bars[i].timestamp_utc
+    while True:
+        gaps_found = False
+        stored_bars.sort(key=lambda b: b.timestamp_utc)
+        print("DEBUG: Checking gaps...")
+        for i in range(1, len(stored_bars)):
+            diff = stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc
+            if diff > expected_interval:
+                from obsidian_rl.data.quality import is_forex_weekend_gap
+                if "OANDA" in venue and is_forex_weekend_gap(stored_bars[i - 1].timestamp_utc, stored_bars[i].timestamp_utc):
+                    continue
+                gap_start = stored_bars[i - 1].timestamp_utc + expected_interval
+                gap_end = stored_bars[i].timestamp_utc
 
-                    is_eval = gap_end > eval_start_ms
-                    period_name = "EVALUATION" if is_eval else "WARM-UP"
-                    print(f"Gap detected [{period_name}] in {symbol}: {gap_start} to {gap_end}")
+                is_eval = gap_end > eval_start_ms
+                period_name = "EVALUATION" if is_eval else "WARM-UP"
+                print(f"Gap detected [{period_name}] in {symbol}: {gap_start} to {gap_end}")
 
-                    # Refetch attempt
-                    recovered = False
+                # Refetch attempt
+                recovered = False
+                if provider is not None:
                     for attempt in range(3):
                         print(f"Refetch attempt {attempt + 1}/3 for {symbol} at {gap_start}...")
                         try:
@@ -120,7 +131,7 @@ def ingest_historical_range(
                             )
                             if recovered_bars:
                                 print(
-                                    f"Binance returned {len(recovered_bars)} candles on attempt {attempt + 1}."
+                                    f"Provider returned {len(recovered_bars)} candles on attempt {attempt + 1}."
                                 )
                                 storage.insert_market_bars(recovered_bars)
                                 stored_bars.extend(recovered_bars)
@@ -130,7 +141,7 @@ def ingest_historical_range(
                             print(f"Refetch error: {e}")
 
                     if not recovered:
-                        print("Binance returned NO candles after 3 attempts.")
+                        print("Provider returned NO candles after 3 attempts.")
 
                     if recovered:
                         gaps_found = True
@@ -148,61 +159,60 @@ def ingest_historical_range(
                             print(f"Unrecoverable evaluation gap in {symbol} at {gap_start}")
                         # We don't raise immediately to allow auditing all gaps, but we mark it to fail later.
 
-            if not gaps_found:
-                break
+        if not gaps_found:
+            break
 
-        # Check if we had any evaluation gaps
-        eval_gaps = []
-        for i in range(1, len(stored_bars)):
-            diff = stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc
-            if diff > expected_interval:
-                gap_start = stored_bars[i - 1].timestamp_utc + expected_interval
-                gap_end = stored_bars[i].timestamp_utc
-                if gap_end > eval_start_ms:
-                    if outage_registry and outage_registry.covers_gap(venue, gap_start, gap_end):
-                        continue
-                    eval_gaps.append(gap_start)
+    # Check if we had any evaluation gaps
+    eval_gaps = []
+    for i in range(1, len(stored_bars)):
+        diff = stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc
+        if diff > expected_interval:
+            from obsidian_rl.data.quality import is_forex_weekend_gap
+            if "OANDA" in venue and is_forex_weekend_gap(stored_bars[i - 1].timestamp_utc, stored_bars[i].timestamp_utc):
+                continue
+            gap_start = stored_bars[i - 1].timestamp_utc + expected_interval
+            gap_end = stored_bars[i].timestamp_utc
+            if gap_end > eval_start_ms:
+                if outage_registry and outage_registry.covers_gap(venue, gap_start, gap_end):
+                    continue
+                eval_gaps.append(gap_start)
 
-        if eval_gaps:
-            raise ValueError(f"Unrecoverable evaluation gaps in {symbol}: {eval_gaps}")
+    if eval_gaps:
+        raise ValueError(f"Unrecoverable evaluation gaps in {symbol}: {eval_gaps}")
 
-        # After all refetches, find the last warm-up gap
-        stored_bars.sort(key=lambda b: b.timestamp_utc)
-        last_gap_ts = -1
-        for i in range(1, len(stored_bars)):
-            diff = stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc
-            if diff > expected_interval:
-                # If this gap ends before or exactly at eval_start_ms, it's a warm-up gap
-                if stored_bars[i].timestamp_utc <= eval_start_ms:
-                    last_gap_ts = stored_bars[i - 1].timestamp_utc
+    # After all refetches, find the last warm-up gap
+    stored_bars.sort(key=lambda b: b.timestamp_utc)
+    last_gap_ts = -1
+    for i in range(1, len(stored_bars)):
+        diff = stored_bars[i].timestamp_utc - stored_bars[i - 1].timestamp_utc
+        if diff > expected_interval:
+            from obsidian_rl.data.quality import is_forex_weekend_gap
+            if "OANDA" in venue and is_forex_weekend_gap(stored_bars[i - 1].timestamp_utc, stored_bars[i].timestamp_utc):
+                continue
+            gap_start = stored_bars[i - 1].timestamp_utc + expected_interval
+            gap_end = stored_bars[i].timestamp_utc
+            if outage_registry and outage_registry.covers_gap(venue, gap_start, gap_end):
+                continue
+            # If this gap ends before or exactly at eval_start_ms, it's a warm-up gap
+            if stored_bars[i].timestamp_utc <= eval_start_ms:
+                last_gap_ts = stored_bars[i - 1].timestamp_utc
 
-        if last_gap_ts != -1:
-            # We have a warm-up gap. Find the continuous segment after the last gap.
-            continuous_bars = [b for b in stored_bars if b.timestamp_utc > last_gap_ts]
-            warmup_bars_before_eval = [
-                b for b in continuous_bars if b.timestamp_utc < eval_start_ms
-            ]
+    print(f"DEBUG: last_gap_ts = {last_gap_ts}")
+    if last_gap_ts != -1:
+        # We have a warm-up gap. Find the continuous segment after the last gap.
+        continuous_bars = [b for b in stored_bars if b.timestamp_utc > last_gap_ts]
+        warmup_bars_before_eval = [
+            b for b in continuous_bars if b.timestamp_utc < eval_start_ms
+        ]
 
-            if len(warmup_bars_before_eval) < 721:
-                print(
-                    f"Continuous bars available before evaluation: {len(warmup_bars_before_eval)} (Failed, need 721)"
-                )
-                raise ValueError(
-                    f"Insufficient continuous warm-up bars after gap in {symbol}. "
-                    f"Needed 721, got {len(warmup_bars_before_eval)}."
-                )
-            print(
-                f"Continuous bars available before evaluation: {len(warmup_bars_before_eval)} (Passed)"
-            )
-            # Truncate dataset to only include the continuous segment
-            stored_bars = continuous_bars
 
-    # Create deterministic manifest
-    row_hashes = [b.row_hash for b in stored_bars]
-    h = hashlib.sha256()
-    for row_hash in row_hashes:
-        h.update(row_hash.encode("utf-8"))
-    combined_digest = h.hexdigest()
+        # Truncate dataset to only include the continuous segment
+        stored_bars = continuous_bars
+
+    # Create deterministic manifest and verify integrity
+    combined_digest = verify_and_digest_continuous_bars(
+        stored_bars, eval_start_ms, timeframe, venue, outage_registry, min_warmup_bars=min_warmup_bars
+    )
 
     manifest = DatasetManifest(
         dataset_id=f"TREND_PILOT_01_{symbol}_{start_ms}_{end_ms}",
@@ -221,6 +231,52 @@ def ingest_historical_range(
     )
     return manifest
 
+
+
+def verify_and_digest_continuous_bars(
+    bars: list[MarketBar],
+    eval_start_ms: int,
+    timeframe: Timeframe,
+    venue: str,
+    outage_registry: OutageRegistry | None = None,
+    min_warmup_bars: int = 0,
+) -> str:
+    """
+    Verifies that the provided sequence of bars is continuous (with allowed venue outages),
+    contains sufficient warm-up, and returns the computed SHA-256 digest.
+    """
+    import hashlib
+    if not bars:
+        raise ValueError("Cannot verify empty bars sequence.")
+
+    warmup_bars = [b for b in bars if b.timestamp_utc < eval_start_ms]
+    if len(warmup_bars) < min_warmup_bars:
+        raise ValueError(
+            f"Insufficient continuous warm-up bars. Needed {min_warmup_bars}, got {len(warmup_bars)}."
+        )
+
+    expected_interval = _tf_to_ms(timeframe)
+
+    from obsidian_rl.data.quality import is_forex_weekend_gap
+
+    for i in range(1, len(bars)):
+        diff = bars[i].timestamp_utc - bars[i - 1].timestamp_utc
+        if diff > expected_interval:
+            if "OANDA" in venue and is_forex_weekend_gap(bars[i - 1].timestamp_utc, bars[i].timestamp_utc):
+                continue
+            gap_start = bars[i - 1].timestamp_utc + expected_interval
+            gap_end = bars[i].timestamp_utc
+            if outage_registry and outage_registry.covers_gap(venue, gap_start, gap_end):
+                continue
+            raise ValueError(
+                f"Unregistered gap found between {bars[i - 1].timestamp_utc} and {bars[i].timestamp_utc}"
+            )
+
+    row_hashes = [b.row_hash for b in bars]
+    h = hashlib.sha256()
+    for row_hash in row_hashes:
+        h.update(row_hash.encode("utf-8"))
+    return h.hexdigest()
 
 def _tf_to_ms(tf: Timeframe) -> int:
     if tf == Timeframe.H4:

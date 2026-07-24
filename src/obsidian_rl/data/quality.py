@@ -50,7 +50,7 @@ class ForexSessionConfig:
     """Configurable hours and rules for Forex market weekend closures."""
 
     close_weekday: int = 4  # Friday (weekday 4)
-    close_hour: int = 20  # 20:00 UTC
+    close_hour: int = 16  # 16:00 UTC (to account for 4H candle opens before 21:00 close)
     open_weekday: int = 6  # Sunday (weekday 6)
     open_hour: int = 20  # 20:00 UTC
     open_next_day_max_hour: int = 4  # Monday (weekday 0) 04:00 UTC
