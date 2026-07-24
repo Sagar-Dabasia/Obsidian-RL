@@ -176,15 +176,15 @@ def test_audit_invariants(monkeypatch) -> None:
 
         def rebalance(self, target_exposure: float, execution_price: float):
             self.rebalance_calls.append((target_exposure, execution_price))
-            super().rebalance(target_exposure, execution_price)
+            return super().rebalance(target_exposure, execution_price)
 
         def mark_to_market(self, current_price: float):
             self.mtm_calls.append(current_price)
-            super().mark_to_market(current_price)
+            return super().mark_to_market(current_price)
 
         def liquidate(self, current_price: float):
             self.liquidate_calls.append(current_price)
-            super().liquidate(current_price)
+            return super().liquidate(current_price)
 
     monkeypatch.setattr(tb, "PortfolioEngine", SpyEngine)
     SpyEngine.instances.clear()

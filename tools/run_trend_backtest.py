@@ -48,15 +48,33 @@ def main() -> None:
     manifest_component = None
     manifest_digest = None
     if args.manifest:
+        import re as re_mod
         with open(args.manifest, "r") as f:
             manifest_data = json.load(f)
         components = manifest_data.get("components", [])
-        for comp in components:
-            if comp.get("venue") == args.venue and comp.get("symbol") == args.symbol:
-                manifest_component = comp
-                break
-        if not manifest_component:
+        
+        # 1. Require exactly one manifest component matching: (asset_class, venue, symbol, timeframe)
+        matching_components = [
+            c for c in components
+            if c.get("asset_class") == args.asset_class 
+            and c.get("venue") == args.venue 
+            and c.get("symbol") == args.symbol 
+            and c.get("timeframe") == args.timeframe
+        ]
+        if len(matching_components) != 1:
             print("Manifest component missing or ambiguous")
+            sys.exit(1)
+            
+        manifest_component = matching_components[0]
+        
+        # 2. Strict start/end MS check
+        if manifest_component.get("start_timestamp_utc") != args.start_ms or manifest_component.get("end_timestamp_utc") != args.end_ms:
+            print("Error: CLI boundaries conflict with the manifest")
+            sys.exit(1)
+            
+        manifest_digest = manifest_component.get("digest")
+        if not manifest_digest or not re_mod.match(r"^[0-9a-f]{64}$", manifest_digest):
+            print("Error: Manifest digest is malformed")
             sys.exit(1)
 
 

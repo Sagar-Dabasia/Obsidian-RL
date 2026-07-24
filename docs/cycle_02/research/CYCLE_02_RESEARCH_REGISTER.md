@@ -79,7 +79,8 @@ To preserve absolute scientific integrity and prevent data dredging across cross
 Phase 4C is officially closed and cannot be rerun using the current unverifiable Forex data constraints. The experiment was blocked by missing OANDA market data which lacked valid cryptographic proofs of API absence.
 
 ## Phase 4D Final Status
-**Classification**: `CRYPTO TREND DEVELOPMENT SCREEN FAILS`
-Phase 4D was a valid experiment. The frozen BTCUSDT/ETHUSDT trend configuration failed the Phase 4D development screen because median maximum drawdown was 28.62%, above the 20% threshold.
+**Status**: `PHASE 4D EVALUATION INVALID — EXECUTION/METRIC MODEL DEFECTS — NO VALID STRATEGY CONCLUSION`
+* Constraints: Erratum logged. Strict long/flat or proper perpetual margin required.
+
 Confirmation and final holdout data remained completely untouched.
 The next task must require a genuinely new hypothesis before modifying or rerunning the strategy.

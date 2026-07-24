@@ -168,7 +168,36 @@ def test_march_2019_archive_fixture_confirms() -> None:
 
 def test_no_synthetic_row_introduced() -> None:
     # 6. No synthetic row is introduced.
-    pass
+    from obsidian_rl.data.outages import default_registry
+    from obsidian_rl.data.contracts import MarketBar, AssetClass, Timeframe, QuoteStatus, VolumeType
+    reg = default_registry()
+    
+    def make_test_bar(ts: int) -> MarketBar:
+        return MarketBar(
+            asset_class=AssetClass.CRYPTO,
+            venue="BINANCE_SPOT",
+            symbol="BTCUSDT",
+            timeframe=Timeframe.H4,
+            timestamp_utc=ts,
+            observed_at_utc=ts,
+            open=1.0,
+            high=1.0,
+            low=1.0,
+            close=1.0,
+            quote_status=QuoteStatus.OBSERVED,
+            volume=1.0,
+            
+            volume_type=VolumeType.BASE,
+            bid=1.0,
+            ask=1.0,
+            data_source="TEST",
+            schema_version="SCHEMA_V2",
+            row_hash=""
+        )
+    
+    b1 = make_test_bar(1552348800000)
+    b2 = make_test_bar(1552377600000)
+    assert reg.covers_gap("BINANCE_SPOT", b1.timestamp_utc + 14400000, b2.timestamp_utc)
 
 def test_existing_feb_2020_outage_unchanged() -> None:
     from obsidian_rl.data.outages import default_registry, BINANCE_2020_02_19_OUTAGE

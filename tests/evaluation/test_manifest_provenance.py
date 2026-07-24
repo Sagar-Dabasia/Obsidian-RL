@@ -15,7 +15,7 @@ def test_builder_and_runner_digest_match():
     # Simple check that verify_and_digest_continuous_bars is deterministic
     b1 = MarketBar(
         asset_class=AssetClass.CRYPTO,
-        venue="BINANCE_SPOT",
+        venue="BINANCE_PERPETUAL",
         symbol="BTCUSDT",
         timeframe=Timeframe.H4,
         timestamp_utc=1000000000000,
@@ -33,7 +33,7 @@ def test_builder_and_runner_digest_match():
     )
     b2 = MarketBar(
         asset_class=AssetClass.CRYPTO,
-        venue="BINANCE_SPOT",
+        venue="BINANCE_PERPETUAL",
         symbol="BTCUSDT",
         timeframe=Timeframe.H4,
         timestamp_utc=1000000000000 + 4*3600*1000,
@@ -57,7 +57,7 @@ def test_builder_and_runner_digest_match():
     for i in range(725):
         bars.append(MarketBar(
             asset_class=AssetClass.CRYPTO,
-            venue="BINANCE_SPOT",
+            venue="BINANCE_PERPETUAL",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             timestamp_utc=ts + i * 4 * 3600 * 1000,
@@ -69,8 +69,8 @@ def test_builder_and_runner_digest_match():
         ))
     
     # 725 bars, eval_start_ms is ts + 722 * 4h -> 722 warmup bars
-    digest1 = verify_and_digest_continuous_bars(bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_SPOT", min_warmup_bars=720)
-    digest2 = verify_and_digest_continuous_bars(bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_SPOT", min_warmup_bars=720)
+    digest1 = verify_and_digest_continuous_bars(bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720)
+    digest2 = verify_and_digest_continuous_bars(bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720)
     assert digest1 == digest2
     assert len(digest1) == 64
 
@@ -80,7 +80,7 @@ def test_unregistered_gaps_fail():
     for i in range(725):
         bars.append(MarketBar(
             asset_class=AssetClass.CRYPTO,
-            venue="BINANCE_SPOT",
+            venue="BINANCE_PERPETUAL",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             timestamp_utc=ts + i * 4 * 3600 * 1000,
@@ -94,7 +94,7 @@ def test_unregistered_gaps_fail():
     # create gap
     bars[500] = MarketBar(
         asset_class=AssetClass.CRYPTO,
-        venue="BINANCE_SPOT",
+        venue="BINANCE_PERPETUAL",
         symbol="BTCUSDT",
         timeframe=Timeframe.H4,
         timestamp_utc=bars[500].timestamp_utc + 4 * 3600 * 1000,
@@ -107,7 +107,7 @@ def test_unregistered_gaps_fail():
     bars.sort(key=lambda b: b.timestamp_utc)
     
     with pytest.raises(ValueError, match="Unregistered gap found"):
-        verify_and_digest_continuous_bars(bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_SPOT", min_warmup_bars=720)
+        verify_and_digest_continuous_bars(bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720)
 
 def test_insufficient_warmup_fails():
     bars = []
@@ -115,7 +115,7 @@ def test_insufficient_warmup_fails():
     for i in range(100):
         bars.append(MarketBar(
             asset_class=AssetClass.CRYPTO,
-            venue="BINANCE_SPOT",
+            venue="BINANCE_PERPETUAL",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             timestamp_utc=ts + i * 4 * 3600 * 1000,
@@ -126,7 +126,7 @@ def test_insufficient_warmup_fails():
             data_source="TEST",
         ))
     with pytest.raises(ValueError, match="Insufficient continuous warm-up bars"):
-        verify_and_digest_continuous_bars(bars, ts + 100 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_SPOT", min_warmup_bars=720)
+        verify_and_digest_continuous_bars(bars, ts + 100 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720)
 
 def run_backtest_with_manifest(db_path, manifest_path, **kwargs):
     cmd = [
@@ -134,7 +134,7 @@ def run_backtest_with_manifest(db_path, manifest_path, **kwargs):
         "--database", db_path,
         "--manifest", manifest_path,
         "--asset-class", "CRYPTO",
-        "--venue", "BINANCE_SPOT",
+        "--venue", "BINANCE_PERPETUAL",
         "--symbol", "BTCUSDT",
         "--timeframe", "4h",
         "--taker-fee", "0.0",
@@ -156,7 +156,7 @@ def test_runner_manifest_validation(tmp_path):
     for i in range(750):
         bars.append(MarketBar(
             asset_class=AssetClass.CRYPTO,
-            venue="BINANCE_SPOT",
+            venue="BINANCE_PERPETUAL",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             timestamp_utc=ts + i * 4 * 3600 * 1000,
@@ -172,7 +172,7 @@ def test_runner_manifest_validation(tmp_path):
     for i in range(100):
         extra_bars.append(MarketBar(
             asset_class=AssetClass.CRYPTO,
-            venue="BINANCE_SPOT",
+            venue="BINANCE_PERPETUAL",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             timestamp_utc=ts - 200 * 4 * 3600 * 1000 + i * 4 * 3600 * 1000,
@@ -187,12 +187,12 @@ def test_runner_manifest_validation(tmp_path):
         store.insert_market_bars(extra_bars + bars)
         
     eval_start = ts + 725 * 4 * 3600 * 1000
-    digest = verify_and_digest_continuous_bars(bars, eval_start, Timeframe.H4, "BINANCE_SPOT", min_warmup_bars=720)
+    digest = verify_and_digest_continuous_bars(bars, eval_start, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720)
     
     manifest_data = {
         "components": [{
             "asset_class": "CRYPTO",
-            "venue": "BINANCE_SPOT",
+            "venue": "BINANCE_PERPETUAL",
             "symbol": "BTCUSDT",
             "timeframe": "4h",
             "start_timestamp_utc": bars[0].timestamp_utc,

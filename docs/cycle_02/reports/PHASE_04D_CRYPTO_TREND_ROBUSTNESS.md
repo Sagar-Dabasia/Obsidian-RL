@@ -1,3 +1,8 @@
+> [!CAUTION]
+> **PHASE 4D EVALUATION INVALID — EXECUTION/METRIC MODEL DEFECTS — NO VALID STRATEGY CONCLUSION**
+>
+> The results in this report were produced with defective execution models (shorting on spot without borrowing costs) and incorrect metric accounting (terminal drawdown instead of maximum path drawdown). The figures below are NOT valid financial-performance evidence. See `PHASE_04D_POST_PUSH_EVALUATION_ERRATUM.md` for full details.
+
 # Phase 4D Crypto Trend Robustness Report
 
 ## Evaluation Protocol

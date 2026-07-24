@@ -98,6 +98,7 @@ class PortfolioEngine:
         self.config = config
         self.costs = costs
         self.state = PortfolioState(cash=config.initial_cash, peak_equity=config.initial_cash)
+        self.path_maximum_drawdown_pct = 0.0
 
     # ------------------------------------------------------------------ helpers
     def _approve_target(self, proposed: float) -> tuple[float, str | None]:
@@ -115,6 +116,9 @@ class PortfolioEngine:
         equity = self.state.net_equity(price)
         if equity > self.state.peak_equity:
             self.state.peak_equity = equity
+        dd = self.state.drawdown(price)
+        if dd > self.path_maximum_drawdown_pct:
+            self.path_maximum_drawdown_pct = dd
         return replace_state_copy(self.state)
 
     # ------------------------------------------------------------------ trading
