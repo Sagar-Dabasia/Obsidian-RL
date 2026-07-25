@@ -53,7 +53,11 @@ class VenueOutage:
                 "start_ms": self.start_ms,
                 "end_ms": self.end_ms,
                 "source_id": self.source_id,
+                "verification_timestamp_ms": self.verification_timestamp_ms,
                 "source_content_hash": self.source_content_hash,
+                "reason": self.reason,
+                "affected_symbols": sorted(self.affected_symbols),
+                "venue_wide": self.venue_wide,
             },
             sort_keys=True,
         )
@@ -72,12 +76,10 @@ class OutageRegistry:
 
     def identity(self) -> str:
         """Deterministic hash of the sorted outage identities."""
-        if not self._outages:
-            return "empty"
         import hashlib
-        h = hashlib.sha256()
-        for o in self._outages:
-            h.update(o.identity.encode('utf-8'))
+        import json
+        outages_list = [o.identity for o in self._outages]
+        h = hashlib.sha256(json.dumps(outages_list, sort_keys=True).encode("utf-8"))
         return h.hexdigest()
 
     def is_known_outage(self, venue: str, timestamp_ms: int) -> bool:

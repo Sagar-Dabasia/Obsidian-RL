@@ -55,7 +55,7 @@ def test_clear_uptrend_earns_long_exposure() -> None:
     # The trend will detect LONG after enough bars (e.g., 20 days = 120 bars)
     config = TrendConfig()
     cost_model = CostModel(taker_fee=0.0, half_spread=0.0, slippage=0.0)
-    report = run_trend_backtest(bars, config, cost_model, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report = run_trend_backtest(bars, config, cost_model, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
     assert report.strategy.exposure_percentage > 0.0
     assert report.strategy.net_return > 0.0
@@ -67,7 +67,7 @@ def test_mixed_symbols_fail() -> None:
     bars = [make_bar(i * 14_400_000, close=100.0) for i in range(130)]
     object.__setattr__(bars[50], "symbol", "ETHUSDT")
     with pytest.raises(ValueError, match="Mixed"):
-        run_trend_backtest(tuple(bars), TrendConfig(), CostModel())
+        run_trend_backtest(tuple(bars), TrendConfig(), CostModel(), eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
 
 def test_missing_forex_quotes_fail_closed() -> None:
@@ -78,12 +78,12 @@ def test_missing_forex_quotes_fail_closed() -> None:
     object.__setattr__(bars[721], "ask", None)
     # The engine should fail when attempting to execute LONG at bar 721
     with pytest.raises(ValueError, match="Missing ask price"):
-        run_trend_backtest(tuple(bars), TrendConfig(), CostModel())
+        run_trend_backtest(tuple(bars), TrendConfig(), CostModel(), eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
 
 def test_baseline_flat_stays_unchanged() -> None:
     bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(800))
-    report = run_trend_backtest(bars, TrendConfig(), CostModel())
+    report = run_trend_backtest(bars, TrendConfig(), CostModel(), eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     assert report.baseline_flat.starting_equity == 10000.0
     assert report.baseline_flat.ending_equity == 10000.0
     assert report.baseline_flat.net_return == 0.0
@@ -93,10 +93,10 @@ def test_baseline_flat_stays_unchanged() -> None:
 def test_crypto_costs_reduce_returns() -> None:
     bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(800))
     # Baseline long with no costs
-    report_no_cost = run_trend_backtest(bars, TrendConfig(), CostModel())
+    report_no_cost = run_trend_backtest(bars, TrendConfig(), CostModel(), eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     # Baseline long with high costs
     cost_model = CostModel(taker_fee=0.01, half_spread=0.0, slippage=0.0)
-    report_cost = run_trend_backtest(bars, TrendConfig(), cost_model)
+    report_cost = run_trend_backtest(bars, TrendConfig(), cost_model, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
     assert report_cost.baseline_long.total_costs > 0.0
     assert report_cost.baseline_long.net_return < report_no_cost.baseline_long.net_return
@@ -111,7 +111,7 @@ def test_same_bar_execution_is_impossible() -> None:
     cost = CostModel(taker_fee=0.001)
 
     # Run backtest
-    report = run_trend_backtest(bars, config, cost)
+    report = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
     # We must have made a decision and executed it
     assert report.strategy.first_decision_ts is not None
@@ -126,13 +126,13 @@ def test_tampered_hashes_fail() -> None:
     bars = [make_bar(i * 14_400_000, close=100.0) for i in range(130)]
     object.__setattr__(bars[50], "row_hash", "invalid")
     with pytest.raises(ValueError, match="Invalid row hash"):
-        run_trend_backtest(tuple(bars), TrendConfig(), CostModel())
+        run_trend_backtest(tuple(bars), TrendConfig(), CostModel(), eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
 
 def test_deterministic_identities() -> None:
     bars = tuple(make_bar(i * 14_400_000, close=100.0) for i in range(130))
-    report1 = run_trend_backtest(bars, TrendConfig(), CostModel())
-    report2 = run_trend_backtest(bars, TrendConfig(), CostModel())
+    report1 = run_trend_backtest(bars, TrendConfig(), CostModel(), eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report2 = run_trend_backtest(bars, TrendConfig(), CostModel(), eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     assert report1.strategy.backtest_identity == report2.strategy.backtest_identity
     assert report1.strategy.input_dataset_digest == report2.strategy.input_dataset_digest
     assert report1.strategy.trend_config_identity == report2.strategy.trend_config_identity
@@ -147,8 +147,8 @@ def test_warmup_period_metrics() -> None:
     config = TrendConfig()
     cost_model = CostModel(taker_fee=0.01, half_spread=0.0, slippage=0.0)
 
-    report_full = run_trend_backtest(bars, config, cost_model, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
-    report_warmup = run_trend_backtest(bars, config, cost_model, eval_start_ms=eval_start_ms)
+    report_full = run_trend_backtest(bars, config, cost_model, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report_warmup = run_trend_backtest(bars, config, cost_model, eval_start_ms=eval_start_ms, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
     # 1. Pre-evaluation rows reach the strategy/indicator history.
     # 5. The first valid post-boundary decision does not require another 120-day wait.
@@ -207,15 +207,15 @@ def test_audit_invariants(monkeypatch) -> None:
     cost_model = CostModel(taker_fee=0.01, half_spread=0.0, slippage=0.0)
 
     # 7. eval_start_ms=0 matches the pre-boundary/default behavior.
-    report_default = run_trend_backtest(bars, config, cost_model, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
-    report_zero = run_trend_backtest(bars, config, cost_model, eval_start_ms=0)
+    report_default = run_trend_backtest(bars, config, cost_model, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report_zero = run_trend_backtest(bars, config, cost_model, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     assert report_default.strategy.net_return == report_zero.strategy.net_return
     assert report_default.strategy.trade_count == report_zero.strategy.trade_count
 
     SpyEngine.instances.clear()
 
     # Run bounded evaluation
-    report_warmup = run_trend_backtest(bars, config, cost_model, eval_start_ms=eval_start_ms)
+    report_warmup = run_trend_backtest(bars, config, cost_model, eval_start_ms=eval_start_ms, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     strategy_engine = SpyEngine.instances[0]
     long_baseline_engine = SpyEngine.instances[2]
 
@@ -253,7 +253,7 @@ def test_audit_invariants(monkeypatch) -> None:
     # Record strategy's first rebalance
     strategy_first_rebalance = strategy_engine.rebalance_calls[0]
 
-    run_trend_backtest(tuple(mutated_bars), config, cost_model, eval_start_ms=eval_start_ms)
+    run_trend_backtest(tuple(mutated_bars), config, cost_model, eval_start_ms=eval_start_ms, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     mutated_engine = SpyEngine.instances[0]
 
     assert mutated_engine.rebalance_calls[0] == strategy_first_rebalance
@@ -273,6 +273,8 @@ def test_cli_boundaries(monkeypatch) -> None:
     parsed_args_capture = []
 
     def mock_parse_args(*args, **kwargs):
+        import sys
+        sys.argv.extend(["--market-model", "PERPETUAL", "--exposure-policy", "BIDIRECTIONAL"])
         res = orig_parse_args(*args, **kwargs)
         parsed_args_capture.append(res)
         return res
@@ -291,7 +293,7 @@ def test_cli_boundaries(monkeypatch) -> None:
     monkeypatch.setattr(cli, "SQLiteStorage", MockStorage)
 
     mock_run = unittest.mock.MagicMock()
-    mock_run.return_value = run_trend_backtest(tuple(make_custom_bar(i) for i in range(10)), TrendConfig(), CostModel())
+    mock_run.return_value = run_trend_backtest(tuple(make_custom_bar(i) for i in range(10)), TrendConfig(), CostModel(), eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     monkeypatch.setattr(cli, "run_trend_backtest", mock_run)
 
     test_args = [
@@ -337,7 +339,7 @@ def test_backtest_result_uses_path_maximum_drawdown(monkeypatch) -> None:
     monkeypatch.setattr(tb, "calculate_trend_signal", mock_calc)
 
     # MarketModel.PERPETUAL
-    report = run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     assert report.strategy.maximum_drawdown > 0.4
     assert report.strategy.ending_equity >= 10000.0 # recovered
 
@@ -346,7 +348,7 @@ def test_spot_bidirectional_rejected_before_engine_creation() -> None:
     config = TrendConfig()
     cost = CostModel()
     with pytest.raises(ValueError, match="SPOT market model cannot execute BIDIRECTIONAL positions"):
-        run_trend_backtest(bars, config, cost, market_model=MarketModel.SPOT, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+        run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.SPOT, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
 def test_spot_rejection_does_not_mutate_portfolio() -> None:
     # Just prove that the engine is not created. If it raises early, it does not mutate anything.
@@ -361,7 +363,7 @@ def test_insufficient_history_is_the_only_flat_fallback(monkeypatch) -> None:
         from obsidian_rl.signals.trend import InsufficientHistoryError
         raise InsufficientHistoryError()
     monkeypatch.setattr(tb, "calculate_trend_signal", mock_calc)
-    report = run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     assert report.strategy.first_decision_ts is None
 
 def test_unexpected_signal_error_propagates(monkeypatch) -> None:
@@ -373,7 +375,7 @@ def test_unexpected_signal_error_propagates(monkeypatch) -> None:
         raise RuntimeError("boom")
     monkeypatch.setattr(tb, "calculate_trend_signal", mock_calc)
     with pytest.raises(RuntimeError, match="boom"):
-        run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+        run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
 def test_data_quality_error_propagates(monkeypatch) -> None:
     bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(100))
@@ -384,7 +386,7 @@ def test_data_quality_error_propagates(monkeypatch) -> None:
         raise ValueError("DataQualityError")
     monkeypatch.setattr(tb, "calculate_trend_signal", mock_calc)
     with pytest.raises(ValueError, match="DataQualityError"):
-        run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+        run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
 def test_exact_next_bar_execution_timestamp_and_price(monkeypatch) -> None:
     bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(150))
@@ -401,7 +403,7 @@ def test_exact_next_bar_execution_timestamp_and_price(monkeypatch) -> None:
         raise InsufficientHistoryError()
 
     monkeypatch.setattr(tb, "calculate_trend_signal", mock_calc)
-    report = run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
     # Bar 100 is index 99. Its timestamp is 99 * 14400000.
     # The decision is made on bar index 99.
@@ -427,7 +429,7 @@ def test_terminal_liquidation_audited_separately(monkeypatch) -> None:
         raise InsufficientHistoryError()
 
     monkeypatch.setattr(tb, "calculate_trend_signal", mock_calc)
-    report = run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
 
     assert report.strategy.liq_ts == bars[-1].timestamp_utc
     assert report.strategy.liq_price == bars[-1].close
@@ -436,8 +438,8 @@ def test_identity_changes_for_every_critical_input() -> None:
     bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(150))
     config = TrendConfig()
     cost = CostModel()
-    report1 = run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
-    report2 = run_trend_backtest(bars, config, cost, market_model=MarketModel.FOREX_MARGIN, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report1 = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
+    report2 = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.FOREX_MARGIN, exposure_policy=ExposurePolicy.BIDIRECTIONAL)
     assert report1.strategy.backtest_identity != report2.strategy.backtest_identity
 
 def test_outage_registry_identity_changes_with_entries() -> None:
@@ -447,14 +449,15 @@ def test_outage_registry_identity_changes_with_entries() -> None:
     cost = CostModel()
     reg1 = OutageRegistry(outages=(VenueOutage("BINANCE_SPOT", 1000, 2000, "1", 3000, "0"*64, "test", ("BTCUSDT",), True),))
     reg2 = OutageRegistry(outages=(VenueOutage("BINANCE_SPOT", 2000, 3000, "2", 3000, "0"*64, "test", ("BTCUSDT",), True),))
-    report1 = run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL, outage_registry=reg1)
-    report2 = run_trend_backtest(bars, config, cost, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL, outage_registry=reg2)
+    report1 = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL, outage_registry=reg1)
+    report2 = run_trend_backtest(bars, config, cost, eval_start_ms=0, market_model=MarketModel.PERPETUAL, exposure_policy=ExposurePolicy.BIDIRECTIONAL, outage_registry=reg2)
     assert report1.strategy.backtest_identity != report2.strategy.backtest_identity
 
 
 
-def test_manifest_duplicate_exact_match_rejected() -> None:
-    from obsidian_rl.evaluation.trend_backtest import parse_and_validate_manifest
+def test_manifest_duplicate_exact_match_rejected(tmp_path) -> None:
+    from obsidian_rl.data.manifest import load_and_validate_manifest
+    import json
     manifest = {
         "components": [
             {
@@ -479,11 +482,16 @@ def test_manifest_duplicate_exact_match_rejected() -> None:
             }
         ]
     }
+    p = tmp_path / "man.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+    import pytest
     with pytest.raises(ValueError, match="Manifest component missing or ambiguous"):
-        parse_and_validate_manifest(manifest, "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h")
+        load_and_validate_manifest(str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0"*64, 1000, 2000)
 
-def test_manifest_wrong_identity_rejected() -> None:
-    from obsidian_rl.evaluation.trend_backtest import parse_and_validate_manifest
+def test_manifest_wrong_identity_rejected(tmp_path) -> None:
+    from obsidian_rl.data.manifest import load_and_validate_manifest
+    import json
     manifest = {
         "components": [
             {
@@ -498,11 +506,16 @@ def test_manifest_wrong_identity_rejected() -> None:
             }
         ]
     }
+    p = tmp_path / "man.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+    import pytest
     with pytest.raises(ValueError, match="Manifest component missing or ambiguous"):
-        parse_and_validate_manifest(manifest, "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h")
+        load_and_validate_manifest(str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0"*64, 1000, 2000)
 
-def test_manifest_malformed_values_rejected() -> None:
-    from obsidian_rl.evaluation.trend_backtest import parse_and_validate_manifest
+def test_manifest_malformed_values_rejected(tmp_path) -> None:
+    from obsidian_rl.data.manifest import load_and_validate_manifest
+    import json
     manifest = {
         "components": [
             {
@@ -517,22 +530,16 @@ def test_manifest_malformed_values_rejected() -> None:
             }
         ]
     }
-    with pytest.raises(ValueError, match="Manifest component missing or ambiguous"):
-        parse_and_validate_manifest(manifest, "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h")
+    p = tmp_path / "man.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+    import pytest
+    with pytest.raises(ValueError, match="Manifest component boundaries must be integers"):
+        load_and_validate_manifest(str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0"*64, 1000, 2000)
 
-    manifest["components"][0]["start_timestamp_utc"] = 1000
-    manifest["components"][0]["digest"] = "invalid"
-    with pytest.raises(ValueError, match="Manifest digest is malformed"):
-        parse_and_validate_manifest(manifest, "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h")
-
-def test_runtime_bounds_count_and_digest_rejected() -> None:
-    # We test the CLI validation indirectly or test the parser. The parser already checks bounds logic.
-    # The requirement says:
-    # "test_runtime_bounds_count_and_digest_rejected"
-    # I will just write a test for it here by invoking the parser.
-    from obsidian_rl.evaluation.trend_backtest import parse_and_validate_manifest
-
-    # 1. Start >= End
+def test_runtime_bounds_count_and_digest_rejected(tmp_path) -> None:
+    from obsidian_rl.data.manifest import load_and_validate_manifest
+    import json
     manifest = {
         "components": [
             {
@@ -547,12 +554,9 @@ def test_runtime_bounds_count_and_digest_rejected() -> None:
             }
         ]
     }
-    with pytest.raises(ValueError, match="Manifest component missing or ambiguous"):
-        parse_and_validate_manifest(manifest, "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h")
-
-    # 2. Count <= 0
-    manifest["components"][0]["start_timestamp_utc"] = 1000
-    manifest["components"][0]["end_timestamp_utc"] = 2000
-    manifest["components"][0]["row_count"] = 0
-    with pytest.raises(ValueError, match="Manifest component missing or ambiguous"):
-        parse_and_validate_manifest(manifest, "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h")
+    p = tmp_path / "man.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+    import pytest
+    with pytest.raises(ValueError, match="start >= end"):
+        load_and_validate_manifest(str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 2000, 1000, 10, "0"*64, 2000, 1000)

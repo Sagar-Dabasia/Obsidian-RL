@@ -81,6 +81,7 @@ Phase 4C is officially closed and cannot be rerun using the current unverifiable
 ## Phase 4D Final Status
 **Status**: `PHASE 4D EVALUATION INVALID — EXECUTION/METRIC MODEL DEFECTS — NO VALID STRATEGY CONCLUSION`
 * Constraints: Erratum logged. Strict long/flat or proper perpetual margin required.
+* Erratum Report: [PHASE_04D_POST_PUSH_EVALUATION_ERRATUM.md](../reports/PHASE_04D_POST_PUSH_EVALUATION_ERRATUM.md)
 
 Confirmation and final holdout data remained completely untouched.
 The next task must require a genuinely new hypothesis before modifying or rerunning the strategy.

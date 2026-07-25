@@ -42,47 +42,17 @@ def main() -> None:
     parser.add_argument("--half-spread", type=float, required=True, help="Half spread")
     parser.add_argument("--slippage", type=float, required=True, help="Slippage model factor")
     parser.add_argument("--outage-aware", action="store_true", help="Use default outage registry")
+    
+    parser.add_argument("--market-model", required=True, choices=["SPOT", "PERPETUAL", "FOREX_MARGIN"])
+    parser.add_argument("--exposure-policy", required=True, choices=["LONG_FLAT", "BIDIRECTIONAL"])
 
     args = parser.parse_args()
 
 
-    manifest_component = None
-    manifest_digest = None
-    if args.manifest:
-        from obsidian_rl.evaluation.trend_backtest import parse_and_validate_manifest
-        with open(args.manifest, "r") as f:
-            manifest_data = json.load(f)
-
-        try:
-            manifest_digest, end_ts = parse_and_validate_manifest(
-                manifest_data, args.asset_class, args.venue, args.symbol, args.timeframe
-            )
-        except ValueError as e:
-            print(str(e))
-            sys.exit(1)
-
-        # We also need row_count and start_timestamp_utc for runtime validation
-        c = [comp for comp in manifest_data["components"]
-             if comp.get("asset_class") == args.asset_class
-             and comp.get("venue") == args.venue
-             and comp.get("symbol") == args.symbol
-             and comp.get("timeframe") == args.timeframe][0]
-        start_ts = c.get("start_timestamp_utc")
-
-        if args.start_ms is not None and args.start_ms != start_ts:
-            print("Error: CLI boundaries conflict with the manifest")
-            sys.exit(1)
-        if args.end_ms is not None and args.end_ms != end_ts:
-            print("Error: CLI boundaries conflict with the manifest")
-            sys.exit(1)
-
-        args.start_ms = start_ts
-        args.end_ms = end_ts
-        manifest_component = c
-
     if args.start_ms is None or args.end_ms is None:
-        print("Error: Must provide --start-ms and --end-ms if no manifest provided.")
-        sys.exit(1)
+        if not args.manifest:
+            print("Error: Must provide --start-ms and --end-ms if no manifest provided.")
+            sys.exit(1)
 
     eval_start_ms = args.eval_start_ms if args.eval_start_ms else args.start_ms
 
@@ -103,22 +73,6 @@ def main() -> None:
         print("Error: No bars found matching criteria.")
         sys.exit(1)
 
-    if args.manifest and manifest_component:
-        if len(bars) != manifest_component.get("row_count"):
-            print("Row count differs from manifest")
-            sys.exit(1)
-
-        # Check runtime first/last timestamps differ
-        # Using tf.value_ms() logic to compute expected last bar boundary
-        expected_interval = (tf.value_ms() if hasattr(tf, "value_ms") else 14400000)
-
-        if bars[0].timestamp_utc != manifest_component.get("start_timestamp_utc"):
-            print("Error: runtime first/last timestamps different from manifest")
-            sys.exit(1)
-        if bars[-1].timestamp_utc + expected_interval != manifest_component.get("end_timestamp_utc"):
-            print("Error: runtime first/last timestamps different from manifest")
-            sys.exit(1)
-
     print(f"Loaded {len(bars)} bars from local storage.")
 
     import hashlib
@@ -126,13 +80,34 @@ def main() -> None:
     for b in bars:
         h.update(b.row_hash.encode("utf-8"))
     computed_digest = h.hexdigest()
-    digest_match = (manifest_digest == computed_digest) if manifest_digest else False
+    
+    expected_interval = (tf.value_ms() if hasattr(tf, "value_ms") else 14400000)
+    
+    manifest_digest = None
+    digest_match = False
 
     if args.manifest:
-        if not digest_match:
-            print("Computed digest differs from manifest")
+        from obsidian_rl.data.manifest import load_and_validate_manifest
+        try:
+            mc = load_and_validate_manifest(
+                args.manifest,
+                args.asset_class,
+                args.venue,
+                args.symbol,
+                args.timeframe,
+                bars[0].timestamp_utc,
+                bars[-1].timestamp_utc + expected_interval,
+                len(bars),
+                computed_digest,
+                args.start_ms,
+                args.end_ms
+            )
+            manifest_digest = mc.digest
+            digest_match = True
+            print("Digest matched successfully.")
+        except Exception as e:
+            print(str(e))
             sys.exit(1)
-        print("Digest matched successfully.")
 
     cost_model = CostModel(
         taker_fee=args.taker_fee,
@@ -144,25 +119,22 @@ def main() -> None:
 
     from obsidian_rl.portfolio.engine import MarketModel, ExposurePolicy
 
-    if "SPOT" in args.venue:
-        market_model = MarketModel.SPOT
-        exposure_policy = ExposurePolicy.LONG_FLAT
-    elif asset == AssetClass.FOREX:
-        market_model = MarketModel.FOREX_MARGIN
-        exposure_policy = ExposurePolicy.BIDIRECTIONAL
-    else:
-        market_model = MarketModel.PERPETUAL
-        exposure_policy = ExposurePolicy.BIDIRECTIONAL
+    market_model = MarketModel(args.market_model)
+    exposure_policy = ExposurePolicy(args.exposure_policy)
+    
+    if market_model == MarketModel.SPOT and exposure_policy == ExposurePolicy.BIDIRECTIONAL:
+        print("SPOT market model cannot execute BIDIRECTIONAL positions")
+        sys.exit(1)
 
     try:
         report = run_trend_backtest(
             tuple(bars),
             config,
             cost_model,
-            outage_registry=registry,
             eval_start_ms=eval_start_ms,
             market_model=market_model,
             exposure_policy=exposure_policy,
+            outage_registry=registry,
             manifest_digest=manifest_digest
         )
     except Exception as e:
