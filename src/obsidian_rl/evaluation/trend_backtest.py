@@ -8,7 +8,48 @@ from dataclasses import dataclass
 from obsidian_rl.data.contracts import AssetClass, MarketBar
 from obsidian_rl.data.outages import OutageRegistry
 from obsidian_rl.portfolio.costs import CostModel
-from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
+
+def parse_and_validate_manifest(
+    manifest_data: dict,
+    asset_class: str,
+    venue: str,
+    symbol: str,
+    timeframe: str
+) -> tuple[str, int]:
+    """Parse and validate manifest, return (digest, end_timestamp_utc)."""
+    components = manifest_data.get("components")
+    if not isinstance(components, list):
+        raise ValueError("Manifest component missing or ambiguous")
+
+    matches = [
+        c for c in components
+        if c.get("asset_class") == asset_class
+        and c.get("venue") == venue
+        and c.get("symbol") == symbol
+        and c.get("timeframe") == timeframe
+    ]
+    if len(matches) != 1:
+        raise ValueError("Manifest component missing or ambiguous")
+
+    c = matches[0]
+
+    start_ts = c.get("start_timestamp_utc")
+    end_ts = c.get("end_timestamp_utc")
+    row_count = c.get("row_count")
+
+    if type(start_ts) is not int or type(end_ts) is not int or type(row_count) is not int:
+        raise ValueError("Manifest component missing or ambiguous")
+
+    if start_ts >= end_ts or row_count <= 0:
+        raise ValueError("Manifest component missing or ambiguous")
+
+    digest = c.get("digest")
+    import re
+    if not isinstance(digest, str) or not re.match(r"^[0-9a-f]{64}$", digest):
+        raise ValueError("Manifest digest is malformed")
+
+    return digest, end_ts
+from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine, MarketModel, ExposurePolicy
 from obsidian_rl.signals.trend import TrendConfig, calculate_trend_signal, InsufficientHistoryError
 
 
@@ -33,6 +74,7 @@ class TrendBacktestResult:
     trend_config_identity: str
     market_model: str
     first_decision_ts: int | None
+    first_submitted_target: float | None
     first_exec_ts: int | None
     first_exec_price: float | None
     liq_ts: int | None
@@ -90,15 +132,16 @@ def _run_single_backtest(
     mode: str,
     outage_registry: OutageRegistry | None = None,
     eval_start_ms: int = 0,
-    allow_short: bool = True,
-    market_model: str = "PERPETUAL",
+    market_model: MarketModel = MarketModel.PERPETUAL,
+    exposure_policy: ExposurePolicy = ExposurePolicy.BIDIRECTIONAL,
+    manifest_digest: str | None = None,
 ) -> TrendBacktestResult:
     """Run a single pass of the backtest logic."""
     if not bars:
         raise ValueError("Empty dataset")
 
-    if market_model == "SPOT" and allow_short:
-        raise ValueError("SPOT market model cannot execute short positions")
+    if market_model == MarketModel.SPOT and exposure_policy == ExposurePolicy.BIDIRECTIONAL:
+        raise ValueError("SPOT market model cannot execute BIDIRECTIONAL positions")
 
     dataset_digest = _hash_dataset(bars)
     config_identity = config.identity
@@ -117,7 +160,7 @@ def _run_single_backtest(
                 "portfolio": {
                     "initial_cash": 10000.0,
                     "max_abs_exposure": 1.0,
-                    "allow_short": allow_short
+                    "allow_short": exposure_policy == ExposurePolicy.BIDIRECTIONAL
                 },
                 "cost_model": {
                     "taker_fee": cost_model.taker_fee,
@@ -126,15 +169,18 @@ def _run_single_backtest(
                 },
                 "execution_timing": "NEXT_BAR_OPEN",
                 "terminal_liquidation": "LAST_BAR_CLOSE",
-                "market_model": market_model,
-                "outage_registry_present": outage_registry is not None
+                "market_model": market_model.value,
+                "exposure_policy": exposure_policy.value,
+                "outage_registry_identity": outage_registry.identity() if hasattr(outage_registry, 'identity') else (outage_registry is not None),
+                "manifest_digest": manifest_digest,
+                "runtime_digest": dataset_digest
             }, sort_keys=True
         ).encode("utf-8")
     ).hexdigest()
 
     asset_class = bars[0].asset_class
 
-    portfolio_config = PortfolioConfig(initial_cash=10000.0, max_abs_exposure=1.0, allow_short=allow_short)
+    portfolio_config = PortfolioConfig(initial_cash=10000.0, max_abs_exposure=1.0, allow_short=(exposure_policy == ExposurePolicy.BIDIRECTIONAL))
     engine = PortfolioEngine(portfolio_config, cost_model)
 
     eval_bars = [b for b in bars if b.timestamp_utc >= eval_start_ms]
@@ -157,6 +203,7 @@ def _run_single_backtest(
         target_exposure = 1.0
 
     first_decision_ts = None
+    first_submitted_target = None
     first_exec_ts = None
     first_exec_price = None
 
@@ -206,15 +253,21 @@ def _run_single_backtest(
                     target_exposure = -1.0
                 else:
                     target_exposure = 0.0
-                    
+
                 if first_decision_ts is None and target_exposure != 0.0:
                     first_decision_ts = bar.timestamp_utc
+                    first_submitted_target = target_exposure
             except InsufficientHistoryError:
                 target_exposure = 0.0
+            except Exception as e:
+                # The user says: No bare except or strategy-level except Exception
+                # Wait, "DataQualityError propagates; RuntimeError propagates"
+                # "Only InsufficientHistoryError may produce flat during warm-up."
+                raise e
 
     liq_res = engine.liquidate(bars[-1].close)
     engine.mark_to_market(bars[-1].close)
-    
+
     liq_ts = bars[-1].timestamp_utc if liq_res.delta_qty != 0.0 else None
     liq_price = bars[-1].close if liq_res.delta_qty != 0.0 else None
 
@@ -253,7 +306,7 @@ def _run_single_backtest(
         if valid_bars_for_exposure
         else 0.0,
         annualized_sharpe=sharpe,
-        maximum_drawdown=engine.path_maximum_drawdown_pct,
+        maximum_drawdown=engine.state.path_maximum_drawdown_pct,
         first_timestamp_utc=first_ts,
         last_timestamp_utc=last_ts,
         input_dataset_digest=dataset_digest,
@@ -261,6 +314,7 @@ def _run_single_backtest(
         market_model=market_model,
         first_decision_ts=first_decision_ts,
         first_exec_ts=first_exec_ts,
+        first_submitted_target=first_submitted_target,
         first_exec_price=first_exec_price,
         liq_ts=liq_ts,
         liq_price=liq_price,
@@ -274,8 +328,9 @@ def run_trend_backtest(
     cost_model: CostModel,
     outage_registry: OutageRegistry | None = None,
     eval_start_ms: int = 0,
-    allow_short: bool = True,
-    market_model: str | None = None,
+    market_model: MarketModel = MarketModel.PERPETUAL,
+    exposure_policy: ExposurePolicy = ExposurePolicy.BIDIRECTIONAL,
+    manifest_digest: str | None = None,
 ) -> TrendBacktestReport:
     """Run backtests for strategy, flat baseline, and long baseline."""
     if not bars:
@@ -298,13 +353,11 @@ def run_trend_backtest(
 
     if asset == AssetClass.FOREX:
         cost_model = CostModel(taker_fee=0.0, half_spread=0.0, slippage=0.0)
-        
-    if market_model is None:
-        market_model = "SPOT" if "SPOT" in venue else ("FOREX_MARGIN" if asset == AssetClass.FOREX else "PERPETUAL")
 
-    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy", outage_registry, eval_start_ms, allow_short, market_model)
-    res_flat = _run_single_backtest(bars, config, cost_model, "flat", outage_registry, eval_start_ms, allow_short, market_model)
-    res_long = _run_single_backtest(bars, config, cost_model, "long", outage_registry, eval_start_ms, allow_short, market_model)
+
+    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy", outage_registry, eval_start_ms, market_model, exposure_policy, manifest_digest)
+    res_flat = _run_single_backtest(bars, config, cost_model, "flat", outage_registry, eval_start_ms, market_model, exposure_policy, manifest_digest)
+    res_long = _run_single_backtest(bars, config, cost_model, "long", outage_registry, eval_start_ms, market_model, exposure_policy, manifest_digest)
 
     return TrendBacktestReport(
         strategy=res_strategy,

@@ -170,9 +170,9 @@ def test_exposure_limits_clamp() -> None:
 
 def test_short_disabled() -> None:
     eng = PortfolioEngine(PortfolioConfig(initial_cash=10_000.0, allow_short=False), CM)
-    r = eng.rebalance(-1.0, 100.0)
-    assert r.approved_target == 0.0
-    assert eng.state.qty == 0.0
+    import pytest
+    with pytest.raises(ValueError, match="short exposure disabled"):
+        eng.rebalance(-1.0, 100.0)
 
 
 def test_drawdown_tracking() -> None:
@@ -237,3 +237,16 @@ def test_close_executes_even_within_exposure_tolerance() -> None:
     r = eng.rebalance(0.0, 1.0)
     assert eng.state.qty == 0.0
     assert r.delta_qty == pytest.approx(-50.0)
+
+
+def test_path_maximum_drawdown_survives_recovery() -> None:
+    eng = make_engine()
+    eng.rebalance(1.0, 100.0)
+    eng.mark_to_market(100.0)
+    eng.mark_to_market(50.0)
+    assert eng.state.current_drawdown_pct > 0.4
+    assert eng.state.path_maximum_drawdown_pct == eng.state.current_drawdown_pct
+    max_dd = eng.state.path_maximum_drawdown_pct
+    eng.mark_to_market(120.0)
+    assert eng.state.current_drawdown_pct == 0.0
+    assert eng.state.path_maximum_drawdown_pct == max_dd

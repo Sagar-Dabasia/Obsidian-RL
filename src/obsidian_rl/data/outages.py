@@ -64,11 +64,21 @@ class OutageRegistry:
     """Immutable registry of confirmed venue outages."""
 
     def __init__(self, outages: tuple[VenueOutage, ...] = ()) -> None:
-        self._outages = outages
+        self._outages = tuple(sorted(outages, key=lambda x: x.identity))
 
     @property
     def outages(self) -> tuple[VenueOutage, ...]:
         return self._outages
+
+    def identity(self) -> str:
+        """Deterministic hash of the sorted outage identities."""
+        if not self._outages:
+            return "empty"
+        import hashlib
+        h = hashlib.sha256()
+        for o in self._outages:
+            h.update(o.identity.encode('utf-8'))
+        return h.hexdigest()
 
     def is_known_outage(self, venue: str, timestamp_ms: int) -> bool:
         """Check if a specific timestamp falls within a known outage."""

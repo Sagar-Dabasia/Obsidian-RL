@@ -10,6 +10,18 @@ after the decision (per ADR-003, the open of the following candle) — never the
 price that produced the observation.
 """
 
+
+from enum import Enum
+
+class MarketModel(Enum):
+    SPOT = "SPOT"
+    PERPETUAL = "PERPETUAL"
+    FOREX_MARGIN = "FOREX_MARGIN"
+
+class ExposurePolicy(Enum):
+    LONG_FLAT = "LONG_FLAT"
+    BIDIRECTIONAL = "BIDIRECTIONAL"
+
 from dataclasses import dataclass, field, replace
 
 from obsidian_rl.portfolio.costs import CostModel, funding_cash_flow
@@ -64,6 +76,8 @@ class PortfolioState:
     turnover: float = 0.0  # cumulative traded notional
     trade_count: int = 0
     peak_equity: float = field(default=0.0)
+    current_drawdown_pct: float = 0.0
+    path_maximum_drawdown_pct: float = 0.0
 
     def unrealized_pnl(self, price: float) -> float:
         return self.qty * (price - self.avg_entry_price)
@@ -98,17 +112,16 @@ class PortfolioEngine:
         self.config = config
         self.costs = costs
         self.state = PortfolioState(cash=config.initial_cash, peak_equity=config.initial_cash)
-        self.path_maximum_drawdown_pct = 0.0
 
     # ------------------------------------------------------------------ helpers
     def _approve_target(self, proposed: float) -> tuple[float, str | None]:
+        if proposed < 0 and not self.config.allow_short:
+            raise ValueError(f"short exposure disabled but requested target: {proposed}")
         limit = self.config.max_abs_exposure
         approved = max(-limit, min(limit, proposed))
         reason = None
         if approved != proposed:
             reason = f"target clamped from {proposed} to {approved}"
-        if approved < 0 and not self.config.allow_short:
-            approved, reason = 0.0, "short exposure disabled"
         return approved, reason
 
     def mark_to_market(self, price: float) -> PortfolioState:
@@ -117,8 +130,9 @@ class PortfolioEngine:
         if equity > self.state.peak_equity:
             self.state.peak_equity = equity
         dd = self.state.drawdown(price)
-        if dd > self.path_maximum_drawdown_pct:
-            self.path_maximum_drawdown_pct = dd
+        self.state.current_drawdown_pct = dd
+        if dd > self.state.path_maximum_drawdown_pct:
+            self.state.path_maximum_drawdown_pct = dd
         return replace_state_copy(self.state)
 
     # ------------------------------------------------------------------ trading
