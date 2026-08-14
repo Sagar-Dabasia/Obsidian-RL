@@ -96,14 +96,11 @@ The next task must require a genuinely new hypothesis before modifying or rerunn
 * → possible genuinely-new RL re-entry
 * → controlled paper trading
 
-### 4E planned scope:
-* PSR
-* DSR
-* explicit trial/multiple-testing accounting
-* PBO only if mathematically valid
-* CPCV/purging only if chronology/holdout isolation is preserved
-* references only: `purged-cross-validation`, `jsharpe`, `pypbo`
-* no dependency additions yet
+### 4E Status: INFRASTRUCTURE COMPLETE
+* PSR and DSR implemented.
+* Trial accounting governance established.
+* PBO / CPCV deferred (not mathematically supported by current evidence).
+* See: [PHASE_04E_STATISTICAL_VALIDITY.md](PHASE_04E_STATISTICAL_VALIDITY.md)
 
 ### 4F planned scope:
 * NautilusTrader as execution/accounting reference
