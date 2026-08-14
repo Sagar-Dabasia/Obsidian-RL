@@ -1,160 +1,55 @@
-"""Cross-Market Trend Backtesting Framework."""
-
-import hashlib
-import json
-import math
-from dataclasses import dataclass
-
-from obsidian_rl.data.contracts import AssetClass, FundingRate, MarketBar
-from obsidian_rl.data.outages import OutageRegistry
-from obsidian_rl.portfolio.costs import CostModel
-from obsidian_rl.portfolio.engine import (
-    ExposurePolicy,
-    MarketModel,
-    PortfolioConfig,
-    PortfolioEngine,
-)
-from obsidian_rl.signals.trend import InsufficientHistoryError, TrendConfig, calculate_trend_signal
-
-
-@dataclass(frozen=True)
-class TrendBacktestResult:
-    starting_equity: float
-    ending_equity: float
-    net_return: float
-    gross_return: float
-    total_costs: float
-    trade_count: int
-    turnover: float
-    winning_trades: int
-    losing_trades: int
-    hit_rate: float
-    exposure_percentage: float
-    annualized_sharpe: float
-    maximum_drawdown: float
-    first_timestamp_utc: int
-    last_timestamp_utc: int
-    input_dataset_digest: str
-    trend_config_identity: str
-    market_model: str
-    exposure_policy: str
-    first_decision_ts: int | None
-    first_submitted_target: float | None
-    first_exec_ts: int | None
-    first_exec_price: float | None
-    liq_ts: int | None
-    liq_price: float | None
-    backtest_identity: str
-
-
-@dataclass(frozen=True)
-class TrendBacktestReport:
-    strategy: TrendBacktestResult
-    baseline_flat: TrendBacktestResult
-    baseline_long: TrendBacktestResult
-
-
-def _hash_dataset(bars: tuple[MarketBar, ...]) -> str:
-    h = hashlib.sha256()
-    for b in bars:
-        h.update(f"{b.timestamp_utc}:{b.close}:{b.row_hash}".encode())
-    return h.hexdigest()
-
-
-def _get_exec_price(
-    asset_class: AssetClass,
-    bar: MarketBar,
-    current_exposure: float,
-    target_exposure: float,
-) -> float:
-    """Return the correct execution price for a given transition."""
-    if asset_class == AssetClass.CRYPTO:
-        # Crypto uses open price and the configured CostModel
-        return bar.open
-
-    # Forex uses bid/ask
-    if target_exposure > current_exposure:
-        # Buying (FLAT->LONG, SHORT->FLAT, SHORT->LONG) uses ask
-        if bar.ask is None:
-            raise ValueError(f"Missing ask price for forex execution at {bar.timestamp_utc}")
-        return bar.ask
-    elif target_exposure < current_exposure:
-        # Selling (LONG->FLAT, FLAT->SHORT, LONG->SHORT) uses bid
-        if bar.bid is None:
-            raise ValueError(f"Missing bid price for forex execution at {bar.timestamp_utc}")
-        return bar.bid
-    else:
-        # No change in exposure; price doesn't matter for trading, but need for MTM
-        # We can just return the close or midpoint. Engine needs a price.
-        # But if delta is 0, no trade happens. Just return close.
-        return bar.close
-
-
 def _run_single_backtest(
     bars: tuple[MarketBar, ...],
     config: TrendConfig,
     cost_model: CostModel,
     mode: str,
-    eval_start_ms: int,
-    market_model: MarketModel,
-    exposure_policy: ExposurePolicy,
-    funding_rates: tuple[FundingRate, ...] = (),
     outage_registry: OutageRegistry | None = None,
-    manifest_digest: str | None = None,
+    eval_start_ms: int = 0,
+    allow_short: bool = True,
+    market_model: str = "PERPETUAL",
 ) -> TrendBacktestResult:
     """Run a single pass of the backtest logic."""
     if not bars:
         raise ValueError("Empty dataset")
 
-    if market_model == MarketModel.SPOT and exposure_policy == ExposurePolicy.BIDIRECTIONAL:
-        raise ValueError("SPOT market model cannot execute BIDIRECTIONAL positions")
+    if market_model == "SPOT" and allow_short:
+        raise ValueError("SPOT market model cannot execute short positions")
 
     dataset_digest = _hash_dataset(bars)
     config_identity = config.identity
-    tf = bars[0].timeframe
-    expected_interval = tf.value_ms() if hasattr(tf, "value_ms") else 14400000
-    outage_id = outage_registry.identity() if outage_registry is not None else "empty"
     backtest_identity = hashlib.sha256(
         json.dumps(
             {
                 "mode": mode,
-                "manifest_digest": manifest_digest,
-                "runtime_digest": dataset_digest,
+                "dataset": dataset_digest,
                 "asset_class": bars[0].asset_class.value,
                 "venue": bars[0].venue,
                 "symbol": bars[0].symbol,
-                "timeframe": tf.value,
-                "data_start": bars[0].timestamp_utc,
+                "timeframe": bars[0].timeframe.value,
                 "eval_start_ms": eval_start_ms,
-                "eval_end_excl_ms": bars[-1].timestamp_utc + expected_interval,
+                "eval_end_ms": bars[-1].timestamp_utc,
                 "config": config_identity,
                 "portfolio": {
                     "initial_cash": 10000.0,
                     "max_abs_exposure": 1.0,
-                    "allow_short": exposure_policy == ExposurePolicy.BIDIRECTIONAL,
+                    "allow_short": allow_short
                 },
                 "cost_model": {
                     "taker_fee": cost_model.taker_fee,
                     "half_spread": cost_model.half_spread,
-                    "slippage": cost_model.slippage,
+                    "slippage": cost_model.slippage
                 },
                 "execution_timing": "NEXT_BAR_OPEN",
                 "terminal_liquidation": "LAST_BAR_CLOSE",
-                "market_model": market_model.value,
-                "exposure_policy": exposure_policy.value,
-                "outage_registry_identity": outage_id,
-            },
-            sort_keys=True,
+                "market_model": market_model,
+                "outage_registry_present": outage_registry is not None
+            }, sort_keys=True
         ).encode("utf-8")
     ).hexdigest()
 
     asset_class = bars[0].asset_class
 
-    portfolio_config = PortfolioConfig(
-        initial_cash=10000.0,
-        max_abs_exposure=1.0,
-        allow_short=(exposure_policy == ExposurePolicy.BIDIRECTIONAL),
-    )
+    portfolio_config = PortfolioConfig(initial_cash=10000.0, max_abs_exposure=1.0, allow_short=allow_short)
     engine = PortfolioEngine(portfolio_config, cost_model)
 
     eval_bars = [b for b in bars if b.timestamp_utc >= eval_start_ms]
@@ -177,11 +72,8 @@ def _run_single_backtest(
         target_exposure = 1.0
 
     first_decision_ts = None
-    first_submitted_target = None
     first_exec_ts = None
     first_exec_price = None
-
-    funding_idx = 0
 
     for i in range(len(bars)):
         bar = bars[i]
@@ -190,16 +82,6 @@ def _run_single_backtest(
         if is_eval:
             if last_equity is None:
                 last_equity = engine.state.net_equity(bar.open)
-
-            # Apply any funding due exactly at this bar's open timestamp
-            while (
-                funding_idx < len(funding_rates)
-                and funding_rates[funding_idx].timestamp_utc <= bar.timestamp_utc
-            ):
-                fr = funding_rates[funding_idx]
-                if fr.timestamp_utc == bar.timestamp_utc:
-                    engine.apply_funding(bar.open, fr.rate)
-                funding_idx += 1
 
             current_exp = engine.state.exposure(bar.open)
             if target_exposure != current_exp:
@@ -239,16 +121,15 @@ def _run_single_backtest(
                     target_exposure = -1.0
                 else:
                     target_exposure = 0.0
-
+                    
                 if first_decision_ts is None and target_exposure != 0.0:
                     first_decision_ts = bar.timestamp_utc
-                    first_submitted_target = target_exposure
             except InsufficientHistoryError:
                 target_exposure = 0.0
 
     liq_res = engine.liquidate(bars[-1].close)
     engine.mark_to_market(bars[-1].close)
-
+    
     liq_ts = bars[-1].timestamp_utc if liq_res.delta_qty != 0.0 else None
     liq_price = bars[-1].close if liq_res.delta_qty != 0.0 else None
 
@@ -287,16 +168,14 @@ def _run_single_backtest(
         if valid_bars_for_exposure
         else 0.0,
         annualized_sharpe=sharpe,
-        maximum_drawdown=engine.state.path_maximum_drawdown_pct,
+        maximum_drawdown=engine.path_maximum_drawdown_pct,
         first_timestamp_utc=first_ts,
         last_timestamp_utc=last_ts,
         input_dataset_digest=dataset_digest,
         trend_config_identity=config_identity,
-        market_model=market_model.value,
-        exposure_policy=exposure_policy.value,
+        market_model=market_model,
         first_decision_ts=first_decision_ts,
         first_exec_ts=first_exec_ts,
-        first_submitted_target=first_submitted_target,
         first_exec_price=first_exec_price,
         liq_ts=liq_ts,
         liq_price=liq_price,
@@ -308,12 +187,10 @@ def run_trend_backtest(
     bars: tuple[MarketBar, ...],
     config: TrendConfig,
     cost_model: CostModel,
-    eval_start_ms: int,
-    market_model: MarketModel,
-    exposure_policy: ExposurePolicy,
-    funding_rates: tuple[FundingRate, ...] = (),
     outage_registry: OutageRegistry | None = None,
-    manifest_digest: str | None = None,
+    eval_start_ms: int = 0,
+    allow_short: bool = True,
+    market_model: str | None = None,
 ) -> TrendBacktestReport:
     """Run backtests for strategy, flat baseline, and long baseline."""
     if not bars:
@@ -336,43 +213,13 @@ def run_trend_backtest(
 
     if asset == AssetClass.FOREX:
         cost_model = CostModel(taker_fee=0.0, half_spread=0.0, slippage=0.0)
+        
+    if market_model is None:
+        market_model = "SPOT" if "SPOT" in venue else ("FOREX_MARGIN" if asset == AssetClass.FOREX else "PERPETUAL")
 
-    res_strategy = _run_single_backtest(
-        bars,
-        config,
-        cost_model,
-        "strategy",
-        eval_start_ms,
-        market_model,
-        exposure_policy,
-        funding_rates,
-        outage_registry,
-        manifest_digest,
-    )
-    res_flat = _run_single_backtest(
-        bars,
-        config,
-        cost_model,
-        "flat",
-        eval_start_ms,
-        market_model,
-        exposure_policy,
-        funding_rates,
-        outage_registry,
-        manifest_digest,
-    )
-    res_long = _run_single_backtest(
-        bars,
-        config,
-        cost_model,
-        "long",
-        eval_start_ms,
-        market_model,
-        exposure_policy,
-        funding_rates,
-        outage_registry,
-        manifest_digest,
-    )
+    res_strategy = _run_single_backtest(bars, config, cost_model, "strategy", outage_registry, eval_start_ms, allow_short, market_model)
+    res_flat = _run_single_backtest(bars, config, cost_model, "flat", outage_registry, eval_start_ms, allow_short, market_model)
+    res_long = _run_single_backtest(bars, config, cost_model, "long", outage_registry, eval_start_ms, allow_short, market_model)
 
     return TrendBacktestReport(
         strategy=res_strategy,

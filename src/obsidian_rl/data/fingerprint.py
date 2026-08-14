@@ -13,7 +13,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from obsidian_rl.data.contracts import EventNewsItem, MarketBar
+    from obsidian_rl.data.contracts import EventNewsItem, FundingRate, MarketBar
 
 
 def _normalize_for_json(data: dict[str, Any]) -> dict[str, Any]:
@@ -86,6 +86,11 @@ def compute_event_news_hash(item: "EventNewsItem | dict[str, Any] | Any") -> str
     return compute_canonical_sha256(item, exclude_keys=("record_hash",))
 
 
+def compute_funding_rate_hash(rate: "FundingRate | dict[str, Any] | Any") -> str:
+    """Compute the deterministic SHA-256 hash of a FundingRate excluding `row_hash`."""
+    return compute_canonical_sha256(rate, exclude_keys=("row_hash",))
+
+
 def verify_contract_hash(contract: Any) -> bool:
     """Verify that a data contract's stored hash exactly matches its canonical computed hash.
 
@@ -111,6 +116,16 @@ def verify_contract_hash(contract: Any) -> bool:
             )
         return True
     else:
+        # Check if it's FundingRate by checking if it has a rate attribute + row_hash
+        if hasattr(contract, "rate") and hasattr(contract, "row_hash"):
+            stored = contract.row_hash
+            computed = compute_funding_rate_hash(contract)
+            if stored != computed:
+                raise RuntimeError(
+                    f"FundingRate hash mismatch: stored {stored!r} != computed {computed!r}"
+                )
+            return True
+
         raise ValueError(
             f"Contract {type(contract).__name__} has neither 'row_hash' nor 'record_hash'"
         )

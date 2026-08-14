@@ -12,6 +12,7 @@ from typing import Any
 
 from obsidian_rl.data.fingerprint import (
     compute_event_news_hash,
+    compute_funding_rate_hash,
     compute_market_bar_hash,
 )
 
@@ -641,8 +642,155 @@ class EventNewsItem:
         )
 
 
+@dataclass(frozen=True)
+class FundingRate:
+    """Canonical point-in-time funding rate contract for perpetual swaps.
+
+    Enforces finite rates, matching UTC timestamps for validity, and SHA-256 fingerprinting.
+    """
+
+    asset_class: AssetClass
+    venue: str
+    symbol: str
+    timestamp_utc: int
+    observed_at_utc: int
+    rate: float
+    data_source: str
+    schema_version: str = SCHEMA_VERSION_V2
+    row_hash: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.asset_class, AssetClass):
+            raise TypeError(
+                "asset_class must be an instance of AssetClass enum "
+                f"(no silent enum conversion), got {type(self.asset_class).__name__}"
+            )
+
+        for field_name in ("venue", "symbol", "data_source", "schema_version"):
+            val = getattr(self, field_name)
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(
+                    f"FundingRate.{field_name} must be a non-empty string, got {val!r}"
+                )
+
+        if self.schema_version != SCHEMA_VERSION_V2:
+            raise ValueError(
+                f"Unsupported schema_version: expected {SCHEMA_VERSION_V2!r}, "
+                f"got {self.schema_version!r}"
+            )
+
+        for field_name in ("timestamp_utc", "observed_at_utc"):
+            val = getattr(self, field_name)
+            if isinstance(val, bool) or not isinstance(val, int):
+                raise TypeError(
+                    f"FundingRate.{field_name} must be an integer (ms UTC), got {type(val).__name__}"
+                )
+            if val < 0:
+                raise ValueError(f"FundingRate.{field_name} cannot be negative, got {val}")
+
+        if self.observed_at_utc < self.timestamp_utc:
+            raise ValueError(
+                f"FundingRate.observed_at_utc ({self.observed_at_utc}) cannot be "
+                f"earlier than timestamp_utc ({self.timestamp_utc})"
+            )
+
+        if isinstance(self.rate, bool) or not isinstance(self.rate, (int, float)):
+            raise TypeError(
+                f"FundingRate.rate must be float or int, got {type(self.rate).__name__}"
+            )
+        f_rate = float(self.rate)
+        if not math.isfinite(f_rate):
+            raise ValueError("FundingRate.rate must be finite (rejecting NaN/Infinity)")
+        object.__setattr__(self, "rate", f_rate)
+
+        if self.row_hash:
+            if (
+                not isinstance(self.row_hash, str)
+                or len(self.row_hash) != 64
+                or not all(c in "0123456789abcdef" for c in self.row_hash)
+            ):
+                raise ValueError(
+                    "FundingRate.row_hash must be a 64-character lowercase hex string, "
+                    f"got {self.row_hash!r}"
+                )
+            computed = compute_funding_rate_hash(self)
+            if self.row_hash != computed:
+                raise RuntimeError(
+                    f"FundingRate hash mismatch: computed {computed} != provided {self.row_hash}"
+                )
+        else:
+            computed = compute_funding_rate_hash(self)
+            object.__setattr__(self, "row_hash", computed)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize FundingRate to dictionary."""
+        return {
+            "asset_class": self.asset_class.value,
+            "venue": self.venue,
+            "symbol": self.symbol,
+            "timestamp_utc": self.timestamp_utc,
+            "observed_at_utc": self.observed_at_utc,
+            "rate": self.rate,
+            "data_source": self.data_source,
+            "schema_version": self.schema_version,
+            "row_hash": self.row_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], verify_hash: bool = True) -> "FundingRate":
+        if not isinstance(data, dict):
+            raise TypeError(f"Expected dict, got {type(data).__name__}")
+
+        expected_keys = {
+            "asset_class",
+            "venue",
+            "symbol",
+            "timestamp_utc",
+            "observed_at_utc",
+            "rate",
+            "data_source",
+            "schema_version",
+            "row_hash",
+        }
+        actual_keys = set(data.keys())
+        unknown = actual_keys - expected_keys
+        if unknown:
+            raise ValueError(f"Unknown fields rejected during deserialization: {sorted(unknown)}")
+        missing = expected_keys - actual_keys
+        if missing:
+            raise ValueError(f"Missing fields rejected during deserialization: {sorted(missing)}")
+
+        if verify_hash:
+            row_hash = data.get("row_hash")
+            if not isinstance(row_hash, str) or len(row_hash) != 64:
+                raise ValueError(
+                    "Tamper rejection: serialized FundingRate missing valid 64-char row_hash"
+                )
+
+        try:
+            asset_class = (
+                AssetClass(data["asset_class"])
+                if isinstance(data["asset_class"], str)
+                else data["asset_class"]
+            )
+        except ValueError as exc:
+            raise ValueError(f"Invalid AssetClass: {data['asset_class']!r}") from exc
+
+        return cls(
+            asset_class=asset_class,
+            venue=data["venue"],
+            symbol=data["symbol"],
+            timestamp_utc=data["timestamp_utc"],
+            observed_at_utc=data["observed_at_utc"],
+            rate=data["rate"],
+            data_source=data["data_source"],
+            schema_version=data["schema_version"],
+            row_hash=data["row_hash"],
+        )
+
+
 def validate_ingestion_time(
-    contract: MarketBar | EventNewsItem,
+    contract: MarketBar | EventNewsItem | FundingRate,
     current_time_ms: int,
     max_clock_skew_ms: int = DEFAULT_MAX_SKEW_MS,
 ) -> None:
@@ -689,23 +837,34 @@ def validate_ingestion_time(
                 f"({contract.updated_at}) exceeds current_time_ms ({current_time_ms}) "
                 f"plus max_clock_skew_ms ({max_clock_skew_ms})"
             )
+    elif isinstance(contract, FundingRate):
+        if contract.observed_at_utc > max_allowed:
+            raise RuntimeError(
+                "Ingestion time validation failed for FundingRate: observed_at_utc "
+                f"({contract.observed_at_utc}) exceeds current_time_ms ({current_time_ms}) "
+                f"plus max_clock_skew_ms ({max_clock_skew_ms})"
+            )
     else:
-        raise TypeError(f"Expected MarketBar or EventNewsItem, got {type(contract).__name__}")
+        raise TypeError(
+            f"Expected MarketBar, EventNewsItem, or FundingRate, got {type(contract).__name__}"
+        )
 
 
-def to_dict(contract: MarketBar | EventNewsItem) -> dict[str, Any]:
-    """Serialize a MarketBar or EventNewsItem contract to a JSON-compatible dictionary."""
+def to_dict(contract: MarketBar | EventNewsItem | FundingRate) -> dict[str, Any]:
+    """Serialize a MarketBar, EventNewsItem, or FundingRate contract to a JSON-compatible dictionary."""
     if hasattr(contract, "to_dict") and callable(contract.to_dict):
         return contract.to_dict()
-    raise TypeError(f"Expected MarketBar or EventNewsItem, got {type(contract).__name__}")
+    raise TypeError(
+        f"Expected MarketBar, EventNewsItem, or FundingRate, got {type(contract).__name__}"
+    )
 
 
 def from_dict(
-    cls: type[MarketBar] | type[EventNewsItem],
+    cls: type[MarketBar] | type[EventNewsItem] | type[FundingRate],
     data: dict[str, Any],
     verify_hash: bool = True,
-) -> MarketBar | EventNewsItem:
-    """Reconstruct a MarketBar or EventNewsItem contract from a dictionary."""
+) -> MarketBar | EventNewsItem | FundingRate:
+    """Reconstruct a MarketBar, EventNewsItem, or FundingRate contract from a dictionary."""
     if hasattr(cls, "from_dict") and callable(cls.from_dict):
         return cls.from_dict(data, verify_hash=verify_hash)
-    raise TypeError(f"Expected class MarketBar or EventNewsItem, got {cls!r}")
+    raise TypeError(f"Expected class MarketBar, EventNewsItem, or FundingRate, got {cls!r}")

@@ -3,6 +3,7 @@ import json
 import re
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class ManifestComponent:
     asset_class: str
@@ -27,7 +28,7 @@ def load_and_validate_manifest(
     cli_start_ms: int | None = None,
     cli_end_ms: int | None = None,
 ) -> ManifestComponent:
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         manifest_data = json.load(f)
 
     components = manifest_data.get("components")
@@ -46,7 +47,7 @@ def load_and_validate_manifest(
         raise ValueError("Manifest component missing or ambiguous")
 
     c = matches[0]
-    
+
     start_ts = c.get("start_timestamp_utc")
     end_ts = c.get("end_timestamp_utc")
     row_count = c.get("row_count")
@@ -54,10 +55,10 @@ def load_and_validate_manifest(
 
     if type(start_ts) is not int or type(end_ts) is not int or type(row_count) is not int:
         raise ValueError("Manifest component boundaries must be integers")
-        
+
     if start_ts >= end_ts:
         raise ValueError("start >= end")
-        
+
     if row_count <= 0:
         raise ValueError("row_count <= 0")
 
@@ -66,10 +67,10 @@ def load_and_validate_manifest(
 
     if cli_start_ms is not None and cli_start_ms != start_ts:
         raise ValueError("CLI start boundaries conflict with the manifest")
-        
+
     if cli_end_ms is not None and cli_end_ms != end_ts:
         raise ValueError("CLI end boundaries conflict with the manifest")
-        
+
     if runtime_first_ts != start_ts:
         raise ValueError("runtime first timestamp differs from manifest")
 
@@ -78,7 +79,7 @@ def load_and_validate_manifest(
 
     if runtime_row_count != row_count:
         raise ValueError("Row count differs from manifest")
-        
+
     if runtime_digest != digest:
         raise ValueError("Computed digest differs from manifest")
 

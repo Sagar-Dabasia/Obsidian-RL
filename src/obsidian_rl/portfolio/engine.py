@@ -13,6 +13,7 @@ price that produced the observation.
 
 from enum import Enum
 
+
 class MarketModel(Enum):
     SPOT = "SPOT"
     PERPETUAL = "PERPETUAL"

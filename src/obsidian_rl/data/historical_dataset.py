@@ -7,7 +7,7 @@ safely with idempotency and interrupted-run resume.
 import hashlib
 from datetime import UTC, datetime
 
-from obsidian_rl.data.contracts import AssetClass, Timeframe, MarketBar
+from obsidian_rl.data.contracts import AssetClass, MarketBar, Timeframe
 from obsidian_rl.data.outages import OutageRegistry
 from obsidian_rl.data.providers.base import MarketDataProvider
 from obsidian_rl.data.providers.binance import BinanceSpotProvider
@@ -49,7 +49,7 @@ def ingest_historical_range(
 
     try:
         provider = _get_provider(asset_class)
-    except Exception as e:
+    except Exception:
         provider = None
 
     # Smart resume: find latest timestamp in DB for this symbol
@@ -245,7 +245,6 @@ def verify_and_digest_continuous_bars(
     Verifies that the provided sequence of bars is continuous (with allowed venue outages),
     contains sufficient warm-up, and returns the computed SHA-256 digest.
     """
-    import hashlib
     if not bars:
         raise ValueError("Cannot verify empty bars sequence.")
 

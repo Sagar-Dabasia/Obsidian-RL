@@ -12,7 +12,7 @@ from obsidian_rl.data.contracts import (
 )
 from obsidian_rl.evaluation.trend_backtest import run_trend_backtest
 from obsidian_rl.portfolio.costs import CostModel
-from obsidian_rl.portfolio.engine import MarketModel, ExposurePolicy
+from obsidian_rl.portfolio.engine import ExposurePolicy, MarketModel
 from obsidian_rl.signals.trend import TrendConfig
 
 
@@ -266,6 +266,7 @@ def test_audit_invariants(monkeypatch) -> None:
 def test_cli_boundaries(monkeypatch) -> None:
     import argparse
     import unittest.mock
+
     import tools.run_trend_backtest as cli
 
     # We patch argparse to intercept the parsed args right before load
@@ -456,8 +457,9 @@ def test_outage_registry_identity_changes_with_entries() -> None:
 
 
 def test_manifest_duplicate_exact_match_rejected(tmp_path) -> None:
-    from obsidian_rl.data.manifest import load_and_validate_manifest
     import json
+
+    from obsidian_rl.data.manifest import load_and_validate_manifest
     manifest = {
         "components": [
             {
@@ -490,8 +492,9 @@ def test_manifest_duplicate_exact_match_rejected(tmp_path) -> None:
         load_and_validate_manifest(str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0"*64, 1000, 2000)
 
 def test_manifest_wrong_identity_rejected(tmp_path) -> None:
-    from obsidian_rl.data.manifest import load_and_validate_manifest
     import json
+
+    from obsidian_rl.data.manifest import load_and_validate_manifest
     manifest = {
         "components": [
             {
@@ -514,8 +517,9 @@ def test_manifest_wrong_identity_rejected(tmp_path) -> None:
         load_and_validate_manifest(str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0"*64, 1000, 2000)
 
 def test_manifest_malformed_values_rejected(tmp_path) -> None:
-    from obsidian_rl.data.manifest import load_and_validate_manifest
     import json
+
+    from obsidian_rl.data.manifest import load_and_validate_manifest
     manifest = {
         "components": [
             {
@@ -538,8 +542,9 @@ def test_manifest_malformed_values_rejected(tmp_path) -> None:
         load_and_validate_manifest(str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0"*64, 1000, 2000)
 
 def test_runtime_bounds_count_and_digest_rejected(tmp_path) -> None:
-    from obsidian_rl.data.manifest import load_and_validate_manifest
     import json
+
+    from obsidian_rl.data.manifest import load_and_validate_manifest
     manifest = {
         "components": [
             {
