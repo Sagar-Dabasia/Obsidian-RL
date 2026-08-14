@@ -1,10 +1,16 @@
+> [!CAUTION]
+> **INVALID — SPOT/PERPETUAL MARKET-MODEL MISMATCH — NO STRATEGY CONCLUSION**
+>
+> The frozen manifests and data are `BINANCE_SPOT`. Running those same datasets as `PERPETUAL + BIDIRECTIONAL` does NOT produce valid perpetual-market evidence.
+> The reported metrics (BTC DD 55.86%, ETH DD 64.27%, median DD 60.06%) remain only as diagnostic recomputation, not valid Phase 4D strategy evidence.
+
 # Phase 4D Crypto Trend Robustness Report
 
 ## Evaluation Protocol
 Markets: BTCUSDT, ETHUSDT
 Evaluation Window: `1577836800000` to `1704067200000`
 Strategy: 20/60/120-day trend with next-bar-open execution.
-Market Model: PERPETUAL / BIDIRECTIONAL (Remediated)
+Market Model: BINANCE_SPOT data run as PERPETUAL / BIDIRECTIONAL (Diagnostic Recomputation)
 
 ## Results Table
 
@@ -40,7 +46,7 @@ Market Model: PERPETUAL / BIDIRECTIONAL (Remediated)
 8. Manifest/runtime digests match -> PASS
 
 ## Final Classification
-`CRYPTO TREND DEVELOPMENT SCREEN FAILS`
+`INVALID — SPOT/PERPETUAL MARKET-MODEL MISMATCH — NO STRATEGY CONCLUSION`
 
 ## Scope Limitation
-The frozen BTCUSDT/ETHUSDT trend configuration failed the Phase 4D development screen because median maximum drawdown was 60.06%, above the 20% threshold. It is not eligible for promotion or production. This does not establish failure across all cryptocurrencies, trend configurations or cross-asset markets.
+The frozen BTCUSDT/ETHUSDT trend configuration failed the Phase 4D development screen in diagnostic recomputation because median maximum drawdown was 60.06%, above the 20% threshold. However, this is formally invalid due to market-model mismatch. Any future perpetual experiment must be a NEW preregistered experiment using authentic perpetual provenance plus correct funding/carry/execution assumptions.

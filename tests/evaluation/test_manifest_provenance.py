@@ -219,6 +219,7 @@ def test_runner_manifest_validation(tmp_path):
     # Boundary mismatch fails
     res = run_backtest_with_manifest(str(db_path), str(manifest_path), 
                                      **{"start-ms": bars[0].timestamp_utc - 4*3600*1000, "end-ms": bars[-1].timestamp_utc + 4 * 3600 * 1000, "eval-start-ms": eval_start})
+    assert res.returncode != 0
     assert "CLI start boundaries conflict with the manifest" in res.stdout
     
     # Row-count mismatch fails

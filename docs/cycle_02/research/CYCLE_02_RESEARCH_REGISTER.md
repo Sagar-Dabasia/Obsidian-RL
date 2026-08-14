@@ -79,9 +79,55 @@ To preserve absolute scientific integrity and prevent data dredging across cross
 Phase 4C is officially closed and cannot be rerun using the current unverifiable Forex data constraints. The experiment was blocked by missing OANDA market data which lacked valid cryptographic proofs of API absence.
 
 ## Phase 4D Final Status
-**Status**: `VALID_COMPLETE (CRYPTO TREND DEVELOPMENT SCREEN FAILS)`
-* Constraints: Erratum logged and remediated using proper perpetual margin.
-* Remediated Report: [PHASE_04D_CRYPTO_TREND_ROBUSTNESS.md](../reports/PHASE_04D_CRYPTO_TREND_ROBUSTNESS.md)
+**Status**: `INVALID — SPOT/PERPETUAL MARKET-MODEL MISMATCH — NO STRATEGY CONCLUSION`
+* Constraints: Erratum logged. Any future perpetual experiment must be a NEW preregistered experiment.
+* Diagnostic Report: [PHASE_04D_CRYPTO_TREND_ROBUSTNESS.md](../reports/PHASE_04D_CRYPTO_TREND_ROBUSTNESS.md)
+* Erratum Report: [PHASE_04D_POST_PUSH_EVALUATION_ERRATUM.md](../reports/PHASE_04D_POST_PUSH_EVALUATION_ERRATUM.md)
 
 Confirmation and final holdout data remained completely untouched.
 The next task must require a genuinely new hypothesis before modifying or rerunning the strategy.
+
+## Cycle 02 Roadmap & Planned Scope
+
+* 4D INVALID closeout
+* → 4E Statistical Validity Gate
+* → 4F Execution/Accounting Parity Audit
+* → remaining Cycle 2 engines/composite
+* → possible genuinely-new RL re-entry
+* → controlled paper trading
+
+### 4E planned scope:
+* PSR
+* DSR
+* explicit trial/multiple-testing accounting
+* PBO only if mathematically valid
+* CPCV/purging only if chronology/holdout isolation is preserved
+* references only: `purged-cross-validation`, `jsharpe`, `pypbo`
+* no dependency additions yet
+
+### 4F planned scope:
+* NautilusTrader as execution/accounting reference
+* compare timing/fills/costs/order-state/accounting
+* never replace centralized Obsidian state/accounting
+* `hftbacktest` deferred
+
+### Future reference only:
+* FinRL-X
+* TradeMaster
+* TorchTrade
+
+**RL remains retired unless a genuinely new hypothesis passes a re-entry gate.**
+Possible later candidates:
+* SB3-Contrib RecurrentPPO
+* d3rlpy
+* Minari conventions
+
+**Optuna:**
+* train/inner-eval only
+* never outer/confirmation/final holdout
+
+**Deferred:**
+* DVC
+* CCXT
+* Soup
+* public-apis
