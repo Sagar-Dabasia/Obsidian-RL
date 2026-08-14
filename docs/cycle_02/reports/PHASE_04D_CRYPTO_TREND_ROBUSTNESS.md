@@ -1,14 +1,10 @@
-> [!CAUTION]
-> **PHASE 4D EVALUATION INVALID — EXECUTION/METRIC MODEL DEFECTS — NO VALID STRATEGY CONCLUSION**
->
-> The results in this report were produced with defective execution models (shorting on spot without borrowing costs) and incorrect metric accounting (terminal drawdown instead of maximum path drawdown). The figures below are NOT valid financial-performance evidence. See `PHASE_04D_POST_PUSH_EVALUATION_ERRATUM.md` for full details.
-
 # Phase 4D Crypto Trend Robustness Report
 
 ## Evaluation Protocol
 Markets: BTCUSDT, ETHUSDT
 Evaluation Window: `1577836800000` to `1704067200000`
 Strategy: 20/60/120-day trend with next-bar-open execution.
+Market Model: PERPETUAL / BIDIRECTIONAL (Remediated)
 
 ## Results Table
 
@@ -23,7 +19,7 @@ Strategy: 20/60/120-day trend with next-bar-open execution.
 | Gross Return | 466.63% | 517.40% |
 | Net Return | 389.46% | 395.64% |
 | Ann. Sharpe | 0.77 | 0.63 |
-| Max Drawdown | 8.21% | 49.03% |
+| Max Drawdown | 55.86% | 64.27% |
 | Turnover | 11872092.93 | 18732547.51 |
 | Exposure | 55.06% | 57.29% |
 | Trades | 1278 | 1286 |
@@ -38,7 +34,7 @@ Strategy: 20/60/120-day trend with next-bar-open execution.
 2. Median net return (392.55%) > 0 -> PASS
 3. Median annualized Sharpe (0.70) > 0.50 -> PASS
 4. Worst net return (389.46%) > -10% -> PASS
-5. Median maximum drawdown (28.62%) <= 20% -> FAIL
+5. Median maximum drawdown (60.06%) <= 20% -> FAIL
 6. At least 1/2 markets beat always-long Sharpe (1/2: BTC beats, ETH fails) -> PASS
 7. All metrics are finite -> PASS
 8. Manifest/runtime digests match -> PASS
@@ -47,4 +43,4 @@ Strategy: 20/60/120-day trend with next-bar-open execution.
 `CRYPTO TREND DEVELOPMENT SCREEN FAILS`
 
 ## Scope Limitation
-The frozen BTCUSDT/ETHUSDT trend configuration failed the Phase 4D development screen because median maximum drawdown was 28.62%, above the 20% threshold. It is not eligible for promotion or production. This does not establish failure across all cryptocurrencies, trend configurations or cross-asset markets.
+The frozen BTCUSDT/ETHUSDT trend configuration failed the Phase 4D development screen because median maximum drawdown was 60.06%, above the 20% threshold. It is not eligible for promotion or production. This does not establish failure across all cryptocurrencies, trend configurations or cross-asset markets.

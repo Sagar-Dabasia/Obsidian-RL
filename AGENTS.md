@@ -28,3 +28,12 @@
 ## Version control
 - Do not commit or push unless explicitly requested.
 - Never rewrite Git history or run destructive Git reset commands.
+
+## Graphify Architecture Mapping
+- Query the active graph before editing.
+- Never use the full graph to select active implementation.
+- Archived/legacy nodes are historical evidence only.
+- Inspect actual source before changing it.
+- Regenerate graphs only when explicitly requested.
+- Graphify never replaces GitHub diff review.
+

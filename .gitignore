@@ -45,3 +45,24 @@ htmlcov/
 Thumbs.db
 .vscode/
 .idea/
+
+# Graphify, context exports and diagnostic tools
+graphify-out/
+_context_export/
+*.txt
+tools/do_*.py
+tools/new_*.py
+tools/patch*.py
+tools/recover*.py
+tools/fix*.py
+tools/find_*.py
+tools/parse_*.py
+tools/generate_*.py
+tools/audit_*.py
+tools/backtest_impl.py
+tools/calc_gaps.py
+tools/runner_impl.py
+tools/strip_ws.py
+tools/truncate.py
+tools/fetch_oanda_proofs.py
+tools/validate_graphify_map.py

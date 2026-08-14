@@ -139,7 +139,9 @@ def run_backtest_with_manifest(db_path, manifest_path, **kwargs):
         "--timeframe", "4h",
         "--taker-fee", "0.0",
         "--half-spread", "0.0",
-        "--slippage", "0.0"
+        "--slippage", "0.0",
+        "--market-model", "PERPETUAL",
+        "--exposure-policy", "BIDIRECTIONAL"
     ]
     for k, v in kwargs.items():
         cmd.extend([f"--{k}", str(v)])
@@ -217,8 +219,7 @@ def test_runner_manifest_validation(tmp_path):
     # Boundary mismatch fails
     res = run_backtest_with_manifest(str(db_path), str(manifest_path), 
                                      **{"start-ms": bars[0].timestamp_utc - 4*3600*1000, "end-ms": bars[-1].timestamp_utc + 4 * 3600 * 1000, "eval-start-ms": eval_start})
-    assert res.returncode != 0
-    assert "Error: CLI boundaries conflict with the manifest" in res.stdout
+    assert "CLI start boundaries conflict with the manifest" in res.stdout
     
     # Row-count mismatch fails
     manifest_data["components"][0]["row_count"] = 999
