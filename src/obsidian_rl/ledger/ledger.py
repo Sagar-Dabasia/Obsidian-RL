@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     turnover_total REAL NOT NULL,
     trade_count INTEGER NOT NULL,
     peak_equity REAL NOT NULL,
+    path_maximum_drawdown_pct REAL NOT NULL DEFAULT 0.0,
     created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_run_candle ON decisions(run_id, candle_open_ms);
@@ -121,6 +122,7 @@ CREATE TABLE IF NOT EXISTS run_closures (
     turnover_total REAL NOT NULL,
     trade_count INTEGER NOT NULL,
     peak_equity REAL NOT NULL,
+    path_maximum_drawdown_pct REAL NOT NULL DEFAULT 0.0,
     closure_reason TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL
 );
@@ -157,6 +159,16 @@ class Ledger:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
+        with contextlib.suppress(sqlite3.OperationalError):
+            self._conn.execute(
+                "ALTER TABLE decisions ADD COLUMN "
+                "path_maximum_drawdown_pct REAL NOT NULL DEFAULT 0.0"
+            )
+        with contextlib.suppress(sqlite3.OperationalError):
+            self._conn.execute(
+                "ALTER TABLE run_closures ADD COLUMN "
+                "path_maximum_drawdown_pct REAL NOT NULL DEFAULT 0.0"
+            )
         self._conn.commit()
 
     def close(self) -> None:
@@ -277,8 +289,9 @@ class Ledger:
                 " rejection_reason, position_qty, avg_entry_price, cash, unrealized_pnl,"
                 " net_equity, gross_equity, realized_pnl_total, fees_total, spread_total,"
                 " slippage_total, funding_total, turnover_total, trade_count, peak_equity,"
+                " path_maximum_drawdown_pct,"
                 " created_at_ms)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id,
                     key,
@@ -312,6 +325,7 @@ class Ledger:
                     state.turnover,
                     state.trade_count,
                     state.peak_equity,
+                    state.path_maximum_drawdown_pct,
                     int(time.time() * 1000),
                 ),
             )
@@ -381,6 +395,7 @@ class Ledger:
                 turnover=closure_row["turnover_total"],
                 trade_count=closure_row["trade_count"],
                 peak_equity=closure_row["peak_equity"],
+                path_maximum_drawdown_pct=closure_row["path_maximum_drawdown_pct"],
             )
 
         dec_row = self.last_decision(run_id)
@@ -402,6 +417,7 @@ class Ledger:
                 turnover=dec_row["turnover_total"],
                 trade_count=dec_row["trade_count"],
                 peak_equity=dec_row["peak_equity"],
+                path_maximum_drawdown_pct=dec_row["path_maximum_drawdown_pct"],
             )
             dec_ms = int(dec_row["candle_open_ms"])
         else:
@@ -555,8 +571,9 @@ class Ledger:
                 " realized_pnl_delta, position_qty, avg_entry_price, cash,"
                 " unrealized_pnl, net_equity, gross_equity, realized_pnl_total,"
                 " fees_total, spread_total, slippage_total, funding_total,"
-                " turnover_total, trade_count, peak_equity, closure_reason, created_at_ms)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " turnover_total, trade_count, peak_equity, path_maximum_drawdown_pct,"
+                " closure_reason, created_at_ms)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id,
                     terminal_ts_ms,
@@ -585,6 +602,7 @@ class Ledger:
                     state.turnover,
                     state.trade_count,
                     state.peak_equity,
+                    state.path_maximum_drawdown_pct,
                     closure_reason,
                     int(time.time() * 1000),
                 ),
@@ -641,8 +659,9 @@ class Ledger:
                     " realized_pnl_delta, position_qty, avg_entry_price, cash,"
                     " unrealized_pnl, net_equity, gross_equity, realized_pnl_total,"
                     " fees_total, spread_total, slippage_total, funding_total,"
-                    " turnover_total, trade_count, peak_equity, closure_reason, created_at_ms)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " turnover_total, trade_count, peak_equity, path_maximum_drawdown_pct,"
+                    " closure_reason, created_at_ms)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         run_id,
                         terminal_ts_ms,
@@ -671,6 +690,7 @@ class Ledger:
                         state.turnover,
                         state.trade_count,
                         state.peak_equity,
+                        state.path_maximum_drawdown_pct,
                         closure_reason,
                         created_at,
                     ),
