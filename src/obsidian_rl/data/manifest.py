@@ -1,4 +1,5 @@
 """Canonical immutable manifest loading and validation."""
+
 import json
 import re
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ class ManifestComponent:
     end_timestamp_utc: int
     row_count: int
     digest: str
+
 
 def load_and_validate_manifest(
     manifest_path: str,
@@ -36,7 +38,8 @@ def load_and_validate_manifest(
         raise ValueError("Manifest component missing or ambiguous")
 
     matches = [
-        c for c in components
+        c
+        for c in components
         if c.get("asset_class") == asset_class
         and c.get("venue") == venue
         and c.get("symbol") == symbol
@@ -91,5 +94,5 @@ def load_and_validate_manifest(
         start_timestamp_utc=start_ts,
         end_timestamp_utc=end_ts,
         row_count=row_count,
-        digest=digest
+        digest=digest,
     )

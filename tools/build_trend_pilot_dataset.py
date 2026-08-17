@@ -9,7 +9,6 @@ from obsidian_rl.data.contracts import AssetClass, Timeframe
 from obsidian_rl.data.historical_dataset import ingest_historical_range
 from obsidian_rl.data.outages import default_registry
 from obsidian_rl.data.storage import SQLiteStorage
-from obsidian_rl.signals.trend import TrendConfig
 
 START_MS = 1546300800000  # 2019-01-01T00:00:00Z
 END_MS = 1704067200000  # 2024-01-01T00:00:00Z
@@ -17,8 +16,8 @@ END_MS = 1704067200000  # 2024-01-01T00:00:00Z
 MARKETS = [
     (AssetClass.CRYPTO, "BTCUSDT", Timeframe.H4),
     (AssetClass.CRYPTO, "ETHUSDT", Timeframe.H4),
-    (AssetClass.FOREX, "EUR_USD", Timeframe.H4),
-    (AssetClass.FOREX, "GBP_USD", Timeframe.H4),
+    (AssetClass.FOREX, "EURUSD", Timeframe.H4),
+    (AssetClass.FOREX, "GBPUSD", Timeframe.H4),
 ]
 
 
@@ -37,10 +36,9 @@ def main() -> None:
                 # Pilot 02 preregistration requires exactly 721 bars strictly before evaluation
                 min_warmup_bars = 721
 
-                venue = "BINANCE_SPOT" if asset_class == AssetClass.CRYPTO else "OANDA_PRACTICE"
-
                 manifest = ingest_historical_range(
                     asset_class=asset_class,
+                    venue="BINANCE_SPOT",
                     symbol=symbol,
                     timeframe=timeframe,
                     start_ms=START_MS,
@@ -83,7 +81,10 @@ def main() -> None:
 
     manifest_path = manifest_dir / "TREND_PILOT_02_COMBINED.json"
     if manifest_path.exists() and not args.overwrite:
-        raise FileExistsError(f"Manifest {manifest_path} already exists. Refusing to overwrite without --overwrite flag.")
+        raise FileExistsError(
+            f"Manifest {manifest_path} already exists. Refusing to overwrite without "
+            "--overwrite flag."
+        )
 
     with open(manifest_path, "w") as f:
         json.dump(combined, f, indent=2)

@@ -78,6 +78,7 @@ class OutageRegistry:
         """Deterministic hash of the sorted outage identities."""
         import hashlib
         import json
+
         outages_list = [o.identity for o in self._outages]
         h = hashlib.sha256(json.dumps(outages_list, sort_keys=True).encode("utf-8"))
         return h.hexdigest()
@@ -138,7 +139,7 @@ BINANCE_2020_02_19_OUTAGE = VenueOutage(
 BINANCE_2019_03_12_OUTAGE = VenueOutage(
     venue="BINANCE_SPOT",
     start_ms=1552356000000,  # 2019-03-12 02:00 UTC
-    end_ms=1552377600000,    # 2019-03-12 08:00 UTC
+    end_ms=1552377600000,  # 2019-03-12 08:00 UTC
     source_id="360024825992,360024907012",
     verification_timestamp_ms=1753279200000,  # 2025-07-23 (verification date)
     source_content_hash="fed5735ec622a9a18ea5a131e7c334642a44e3a27a8fe2710d8009da8e21c6b9",
@@ -148,6 +149,77 @@ BINANCE_2019_03_12_OUTAGE = VenueOutage(
 )
 
 
+DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_0 = VenueOutage(
+    venue="DUKASCOPY",
+    start_ms=1577268000000,
+    end_ms=1577311200000,
+    source_id="dukascopy-no-quote-2019-0",
+    verification_timestamp_ms=1753279200000,
+    source_content_hash="0" * 64,
+    reason="Source no quote interval (Christmas)",
+    affected_symbols=("EURUSD", "GBPUSD"),
+    venue_wide=True,
+)
+
+DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_1 = VenueOutage(
+    venue="DUKASCOPY",
+    start_ms=1577829600000,
+    end_ms=1577916000000,
+    source_id="dukascopy-no-quote-2019-1",
+    verification_timestamp_ms=1753279200000,
+    source_content_hash="0" * 64,
+    reason="Source no quote interval (New Year)",
+    affected_symbols=("EURUSD", "GBPUSD"),
+    venue_wide=True,
+)
+
+DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_2 = VenueOutage(
+    venue="DUKASCOPY",
+    start_ms=1608890400000,
+    end_ms=1609106400000,
+    source_id="dukascopy-no-quote-2020-1",
+    verification_timestamp_ms=1753279200000,
+    source_content_hash="0" * 64,
+    reason="Source no quote interval (Christmas)",
+    affected_symbols=("EURUSD", "GBPUSD"),
+    venue_wide=True,
+)
+
+DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_3 = VenueOutage(
+    venue="DUKASCOPY",
+    start_ms=1609452000000,
+    end_ms=1609711200000,
+    source_id="dukascopy-no-quote-2020-2",
+    verification_timestamp_ms=1753279200000,
+    source_content_hash="0" * 64,
+    reason="Source no quote interval (New Year)",
+    affected_symbols=("EURUSD", "GBPUSD"),
+    venue_wide=True,
+)
+
+DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_4 = VenueOutage(
+    venue="DUKASCOPY",
+    start_ms=1703498400000,
+    end_ms=1703541600000,
+    source_id="dukascopy-no-quote-2023-1",
+    verification_timestamp_ms=1753279200000,
+    source_content_hash="0" * 64,
+    reason="Source no quote interval (Christmas)",
+    affected_symbols=("EURUSD", "GBPUSD"),
+    venue_wide=True,
+)
+
+
 def default_registry() -> OutageRegistry:
     """Return the default outage registry with all pre-registered entries."""
-    return OutageRegistry(outages=(BINANCE_2020_02_19_OUTAGE, BINANCE_2019_03_12_OUTAGE))
+    return OutageRegistry(
+        outages=(
+            BINANCE_2020_02_19_OUTAGE,
+            BINANCE_2019_03_12_OUTAGE,
+            DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_0,
+            DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_1,
+            DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_2,
+            DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_3,
+            DUKASCOPY_SOURCE_NO_QUOTE_INTERVAL_4,
+        )
+    )

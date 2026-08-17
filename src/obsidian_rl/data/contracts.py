@@ -683,7 +683,8 @@ class FundingRate:
             val = getattr(self, field_name)
             if isinstance(val, bool) or not isinstance(val, int):
                 raise TypeError(
-                    f"FundingRate.{field_name} must be an integer (ms UTC), got {type(val).__name__}"
+                    f"FundingRate.{field_name} must be an integer (ms UTC), "
+                    f"got {type(val).__name__}"
                 )
             if val < 0:
                 raise ValueError(f"FundingRate.{field_name} cannot be negative, got {val}")
@@ -851,7 +852,7 @@ def validate_ingestion_time(
 
 
 def to_dict(contract: MarketBar | EventNewsItem | FundingRate) -> dict[str, Any]:
-    """Serialize a MarketBar, EventNewsItem, or FundingRate contract to a JSON-compatible dictionary."""
+    """Serialize a MarketBar, EventNewsItem, or FundingRate contract to a dict."""
     if hasattr(contract, "to_dict") and callable(contract.to_dict):
         return contract.to_dict()
     raise TypeError(

@@ -1169,7 +1169,7 @@ def test_immutable_report_exclusive_creation_collision(
     fixed_name = "evaluation-v1-9999-collision-hash.json"
     monkeypatch.setattr(promotion_module, "_report_filename", lambda ts, rh: fixed_name)
 
-    report1 = evaluate_candidate(models_dir, candidate_id, validation)
+    evaluate_candidate(models_dir, candidate_id, validation)
     evals_dir = models_dir / candidate_id / "evaluations"
     report_path = evals_dir / fixed_name
     assert report_path.is_file()
@@ -1319,17 +1319,19 @@ def test_promotion_thresholds_validation() -> None:
 def test_champion_lock_concurrent_and_error_handling(
     evidence_models: tuple[Path, str, pd.DataFrame], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    models_dir, candidate_id, validation = evidence_models
+    models_dir, _candidate_id, _validation = evidence_models
     lock = promotion_module._champion_lock(models_dir, timeout_sec=0.1)
     with lock:
         lock2 = promotion_module._champion_lock(models_dir, timeout_sec=0.1)
         with pytest.raises(PromotionEvidenceError, match="already running"), lock2:
             pass
 
-    with patch("builtins.open", side_effect=PermissionError("no access")):
-        with pytest.raises(PermissionError, match="no access"):
-            with promotion_module._champion_lock(models_dir):
-                pass
+    with (
+        patch("builtins.open", side_effect=PermissionError("no access")),
+        pytest.raises(PermissionError, match="no access"),
+        promotion_module._champion_lock(models_dir),
+    ):
+        pass
 
 
 def test_symlink_containment_checks(
@@ -1346,9 +1348,11 @@ def test_symlink_containment_checks(
     except (OSError, NotImplementedError):
         pytest.skip("Symlinks not supported on this filesystem/user")
 
-    with patch("obsidian_rl.training.promotion._latest_pointer_path", return_value=sym_ptr):
-        with pytest.raises(PromotionEvidenceError, match="must not be a symlink"):
-            promotion_module._load_and_verify_latest_pointer(models_dir, candidate_id)
+    with (
+        patch("obsidian_rl.training.promotion._latest_pointer_path", return_value=sym_ptr),
+        pytest.raises(PromotionEvidenceError, match="must not be a symlink"),
+    ):
+        promotion_module._load_and_verify_latest_pointer(models_dir, candidate_id)
 
     sym_report = report_path.parent / "sym_report.json"
     try:

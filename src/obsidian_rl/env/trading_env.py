@@ -52,7 +52,8 @@ class RewardConfig:
             self.turnover_penalty_bps, (int, float)
         ):
             raise ValueError(
-                f"turnover_penalty_bps={self.turnover_penalty_bps!r} must be int or float, not {type(self.turnover_penalty_bps).__name__}"
+                f"turnover_penalty_bps={self.turnover_penalty_bps!r} must be int or float, "
+                f"not {type(self.turnover_penalty_bps).__name__}"
             )
         if not math.isfinite(self.turnover_penalty_bps):
             raise ValueError(f"turnover_penalty_bps={self.turnover_penalty_bps!r} must be finite")
@@ -63,7 +64,7 @@ class RewardConfig:
 
 
 class TradingEnv(gym.Env):
-    metadata: dict[str, Any] = {"render_modes": []}
+    metadata = {"render_modes": []}  # noqa: RUF012
 
     def __init__(
         self,

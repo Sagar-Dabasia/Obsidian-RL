@@ -13,6 +13,7 @@ def test_historical_dataset_rejects_empty(tmp_path) -> None:
     with SQLiteStorage(db_path) as storage, pytest.raises(RuntimeError):
         ingest_historical_range(
             asset_class=AssetClass.CRYPTO,
+            venue="BINANCE_SPOT",
             symbol="FAKECOIN",
             timeframe=Timeframe.H4,
             start_ms=1000000000000,
@@ -71,6 +72,7 @@ def test_eval_gap_fails(tmp_path, monkeypatch) -> None:
     ):
         ingest_historical_range(
             asset_class=AssetClass.CRYPTO,
+            venue="BINANCE_SPOT",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             start_ms=eval_start_ms,
@@ -107,6 +109,7 @@ def test_warmup_gap_success_721_bars(tmp_path, monkeypatch) -> None:
     with SQLiteStorage(db_path) as storage:
         manifest = ingest_historical_range(
             asset_class=AssetClass.CRYPTO,
+            venue="BINANCE_SPOT",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             start_ms=start_ts - 2 * 14400000,
@@ -146,6 +149,7 @@ def test_warmup_gap_fails_short(tmp_path, monkeypatch) -> None:
     ):
         ingest_historical_range(
             asset_class=AssetClass.CRYPTO,
+            venue="BINANCE_SPOT",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             start_ms=start_ts - 2 * 14400000,

@@ -196,9 +196,7 @@ def register_model(
     model_dir = models_dir / model_id
     meta_path = model_dir / METADATA_FILE
     if meta_path.exists():
-        raise FileExistsError(
-            f"model {model_id!r} is already registered; {METADATA_FILE} already exists and cannot be overwritten"
-        )
+        raise FileExistsError(f"model {model_id!r} is already registered; {METADATA_FILE} exists")
     artifact = model_dir / MODEL_FILE
     if not artifact.exists():
         raise FileNotFoundError(artifact)
@@ -232,7 +230,7 @@ def register_model(
             os.fsync(fh.fileno())
     except FileExistsError as exc:
         raise FileExistsError(
-            f"model {model_id!r} is already registered; {METADATA_FILE} already exists and cannot be overwritten"
+            f"model {model_id!r} is already registered; {METADATA_FILE} exists"
         ) from exc
     return ModelRecord(model_id, model_dir, metadata)
 

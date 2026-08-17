@@ -1,30 +1,32 @@
-import urllib.request
 import hashlib
-import zipfile
 import io
-from datetime import datetime, timezone
+import urllib.request
+import zipfile
+from datetime import UTC, datetime
+from typing import Any
 
 URLS = {
     "BTCUSDT": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/4h/BTCUSDT-4h-2019-03.zip",
-    "ETHUSDT": "https://data.binance.vision/data/spot/monthly/klines/ETHUSDT/4h/ETHUSDT-4h-2019-03.zip"
+    "ETHUSDT": "https://data.binance.vision/data/spot/monthly/klines/ETHUSDT/4h/ETHUSDT-4h-2019-03.zip",
 }
 
-def verify_archive(symbol, url):
+
+def verify_archive(symbol: str, url: str) -> dict[str, Any]:
     print(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req) as response:
         data = response.read()
 
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
     sha256 = hashlib.sha256(data).hexdigest()
 
     # Check rows
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         csv_filename = z.namelist()[0]
         with z.open(csv_filename) as f:
-            content = f.read().decode('utf-8')
+            content = f.read().decode("utf-8")
 
-    rows = [line.split(',') for line in content.split('\n') if line.strip()]
+    rows = [line.split(",") for line in content.split("\n") if line.strip()]
     row_count = len(rows)
 
     timestamps = [int(r[0]) for r in rows]
@@ -51,7 +53,8 @@ def verify_archive(symbol, url):
         "08_exists": has_08,
     }
 
-def main():
+
+def main() -> None:
     results = []
     for sym, url in URLS.items():
         results.append(verify_archive(sym, url))
@@ -74,6 +77,7 @@ def main():
             f.write(f"- 1552377600000 exists: {r['08_exists']}\n\n")
 
     print(f"Evidence written to {evidence_path}")
+
 
 if __name__ == "__main__":
     main()

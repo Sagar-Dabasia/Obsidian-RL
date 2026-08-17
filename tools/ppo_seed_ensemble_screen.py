@@ -88,9 +88,12 @@ def resolve_model(
         m_pen = reward.get("turnover_penalty_bps", 0.0)
         m_seeds = rec.metadata.get("seeds", [])
         m_id = rec.model_id
-        if m_pen == penalty and seed in m_seeds:
-            if f"-f{fold_id}-" in m_id or m_id.endswith(f"-f{fold_id}"):
-                return child, m_id
+        if (
+            m_pen == penalty
+            and seed in m_seeds
+            and (f"-f{fold_id}-" in m_id or m_id.endswith(f"-f{fold_id}"))
+        ):
+            return child, m_id
     raise FileNotFoundError(f"Model not found for penalty={penalty}, fold={fold_id}, seed={seed}")
 
 
@@ -284,8 +287,8 @@ if __name__ == "__main__":
             cost_model=cm,
             sensitivity=True,
         )
-        for r in rows:
-            d = r.to_dict()
+        for row in rows:
+            d = row.to_dict()
             print(f"  {d['scenario']}: ret={d['net_return']:+.6f}, dd={d['max_drawdown']:.4f}")
     else:
         print("\nNo penalty eligible, skipping confirmation.")

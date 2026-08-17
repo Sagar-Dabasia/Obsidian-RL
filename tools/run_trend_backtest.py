@@ -2,15 +2,18 @@
 
 import argparse
 import sys
-import json
 
 from obsidian_rl.data.contracts import AssetClass, Timeframe
 from obsidian_rl.data.outages import default_registry
+from obsidian_rl.data.quality import is_forex_weekend_gap
 from obsidian_rl.data.storage import SQLiteStorage
-from obsidian_rl.evaluation.trend_backtest import TrendBacktestResult, run_trend_backtest, _hash_dataset
+from obsidian_rl.evaluation.trend_backtest import (
+    TrendBacktestResult,
+    run_trend_backtest,
+)
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.signals.trend import TrendConfig
-from obsidian_rl.data.quality import is_forex_weekend_gap
+
 
 def _print_result(name: str, res: TrendBacktestResult) -> None:
     print(f"--- {name} ---")
@@ -25,6 +28,7 @@ def _print_result(name: str, res: TrendBacktestResult) -> None:
     print(f"Exposure: {res.exposure_percentage:.2%}")
     print()
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Trend Engine Backtest")
     parser.add_argument("--database", required=True, help="SQLite database path")
@@ -38,21 +42,23 @@ def main() -> None:
     parser.add_argument("--observed-before-ms", type=int, help="Point-in-time cutoff")
     parser.add_argument("--manifest", type=str, help="Path to manifest for digest validation")
 
-    parser.add_argument("--taker-fee", type=float, required=True, help="Taker fee (e.g. 0.001 for 10bps)")
+    parser.add_argument(
+        "--taker-fee", type=float, required=True, help="Taker fee (e.g. 0.001 for 10bps)"
+    )
     parser.add_argument("--half-spread", type=float, required=True, help="Half spread")
     parser.add_argument("--slippage", type=float, required=True, help="Slippage model factor")
     parser.add_argument("--outage-aware", action="store_true", help="Use default outage registry")
-    
-    parser.add_argument("--market-model", required=True, choices=["SPOT", "PERPETUAL", "FOREX_MARGIN"])
+
+    parser.add_argument(
+        "--market-model", required=True, choices=["SPOT", "PERPETUAL", "FOREX_MARGIN"]
+    )
     parser.add_argument("--exposure-policy", required=True, choices=["LONG_FLAT", "BIDIRECTIONAL"])
 
     args = parser.parse_args()
 
-
-    if args.start_ms is None or args.end_ms is None:
-        if not args.manifest:
-            print("Error: Must provide --start-ms and --end-ms if no manifest provided.")
-            sys.exit(1)
+    if (args.start_ms is None or args.end_ms is None) and not args.manifest:
+        print("Error: Must provide --start-ms and --end-ms if no manifest provided.")
+        sys.exit(1)
 
     eval_start_ms = args.eval_start_ms if args.eval_start_ms else args.start_ms
 
@@ -76,18 +82,24 @@ def main() -> None:
     print(f"Loaded {len(bars)} bars from local storage.")
 
     import hashlib
+
     h = hashlib.sha256()
     for b in bars:
         h.update(b.row_hash.encode("utf-8"))
     computed_digest = h.hexdigest()
-    
-    expected_interval = (tf.value_ms() if hasattr(tf, "value_ms") else 14400000)
-    
+
+    expected_interval = tf.value_ms() if hasattr(tf, "value_ms") else 14400000
+
     manifest_digest = None
     digest_match = False
+    from obsidian_rl.data.contracts import FundingRate
 
+    funding_rates: tuple[FundingRate, ...] = tuple()
     if args.manifest:
+        import json
+
         from obsidian_rl.data.manifest import load_and_validate_manifest
+
         try:
             mc = load_and_validate_manifest(
                 args.manifest,
@@ -100,11 +112,47 @@ def main() -> None:
                 len(bars),
                 computed_digest,
                 args.start_ms,
-                args.end_ms
+                args.end_ms,
             )
             manifest_digest = mc.digest
             digest_match = True
             print("Digest matched successfully.")
+
+            with open(args.manifest, encoding="utf-8") as f:
+                raw_manifest = json.load(f)
+            mc_raw = raw_manifest.get("components", [{}])[0]
+            if "funding_csv_path" in mc_raw and args.market_model == "PERPETUAL":
+                import csv
+
+                from obsidian_rl.data.contracts import SCHEMA_VERSION_V2, FundingRate
+
+                funding_path = mc_raw["funding_csv_path"]
+                print(f"Loading funding rates from {funding_path}")
+                rates = []
+                with open(funding_path, encoding="utf-8") as ff:
+                    reader = csv.reader(ff)
+                    next(reader)
+                    for row in reader:
+                        ts = int(row[0])
+                        val = float(row[1])
+                        if args.start_ms is not None and ts < args.start_ms:
+                            continue
+                        if args.end_ms is not None and ts >= args.end_ms:
+                            continue
+                        rates.append(
+                            FundingRate(
+                                asset_class=AssetClass.CRYPTO,
+                                venue=args.venue,
+                                symbol=args.symbol,
+                                timestamp_utc=ts,
+                                observed_at_utc=ts,
+                                rate=val,
+                                data_source="CSV",
+                                schema_version=SCHEMA_VERSION_V2,
+                            )
+                        )
+                funding_rates = tuple(sorted(rates, key=lambda x: x.timestamp_utc))
+                print(f"Loaded {len(funding_rates)} funding rates.")
         except Exception as e:
             print(str(e))
             sys.exit(1)
@@ -117,11 +165,11 @@ def main() -> None:
     config = TrendConfig()
     registry = default_registry() if args.outage_aware else None
 
-    from obsidian_rl.portfolio.engine import MarketModel, ExposurePolicy
+    from obsidian_rl.portfolio.engine import ExposurePolicy, MarketModel
 
     market_model = MarketModel(args.market_model)
     exposure_policy = ExposurePolicy(args.exposure_policy)
-    
+
     if market_model == MarketModel.SPOT and exposure_policy == ExposurePolicy.BIDIRECTIONAL:
         print("SPOT market model cannot execute BIDIRECTIONAL positions")
         sys.exit(1)
@@ -134,8 +182,9 @@ def main() -> None:
             eval_start_ms=eval_start_ms,
             market_model=market_model,
             exposure_policy=exposure_policy,
+            funding_rates=funding_rates,
             outage_registry=registry,
-            manifest_digest=manifest_digest
+            manifest_digest=manifest_digest,
         )
     except Exception as e:
         print(f"Backtest failed: {e}")
@@ -157,13 +206,17 @@ def main() -> None:
 
     outages_accepted = 0
     weekend_gaps = 0
-    expected_interval = (tf.value_ms() if hasattr(tf, "value_ms") else 14400000)
+    expected_interval = tf.value_ms() if hasattr(tf, "value_ms") else 14400000
     for i in range(1, len(bars)):
         diff = bars[i].timestamp_utc - bars[i - 1].timestamp_utc
         if diff > expected_interval:
-            if "OANDA" in args.venue and is_forex_weekend_gap(bars[i-1].timestamp_utc, bars[i].timestamp_utc):
+            if "OANDA" in args.venue and is_forex_weekend_gap(
+                bars[i - 1].timestamp_utc, bars[i].timestamp_utc
+            ):
                 weekend_gaps += 1
-            elif registry and registry.covers_gap(args.venue, bars[i-1].timestamp_utc + expected_interval, bars[i].timestamp_utc):
+            elif registry and registry.covers_gap(
+                args.venue, bars[i - 1].timestamp_utc + expected_interval, bars[i].timestamp_utc
+            ):
                 outages_accepted += 1
 
     print("\n\n--- AUDIT DATA ---")
@@ -188,6 +241,7 @@ def main() -> None:
     _print_result("Strategy", report.strategy)
     _print_result("Baseline Flat", report.baseline_flat)
     _print_result("Baseline Long", report.baseline_long)
+
 
 if __name__ == "__main__":
     main()

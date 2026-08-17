@@ -10,8 +10,10 @@ after the decision (per ADR-003, the open of the following candle) — never the
 price that produced the observation.
 """
 
-
+from dataclasses import dataclass, field, replace
 from enum import Enum
+
+from obsidian_rl.portfolio.costs import CostModel, funding_cash_flow
 
 
 class MarketModel(Enum):
@@ -19,13 +21,10 @@ class MarketModel(Enum):
     PERPETUAL = "PERPETUAL"
     FOREX_MARGIN = "FOREX_MARGIN"
 
+
 class ExposurePolicy(Enum):
     LONG_FLAT = "LONG_FLAT"
     BIDIRECTIONAL = "BIDIRECTIONAL"
-
-from dataclasses import dataclass, field, replace
-
-from obsidian_rl.portfolio.costs import CostModel, funding_cash_flow
 
 
 @dataclass(frozen=True)

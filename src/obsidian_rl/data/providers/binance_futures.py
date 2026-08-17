@@ -258,7 +258,8 @@ class BinanceFuturesProvider(BaseRestProvider, MarketDataProvider):
             next_cursor = last_funding_time + 1
             if next_cursor <= cursor_ms:
                 raise MalformedResponseError(
-                    f"Binance pagination stalled: last fundingTime {last_funding_time} <= cursor {cursor_ms}"
+                    f"Binance pagination stalled: last fundingTime {last_funding_time} "
+                    f"<= cursor {cursor_ms}"
                 )
             cursor_ms = next_cursor
 

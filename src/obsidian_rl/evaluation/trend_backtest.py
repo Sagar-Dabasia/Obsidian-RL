@@ -254,7 +254,7 @@ def _run_single_backtest(
 
     s = engine.state
     net_return = s.net_equity(bars[-1].close) / 10000.0 - 1.0
-    total_costs = s.fees_paid + s.spread_paid + s.slippage_paid
+    total_costs = s.total_costs()
     gross_return = (s.net_equity(bars[-1].close) + total_costs) / 10000.0 - 1.0
 
     hit_rate = 0.0
@@ -335,7 +335,7 @@ def run_trend_backtest(
         last_ts = b.timestamp_utc
 
     if asset == AssetClass.FOREX:
-        cost_model = CostModel(taker_fee=0.0, half_spread=0.0, slippage=0.0)
+        cost_model = CostModel(taker_fee=0.0, half_spread=0.0, slippage=cost_model.slippage)
 
     res_strategy = _run_single_backtest(
         bars,

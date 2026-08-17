@@ -119,7 +119,10 @@ def train_ppo(
         pen_tag = (
             f"-tp{cfg.reward.turnover_penalty_bps}" if cfg.reward.turnover_penalty_bps > 0 else ""
         )
-        model_id = f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-{us:06d}-seed{cfg.seed}{pen_tag}-{uuid.uuid4().hex[:8]}"
+        model_id = (
+            f"ppo-{time.strftime('%Y%m%d-%H%M%S')}-{us:06d}-seed{cfg.seed}{pen_tag}-"
+            f"{uuid.uuid4().hex[:8]}"
+        )
     model_id = validate_model_id(model_id)
     model_dir = Path(models_dir) / model_id
 
@@ -131,7 +134,7 @@ def train_ppo(
             or model_dir.resolve() == resume_record.model_dir.resolve()
         ):
             raise FileExistsError(
-                f"resumed training output must use a new model_id and new directory; cannot overwrite resume_from ({resume_from})"
+                f"resumed output must use a new directory; cannot overwrite {resume_from}"
             )
         resumed_config = resume_record.metadata.get("config", {})
         resumed_reward_cfg = resumed_config.get("reward", {})
@@ -139,7 +142,8 @@ def train_ppo(
             resumed_pen = resumed_reward_cfg.get("turnover_penalty_bps", 0.0)
             if resumed_pen != cfg.reward.turnover_penalty_bps:
                 raise ModelCompatibilityError(
-                    f"incompatible training config when resuming: turnover_penalty_bps mismatch (resumed={resumed_pen}, current={cfg.reward.turnover_penalty_bps})"
+                    f"incompatible config: turnover_penalty_bps mismatch "
+                    f"(resumed={resumed_pen}, current={cfg.reward.turnover_penalty_bps})"
                 )
 
     Path(models_dir).mkdir(parents=True, exist_ok=True)

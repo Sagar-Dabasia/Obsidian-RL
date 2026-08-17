@@ -2,6 +2,7 @@
 deterministic inference, GPU detection. All tiny and CPU-only."""
 
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -34,9 +35,6 @@ SMOKE_CFG = TrainConfig(
     hyperparams=PpoHyperparams(n_steps=64, batch_size=32, net_arch=(16, 16)),
     costs=CM,
 )
-
-
-from collections.abc import Iterator
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -349,7 +347,8 @@ def test_immutable_model_directory_and_registration_protection(
     )
     tiny_cfg = replace(SMOKE_CFG, total_timesteps=32, eval_freq=10_000)
 
-    # 1. training with an existing explicit model ID is rejected, existing files unchanged, no new files created
+    # 1. training with an existing explicit model ID is rejected, existing files unchanged,
+    # no new files created
     with pytest.raises(FileExistsError, match="already exists"):
         train_ppo(train_candles, eval_candles, tiny_cfg, models_dir, model_id=existing_id)
 
@@ -361,7 +360,7 @@ def test_immutable_model_directory_and_registration_protection(
 
     # 2. direct duplicate register_model is rejected
     meta = json.loads(orig_meta_bytes.decode("utf-8"))
-    with pytest.raises(FileExistsError, match="already registered|already exists"):
+    with pytest.raises(FileExistsError, match=r"already registered|already exists"):
         register_model(
             models_dir,
             existing_id,
@@ -383,7 +382,7 @@ def test_immutable_model_directory_and_registration_protection(
     assert list((models_dir / empty_id).iterdir()) == []
 
     # 4. resume_from requires a different output model ID (cannot reuse same ID or same directory)
-    with pytest.raises(FileExistsError, match="new model_id|overwrite"):
+    with pytest.raises(FileExistsError, match=r"new model_id|overwrite"):
         train_ppo(
             train_candles,
             eval_candles,

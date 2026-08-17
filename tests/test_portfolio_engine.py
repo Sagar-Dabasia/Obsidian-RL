@@ -171,6 +171,7 @@ def test_exposure_limits_clamp() -> None:
 def test_short_disabled() -> None:
     eng = PortfolioEngine(PortfolioConfig(initial_cash=10_000.0, allow_short=False), CM)
     import pytest
+
     with pytest.raises(ValueError, match="short exposure disabled"):
         eng.rebalance(-1.0, 100.0)
 

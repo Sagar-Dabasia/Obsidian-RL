@@ -132,7 +132,8 @@ def run_alpha_gate_pilot(
                 None,
             ),
         ]
-        for b in default_baselines():
+        for _b in default_baselines():
+            b: Any = _b
             strategies.append((b.strategy_id, b, None))
 
         rows = evaluate_strategies_on_slice(

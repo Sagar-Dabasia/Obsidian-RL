@@ -269,6 +269,7 @@ def test_evaluation_pnl_and_costs_unchanged_by_turnover_regularization() -> None
         cost_model=CM,
         sensitivity=False,
     )
-    # P&L and costs only depend on CostModel and execution prices, never reward shaping weights / turnover_penalty_bps
+    # P&L and costs only depend on CostModel and execution prices, never reward shaping
+    # weights / turnover_penalty_bps
     for r in rows:
         assert "turnover_penalty_bps" not in r.to_dict()
