@@ -31,6 +31,8 @@
 5. Median maximum drawdown <= 20%: **PASS** (12.47%)
 6. At least 1/2 markets beat long Sharpe: **FAIL** (Both underperformed respective long baseline Sharpe)
 
+## Erratum
+The sidecar SHA256 (83B59C47A6EDE38FBE6E1A581F04E3659200D6C778D8314F8D377E2331180128) has no pre-result evidence of binding the plan. It was generated post-results in the same commit. Therefore, this run is invalid as a preregistered execution, though its metrics are retained as diagnostic negative evidence.
+
 ## Final Classification
-`VALID_FAIL — Strategy mechanically executed on authentic full-depth data but failed acceptance criteria.`
-READY_TO_COMMIT=NO.
+`INVALID_PROVENANCE — No pre-result cryptographic proof that the exact plan was governed before execution.`

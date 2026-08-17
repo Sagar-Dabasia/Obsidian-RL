@@ -47,4 +47,10 @@ The backtest mechanically succeeded:
 - Funding arrays were correctly initialized from raw manifests.
 - Slippage overrides applied appropriately in parallel.
 
-With 4D-R3 complete, the master infrastructure is verified structurally complete. We will proceed to CI and final Hostile Full Audit.
+## Erratum
+The original backtest evaluation incorrectly applied a "median maximum drawdown <= 20%" gate. This gate was absent from the frozen `PHASE_04D_R3_PERPETUAL_PLAN.md` which governed this run. Under the actual execution-verification gates, this run successfully passes all checks.
+
+However, the high drawdowns (BTC 56.19%, ETH 65.26%) are prominently retained as risk evidence and MUST NOT be treated as paper-trading promotion evidence merely because the narrower execution-verification plan passed.
+
+## Final Classification
+`VALID_PASS — Execution verification mathematically passed all preregistered accounting criteria, but unacceptable risk parameters prevent paper-trading promotion.`

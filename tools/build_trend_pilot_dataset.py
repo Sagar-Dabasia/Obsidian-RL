@@ -36,9 +36,10 @@ def main() -> None:
                 # Pilot 02 preregistration requires exactly 721 bars strictly before evaluation
                 min_warmup_bars = 721
 
+                venue = "BINANCE_SPOT" if asset_class == AssetClass.CRYPTO else "OANDA_PRACTICE"
                 manifest = ingest_historical_range(
                     asset_class=asset_class,
-                    venue="BINANCE_SPOT",
+                    venue=venue,
                     symbol=symbol,
                     timeframe=timeframe,
                     start_ms=START_MS,
