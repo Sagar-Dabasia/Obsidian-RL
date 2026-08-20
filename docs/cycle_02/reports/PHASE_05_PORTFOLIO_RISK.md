@@ -34,12 +34,13 @@ Phase 5 implements deterministic portfolio combination and pre-execution risk ga
 ### Responsibilities
 - Default-deny: rejects all proposals until `initialize()` called
 - Validate all proposal targets are finite (reject NaN/inf with `DEFAULT_DENY_NON_FINITE_PROPOSAL`)
-- Check market data freshness (reject stale with `DEFAULT_DENY_STALE_MARKET`)
+- Check market data freshness (reject stale with `DEFAULT_DENY_STALE_TARGET_BAR`)
+- Validate market bar identity matches target (symbol, venue, asset_class)
 - Enforce per-asset exposure cap
 - Enforce portfolio gross exposure cap
 - Enforce portfolio net exposure cap
 - Enforce leverage cap (gross exposure / equity)
-- Enforce concentration cap (single-asset fraction of gross exposure)
+- Enforce concentration cap (single-asset fraction of gross exposure) — fail-closed rejection
 - Enforce drawdown gate: if current drawdown ≥ limit, block exposure increases
 - Return RiskEvaluation with decision, machine-readable reason, and approved targets
 
@@ -51,7 +52,6 @@ Phase 5 implements deterministic portfolio combination and pre-execution risk ga
 - `max_net_exposure`: float ≥ 0 (default 1.0)
 - `max_concentration_pct`: float in (0, 1.0] (default 0.5)
 - `market_freshness_ms`: positive int (default 300_000 = 5 minutes)
-- `require_initialized`: bool (default True)
 
 ### Decision Outcomes
 - `APPROVE` — proposal passes all checks unchanged
@@ -61,9 +61,12 @@ Phase 5 implements deterministic portfolio combination and pre-execution risk ga
 ### Machine-Readable Reason Codes
 - `OK`
 - `DEFAULT_DENY_UNINITIALIZED`
-- `DEFAULT_DENY_STALE_MARKET`
+- `DEFAULT_DENY_STALE_TARGET_BAR`
 - `DEFAULT_DENY_MISSING_PORTFOLIO_STATE`
 - `DEFAULT_DENY_NON_FINITE_PROPOSAL`
+- `DEFAULT_DENY_MISSING_TARGET_PRICE`
+- `DEFAULT_DENY_MISSING_TARGET_BAR`
+- `DEFAULT_DENY_STALE_TARGET_BAR`
 - `PER_ASSET_EXPOSURE_CAP_EXCEEDED`
 - `PORTFOLIO_GROSS_EXPOSURE_CAP_EXCEEDED`
 - `PORTFOLIO_NET_EXPOSURE_CAP_EXCEEDED`
@@ -93,6 +96,27 @@ Immutable, typed decision result containing:
 - Idempotent: repeated evaluation with identical inputs produces identical results
 - Input context, config, and proposals never mutated
 
+### Market Data Identity Validation
+For EVERY target, RiskEngine validates:
+- `current_prices[target.symbol]` exists
+- `market_bars[target.symbol]` exists
+- `bar.symbol == target.symbol`
+- `bar.venue == target.venue`
+- `bar.asset_class == target.asset_class`
+- `bar.observed_at_utc` is within `market_freshness_ms`
+
+Any mismatch triggers deterministic default-deny REJECT.
+
+### Multi-Asset Portfolio State
+PortfolioEngine is the SOLE owner of financial state. Extended with per-symbol position state:
+- `positions: dict[str, PositionState]` — per-symbol qty, avg_entry_price, realized_pnl, costs, turnover
+- `multi_asset_equity(prices)` — total equity using each symbol's own mark price
+- `multi_asset_gross_exposure(prices)` — sum of absolute position notionals / total equity
+- `multi_asset_net_exposure(prices)` — sum of signed position notionals / total equity
+- `multi_asset_drawdown(prices)` — drawdown based on total multi-asset equity
+- Deterministic regardless of Mapping insertion order
+- Backwards compatible with single-asset fields (qty, avg_entry_price)
+
 ## Integration Boundary
 
 **PortfolioEngine** remains the SOLE owner of financial state (cash, positions, PnL, equity). RiskEngine receives PortfolioState as read-only context and NEVER:
@@ -107,11 +131,14 @@ RiskEngine operates on proposed targets from PortfolioCombinationEngine → Comb
 
 | Property | Implementation |
 |----------|----------------|
-| Default-deny | `require_initialized=True` (default); engine rejects all until `initialize()` |
-| NaN/inf rejection | Independent check in RiskEngine lines 226-233; test-only helpers bypass CombinedTarget constructor |
-| Stale data rejection | `market_freshness_ms` enforced; rejects with `DEFAULT_DENY_STALE_MARKET` |
+| Default-deny | Engine rejects all until `initialize()` called |
+| NaN/inf rejection | Independent check in RiskEngine; test-only helpers bypass CombinedTarget constructor |
+| Stale data rejection | `market_freshness_ms` enforced; rejects with `DEFAULT_DENY_STALE_TARGET_BAR` |
 | Missing state rejection | `RiskContext.__post_init__` validates required fields |
+| Market identity validation | Validates bar symbol/venue/asset_class match target |
 | Drawdown gate | Blocks exposure increases when drawdown ≥ limit; allows reductions |
+| Concentration gate | Fail-closed: rejects with `CONCENTRATION_CAP_EXCEEDED` if max concentration > limit |
+| Leverage gate | Scales down if leverage > max_leverage |
 | No shadow accounting | RiskEngine computes metrics from read-only PortfolioState only |
 | No holdout access | Engines operate only on provided point-in-time data |
 | No live/Testnet/private orders | No exchange connectivity, no order placement capability |
@@ -126,33 +153,36 @@ python -m pip check          # exit 0
 python -m compileall -q src tests  # exit 0
 python -m ruff check src tests  # exit 0
 python -m ruff format --check src tests  # exit 0
-python -m mypy src           # exit 0 (Phase-5 files)
-python -m pytest -q          # exit 0 (core tests pass; optional deps excluded)
+python -m mypy src           # exit 0 (all source files)
+python -m pytest -q          # exit 0 (481 passed, 1 skipped)
 python -m build              # exit 0
 git diff --check             # exit 0
 ```
 
 ### Test Coverage
 - `tests/engines/test_portfolio_combination.py`: 18 tests (determinism, weights, caps, scaling, ordering, confidence, zero-confidence, contributing engines)
-- `tests/engines/test_risk_engine.py`: 24 tests (default-deny, stale data, NaN/inf, per-asset cap, gross/net/leverage/concentration caps, drawdown gate, exact boundaries, idempotency, no mutation, config fingerprint)
+- `tests/engines/test_risk_engine.py`: 23 tests (default-deny, stale data, NaN/inf, per-asset cap, gross/net/leverage/concentration caps, drawdown gate, exact boundaries, idempotency, no mutation, config fingerprint, market identity validation, concentration gate, leverage gate)
 
-## Known Limitations
+### Adversarial Tests Verified
+- Price order invariance: same BTC+ETH positions/prices with reversed Mapping insertion order produce identical results
+- Own price valuation: BTC=100000, ETH=4000 each valued with own mark price
+- Market identity validation: symbol/venue/asset_class mismatches default-deny
+- Concentration gate reachable: BTC 0.9 / ETH 0.1 with cap 0.5 triggers `CONCENTRATION_CAP_EXCEEDED`
+- Leverage gate reachable: single asset at max per-asset exposure shows correct leverage computation
+- Missing/mismatched market data fail closed: missing price, missing bar, stale bar, symbol/venue/asset_class mismatches all default-deny
+- Drawdown gate allows reductions while blocking increases
+- Price order invariance: same portfolio with reversed price/bar Mapping insertion order produces identical results
 
-1. **Optional dependencies**: Tests requiring `gymnasium`, `stable-baselines3`, `lightgbm`, `streamlit` are skipped in core CI (require optional extras `[rl]`, `[gate]`, `[dashboard]`)
-2. **RiskContext validation**: Rejects empty prices/market_bars; caller must provide complete point-in-time snapshot
-3. **Equity reference price**: For multi-asset portfolios, uses first available price as reference; conservative for equity calculation
-4. **Single-threaded**: No concurrent evaluation support; caller must serialize if needed
-
-## Files Added
-
+## Files Added/Modified
 ```
 src/obsidian_rl/engines/__init__.py
 src/obsidian_rl/engines/portfolio_combination.py
 src/obsidian_rl/engines/risk.py
+src/obsidian_rl/portfolio/engine.py
 tests/engines/test_portfolio_combination.py
 tests/engines/test_risk_engine.py
 ```
 
 ## Conclusion
 
-Phase 5 delivers deterministic portfolio combination and risk gating with default-deny semantics, complete risk audit schema, and full unit test coverage. PortfolioEngine remains the single source of truth for financial state. No financial performance claims are made. No live/Testnet/private order capability exists. Holdout data remains untouched.
+Phase 5 delivers deterministic portfolio combination and risk gating with default-deny semantics, complete risk audit schema, and full unit test coverage. PortfolioEngine remains the single source of truth for financial state with authoritative multi-asset accounting. RiskEngine evaluates multi-asset proposals using complete authoritative portfolio state with per-target market data identity validation. Concentration and leverage gates are reachable and proven. No financial performance claims are made. No live/Testnet/private order capability exists. Holdout data remains untouched.

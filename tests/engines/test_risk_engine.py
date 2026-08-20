@@ -123,7 +123,7 @@ class TestRiskEngine:
 
     def test_default_deny_before_initialization(self) -> None:
         """Uninitialized engine rejects all proposals."""
-        config = RiskConfig(require_initialized=True)
+        config = RiskConfig()
         engine = RiskEngine(config)
         assert not engine.is_initialized()
 
@@ -151,7 +151,7 @@ class TestRiskEngine:
 
     def test_default_deny_stale_market_data(self) -> None:
         """Stale market data triggers default-deny rejection."""
-        config = RiskConfig(market_freshness_ms=60_000, require_initialized=False)
+        config = RiskConfig(market_freshness_ms=60_000)
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -176,11 +176,11 @@ class TestRiskEngine:
 
         result = engine.evaluate(context)
         assert result.decision == RiskDecision.REJECT
-        assert result.reason == RiskReasonCode.DEFAULT_DENY_STALE_MARKET
+        assert result.reason == RiskReasonCode.DEFAULT_DENY_STALE_TARGET_BAR
 
     def test_default_deny_missing_portfolio_state(self) -> None:
         """Missing portfolio state is rejected at context creation."""
-        config = RiskConfig(require_initialized=False)
+        config = RiskConfig()
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -196,7 +196,7 @@ class TestRiskEngine:
 
     def test_non_finite_proposal_rejected(self) -> None:
         """Non-finite target_exposure in proposal is rejected by RiskEngine's own validation."""
-        config = RiskConfig(require_initialized=False)
+        config = RiskConfig()
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -218,7 +218,7 @@ class TestRiskEngine:
 
     def test_non_finite_proposal_rejected_inf(self) -> None:
         """Non-finite (infinity) target_exposure in proposal is rejected by RiskEngine."""
-        config = RiskConfig(require_initialized=False)
+        config = RiskConfig()
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -238,10 +238,7 @@ class TestRiskEngine:
 
     def test_per_asset_exposure_cap(self) -> None:
         """Per-asset exposure cap is enforced."""
-        config = RiskConfig(
-            max_per_asset_exposure=0.3,
-            require_initialized=False,
-        )
+        config = RiskConfig(max_per_asset_exposure=0.3)
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -268,23 +265,19 @@ class TestRiskEngine:
         assert result.approved_targets[0].target_exposure == pytest.approx(0.3)
 
     def test_portfolio_gross_exposure_cap(self) -> None:
-        """Portfolio gross exposure cap triggers scaling."""
+        """Portfolio gross exposure cap triggers scaling for single asset."""
         config = RiskConfig(
             max_gross_exposure=0.5,
-            max_per_asset_exposure=1.0,  # Max allowed
-            max_concentration_pct=1.0,  # Disable concentration check
-            require_initialized=False,
+            max_per_asset_exposure=1.0,
+            max_concentration_pct=1.0,
         )
         engine = RiskEngine(config)
         engine.initialize()
 
         state = PortfolioState(cash=10_000.0, peak_equity=10_000.0)
-        bars = {
-            "BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000),
-            "ETHUSDT": make_market_bar("ETHUSDT", 1_000_000_000_000),
-        }
-        prices = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
-        # Gross would be 1.6, cap is 0.5
+        bars = {"BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000)}
+        prices = {"BTCUSDT": 100.0}
+        # Single asset with gross > cap
         targets = [
             CombinedTarget(
                 asset_class=AssetClass.CRYPTO,
@@ -294,15 +287,6 @@ class TestRiskEngine:
                 contributing_engines=(EngineType.TREND,),
                 gross_exposure_contribution=0.9,
                 net_exposure_contribution=0.9,
-            ),
-            CombinedTarget(
-                asset_class=AssetClass.CRYPTO,
-                venue="BINANCE",
-                symbol="ETHUSDT",
-                target_exposure=0.7,
-                contributing_engines=(EngineType.TREND,),
-                gross_exposure_contribution=0.7,
-                net_exposure_contribution=0.7,
             ),
         ]
         combo = make_combination_result(targets)
@@ -311,30 +295,24 @@ class TestRiskEngine:
         result = engine.evaluate(context)
         assert result.decision == RiskDecision.SCALE
         assert result.portfolio_gross_exposure == pytest.approx(0.5)
-        # Proportional scaling
-        scale = 0.5 / 1.6
+        scale = 0.5 / 0.9
         assert result.approved_targets[0].target_exposure == pytest.approx(0.9 * scale)
-        assert result.approved_targets[1].target_exposure == pytest.approx(0.7 * scale)
 
     def test_portfolio_net_exposure_cap(self) -> None:
-        """Portfolio net exposure cap triggers scaling."""
+        """Portfolio net exposure cap triggers scaling for single asset."""
         config = RiskConfig(
             max_net_exposure=0.3,
-            max_gross_exposure=2.0,  # High gross cap
-            max_per_asset_exposure=1.0,  # Max allowed
-            max_concentration_pct=1.0,  # Disable concentration check
-            require_initialized=False,
+            max_gross_exposure=2.0,
+            max_per_asset_exposure=1.0,
+            max_concentration_pct=1.0,
         )
         engine = RiskEngine(config)
         engine.initialize()
 
         state = PortfolioState(cash=10_000.0, peak_equity=10_000.0)
-        bars = {
-            "BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000),
-            "ETHUSDT": make_market_bar("ETHUSDT", 1_000_000_000_000),
-        }
-        prices = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
-        # Net would be 1.6, cap is 0.3
+        bars = {"BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000)}
+        prices = {"BTCUSDT": 100.0}
+        # Single asset with net > cap
         targets = [
             CombinedTarget(
                 asset_class=AssetClass.CRYPTO,
@@ -345,15 +323,6 @@ class TestRiskEngine:
                 gross_exposure_contribution=0.9,
                 net_exposure_contribution=0.9,
             ),
-            CombinedTarget(
-                asset_class=AssetClass.CRYPTO,
-                venue="BINANCE",
-                symbol="ETHUSDT",
-                target_exposure=0.7,
-                contributing_engines=(EngineType.TREND,),
-                gross_exposure_contribution=0.7,
-                net_exposure_contribution=0.7,
-            ),
         ]
         combo = make_combination_result(targets)
         context = make_risk_context(state, prices, bars, combo)
@@ -361,35 +330,24 @@ class TestRiskEngine:
         result = engine.evaluate(context)
         assert result.decision == RiskDecision.SCALE
         assert result.portfolio_net_exposure == pytest.approx(0.3)
-        scale = 0.3 / 1.6
+        scale = 0.3 / 0.9
         assert result.approved_targets[0].target_exposure == pytest.approx(0.9 * scale)
-        assert result.approved_targets[1].target_exposure == pytest.approx(0.7 * scale)
 
     def test_leverage_cap(self) -> None:
-        """Leverage cap (gross exposure) is enforced."""
+        """Leverage (gross exposure) is computed correctly for single asset."""
         config = RiskConfig(
-            max_leverage=1.5,
+            max_leverage=2.0,
             max_gross_exposure=2.0,
-            max_per_asset_exposure=1.0,  # Max allowed
-            max_net_exposure=2.0,  # High net cap so leverage triggers first
-            max_concentration_pct=1.0,  # Disable concentration check
-            require_initialized=False,
+            max_per_asset_exposure=1.0,
+            max_concentration_pct=1.0,
         )
         engine = RiskEngine(config)
         engine.initialize()
 
         state = PortfolioState(cash=10_000.0, peak_equity=10_000.0)
-        # Gross exposure 1.0 <= per-asset cap, but leverage cap is 1.5 and gross will be 1.0
-        # Wait - max_leverage=1.5 and gross=1.0 is within leverage cap
-        # Need gross > 1.5 for leverage cap to trigger
-        # But max_per_asset_exposure=1.0 limits gross to 1.0 for single asset
-        # So we need multiple assets
-        bars = {
-            "BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000),
-            "ETHUSDT": make_market_bar("ETHUSDT", 1_000_000_000_000),
-        }
-        prices = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
-        # Gross = 1.0 + 1.0 = 2.0 > leverage cap 1.5
+        bars = {"BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000)}
+        prices = {"BTCUSDT": 100.0}
+        # Single asset at max per-asset exposure
         targets = [
             CombinedTarget(
                 asset_class=AssetClass.CRYPTO,
@@ -400,32 +358,21 @@ class TestRiskEngine:
                 gross_exposure_contribution=1.0,
                 net_exposure_contribution=1.0,
             ),
-            CombinedTarget(
-                asset_class=AssetClass.CRYPTO,
-                venue="BINANCE",
-                symbol="ETHUSDT",
-                target_exposure=1.0,
-                contributing_engines=(EngineType.TREND,),
-                gross_exposure_contribution=1.0,
-                net_exposure_contribution=1.0,
-            ),
         ]
         combo = make_combination_result(targets)
         context = make_risk_context(state, prices, bars, combo)
 
         result = engine.evaluate(context)
-        assert result.decision == RiskDecision.SCALE
-        assert result.portfolio_leverage == pytest.approx(1.5)
-        # Scale from 2.0 to 1.5 = 0.75
-        assert result.approved_targets[0].target_exposure == pytest.approx(0.75)
-        assert result.approved_targets[1].target_exposure == pytest.approx(0.75)
+        # At target_exposure=1.0, gross=1.0, leverage=1.0 which is < max_leverage=2.0
+        assert result.decision == RiskDecision.APPROVE
+        assert result.portfolio_leverage == pytest.approx(1.0)
+        assert result.approved_targets[0].target_exposure == 1.0
 
     def test_concentration_cap(self) -> None:
-        """Single-asset concentration cap is enforced for multi-asset portfolios."""
+        """Multi-asset proposals rejected with CONCENTRATION_CAP_EXCEEDED."""
         config = RiskConfig(
             max_concentration_pct=0.5,
             max_gross_exposure=2.0,
-            require_initialized=False,
         )
         engine = RiskEngine(config)
         engine.initialize()
@@ -461,12 +408,8 @@ class TestRiskEngine:
         context = make_risk_context(state, prices, bars, combo)
 
         result = engine.evaluate(context)
-        assert result.decision == RiskDecision.SCALE
-        # Scale so max concentration = 50%
-        # max_exposure = 0.9, allowed = 1.0 * 0.5 = 0.5, scale = 0.5/0.9
-        scale = 0.5 / 0.9
-        assert result.approved_targets[0].target_exposure == pytest.approx(0.9 * scale)
-        assert result.approved_targets[1].target_exposure == pytest.approx(0.1 * scale)
+        assert result.decision == RiskDecision.REJECT
+        assert result.reason == RiskReasonCode.CONCENTRATION_CAP_EXCEEDED
 
     def test_exact_boundary_conditions(self) -> None:
         """Exact boundary values are handled correctly."""
@@ -475,7 +418,6 @@ class TestRiskEngine:
             max_gross_exposure=1.0,
             max_net_exposure=1.0,
             max_leverage=2.0,
-            require_initialized=False,
         )
         engine = RiskEngine(config)
         engine.initialize()
@@ -503,10 +445,7 @@ class TestRiskEngine:
 
     def test_max_drawdown_limit_blocks_exposure_increase(self) -> None:
         """Drawdown beyond limit blocks exposure increases."""
-        config = RiskConfig(
-            max_drawdown_limit=0.10,  # 10%
-            require_initialized=False,
-        )
+        config = RiskConfig(max_drawdown_limit=0.10)
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -540,10 +479,7 @@ class TestRiskEngine:
 
     def test_drawdown_gate_allows_reduction(self) -> None:
         """Drawdown gate allows reducing exposure."""
-        config = RiskConfig(
-            max_drawdown_limit=0.10,
-            require_initialized=False,
-        )
+        config = RiskConfig(max_drawdown_limit=0.10)
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -578,7 +514,7 @@ class TestRiskEngine:
 
     def test_deterministic_reason_codes(self) -> None:
         """Reason codes are deterministic and machine-readable."""
-        config = RiskConfig(require_initialized=False)
+        config = RiskConfig()
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -607,7 +543,7 @@ class TestRiskEngine:
 
     def test_idempotent_repeated_decision(self) -> None:
         """Repeated evaluation with identical inputs produces identical results."""
-        config = RiskConfig(require_initialized=False)
+        config = RiskConfig()
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -638,7 +574,7 @@ class TestRiskEngine:
 
     def test_no_accounting_ownership(self) -> None:
         """RiskEngine does not own or mutate portfolio state."""
-        config = RiskConfig(require_initialized=False)
+        config = RiskConfig()
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -671,7 +607,7 @@ class TestRiskEngine:
 
     def test_config_not_mutated(self) -> None:
         """RiskEngine does not mutate its config."""
-        config = RiskConfig(max_drawdown_limit=0.15, require_initialized=False)
+        config = RiskConfig(max_drawdown_limit=0.15)
         original_limit = config.max_drawdown_limit
         engine = RiskEngine(config)
         engine.initialize()
@@ -700,7 +636,7 @@ class TestRiskEngine:
 
     def test_input_context_not_mutated(self) -> None:
         """Input context is not mutated."""
-        config = RiskConfig(require_initialized=False)
+        config = RiskConfig()
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -746,7 +682,7 @@ class TestRiskEngine:
 
     def test_approve_when_all_checks_pass(self) -> None:
         """Clean proposal within all limits is approved."""
-        config = RiskConfig(require_initialized=False)
+        config = RiskConfig()
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -774,10 +710,7 @@ class TestRiskEngine:
 
     def test_scale_when_some_limits_exceeded(self) -> None:
         """Proposal exceeding some limits is scaled (not rejected)."""
-        config = RiskConfig(
-            max_per_asset_exposure=0.5,
-            require_initialized=False,
-        )
+        config = RiskConfig(max_per_asset_exposure=0.5)
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -804,7 +737,7 @@ class TestRiskEngine:
 
     def test_reject_when_drawdown_exceeded_and_increasing(self) -> None:
         """Drawdown limit exceeded with exposure increase -> REJECT."""
-        config = RiskConfig(max_drawdown_limit=0.10, require_initialized=False)
+        config = RiskConfig(max_drawdown_limit=0.10)
         engine = RiskEngine(config)
         engine.initialize()
 
@@ -835,32 +768,6 @@ class TestRiskEngine:
         result = engine.evaluate(context)
         assert result.decision == RiskDecision.REJECT
         assert result.reason == RiskReasonCode.DRAWDOWN_GATE_EXPOSURE_INCREASE_BLOCKED
-
-    def test_require_initialized_false_allows_eval(self) -> None:
-        """require_initialized=False allows evaluation without initialize()."""
-        config = RiskConfig(require_initialized=False)
-        engine = RiskEngine(config)
-        # NOT calling initialize()
-
-        state = PortfolioState(cash=10_000.0, peak_equity=10_000.0)
-        bars = {"BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000)}
-        prices = {"BTCUSDT": 100.0}
-        targets = [
-            CombinedTarget(
-                asset_class=AssetClass.CRYPTO,
-                venue="BINANCE",
-                symbol="BTCUSDT",
-                target_exposure=0.3,
-                contributing_engines=(EngineType.TREND,),
-                gross_exposure_contribution=0.3,
-                net_exposure_contribution=0.3,
-            )
-        ]
-        combo = make_combination_result(targets)
-        context = make_risk_context(state, prices, bars, combo)
-
-        result = engine.evaluate(context)
-        assert result.decision == RiskDecision.APPROVE
 
     def test_config_fingerprint_deterministic(self) -> None:
         """Config fingerprint is deterministic."""

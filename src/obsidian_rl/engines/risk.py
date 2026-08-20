@@ -32,6 +32,10 @@ class RiskReasonCode(Enum):
     DEFAULT_DENY_STALE_MARKET = "DEFAULT_DENY_STALE_MARKET"
     DEFAULT_DENY_MISSING_PORTFOLIO_STATE = "DEFAULT_DENY_MISSING_PORTFOLIO_STATE"
     DEFAULT_DENY_NON_FINITE_PROPOSAL = "DEFAULT_DENY_NON_FINITE_PROPOSAL"
+    DEFAULT_DENY_MISSING_TARGET_PRICE = "DEFAULT_DENY_MISSING_TARGET_PRICE"
+    DEFAULT_DENY_MISSING_TARGET_BAR = "DEFAULT_DENY_MISSING_TARGET_BAR"
+    DEFAULT_DENY_STALE_TARGET_BAR = "DEFAULT_DENY_STALE_TARGET_BAR"
+    DEFAULT_DENY_MULTI_ASSET_UNSUPPORTED = "DEFAULT_DENY_MULTI_ASSET_UNSUPPORTED"
     PER_ASSET_EXPOSURE_CAP_EXCEEDED = "PER_ASSET_EXPOSURE_CAP_EXCEEDED"
     PORTFOLIO_GROSS_EXPOSURE_CAP_EXCEEDED = "PORTFOLIO_GROSS_EXPOSURE_CAP_EXCEEDED"
     PORTFOLIO_NET_EXPOSURE_CAP_EXCEEDED = "PORTFOLIO_NET_EXPOSURE_CAP_EXCEEDED"
@@ -57,8 +61,6 @@ class RiskConfig:
             Only enforced when portfolio has >1 asset. In (0, 1.0].
         market_freshness_ms: Maximum age of market data (observed_at_utc) before stale
             rejection.
-        require_initialized: If True (default), engine starts in default-deny until
-            initialize() called.
     """
 
     max_drawdown_limit: float = 0.15
@@ -68,7 +70,6 @@ class RiskConfig:
     max_net_exposure: float = 1.0
     max_concentration_pct: float = 0.5
     market_freshness_ms: int = 300_000  # 5 minutes
-    require_initialized: bool = True
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.max_drawdown_limit) or not (
@@ -195,7 +196,6 @@ class RiskEngine:
             "max_net_exposure": self.config.max_net_exposure,
             "max_concentration_pct": self.config.max_concentration_pct,
             "market_freshness_ms": self.config.market_freshness_ms,
-            "require_initialized": self.config.require_initialized,
         }
         encoded = json.dumps(data, sort_keys=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()[:16]
@@ -220,7 +220,7 @@ class RiskEngine:
         The engine NEVER mutates inputs or creates financial state.
         """
         # Default-deny: uninitialized engine rejects everything
-        if self.config.require_initialized and not self._initialized:
+        if not self._initialized:
             return self._reject(
                 context,
                 RiskReasonCode.DEFAULT_DENY_UNINITIALIZED,
@@ -237,25 +237,58 @@ class RiskEngine:
                 )
 
         # Check market data freshness (default-deny on stale data)
-        stale_symbols = []
-        for symbol, bar in context.market_bars.items():
+        # First validate that every target has required market data
+        for target in context.combination_result.targets:
+            if target.symbol not in context.current_prices:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_PRICE,
+                    f"Missing current price for target symbol: {target.symbol}",
+                )
+            if target.symbol not in context.market_bars:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_BAR,
+                    f"Missing market bar for target symbol: {target.symbol}",
+                )
+            bar = context.market_bars[target.symbol]
+            # Validate market bar identity matches target
+            if bar.symbol != target.symbol:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_BAR,
+                    f"Market bar symbol mismatch: bar={bar.symbol}, target={target.symbol}",
+                )
+            if bar.venue != target.venue:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_BAR,
+                    f"Market bar venue mismatch: bar={bar.venue}, target={target.venue}",
+                )
+            if bar.asset_class != target.asset_class:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_BAR,
+                    f"Market bar asset_class mismatch: bar={bar.asset_class}, "
+                    f"target={target.asset_class}",
+                )
             age_ms = context.current_time_ms - bar.observed_at_utc
             if age_ms > self.config.market_freshness_ms:
-                stale_symbols.append(symbol)
-        if stale_symbols:
-            return self._reject(
-                context,
-                RiskReasonCode.DEFAULT_DENY_STALE_MARKET,
-                f"Stale market data for {stale_symbols}; max age "
-                f"{self.config.market_freshness_ms}ms",
-            )
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_STALE_TARGET_BAR,
+                    f"Stale market bar for target {target.symbol}; age "
+                    f"{age_ms}ms > limit {self.config.market_freshness_ms}ms",
+                )
 
-        # Compute current portfolio metrics
-        if context.current_prices:
-            ref_price = next(iter(context.current_prices.values()))
-            current_equity = context.portfolio_state.net_equity(ref_price)
-        else:
-            current_equity = context.portfolio_state.cash
+        # Compute current portfolio metrics using multi-asset methods
+        prices = context.current_prices
+        portfolio_state = context.portfolio_state
+
+        # Update peak equity with current prices
+        portfolio_state.update_peak_equity(prices)
+
+        current_equity = portfolio_state.multi_asset_equity(prices)
 
         # If equity is non-positive, force flat (handled by PortfolioEngine)
         if current_equity <= 0:
@@ -265,9 +298,7 @@ class RiskEngine:
                 f"Portfolio equity non-positive ({current_equity:.2f}); forcing flat",
             )
 
-        current_drawdown = (
-            context.portfolio_state.drawdown(ref_price) if context.current_prices else 0.0
-        )
+        current_drawdown = portfolio_state.multi_asset_drawdown(prices)
 
         # Check drawdown gate FIRST - if already beyond limit, block exposure increases
         if current_drawdown >= self.config.max_drawdown_limit:
@@ -374,32 +405,18 @@ class RiskEngine:
             portfolio_net *= scale
             portfolio_leverage = self.config.max_leverage
 
-        # Check concentration cap
+        # Check concentration cap (fail-closed: reject if exceeds limit)
         if len(approved_targets) > 1 and portfolio_gross > 0:
             max_concentration = (
                 max(abs(t.target_exposure) for t in approved_targets) / portfolio_gross
             )
             if max_concentration > self.config.max_concentration_pct + 1e-12:
-                # Scale all targets down to meet concentration limit
-                # The most concentrated asset determines the scale
-                max_exposure = max(abs(t.target_exposure) for t in approved_targets)
-                allowed_max = portfolio_gross * self.config.max_concentration_pct
-                if max_exposure > 0:
-                    scale = allowed_max / max_exposure
-                    approved_targets = [
-                        CombinedTarget(
-                            asset_class=t.asset_class,
-                            venue=t.venue,
-                            symbol=t.symbol,
-                            target_exposure=t.target_exposure * scale,
-                            contributing_engines=t.contributing_engines,
-                            gross_exposure_contribution=abs(t.target_exposure * scale),
-                            net_exposure_contribution=t.target_exposure * scale,
-                        )
-                        for t in approved_targets
-                    ]
-                    portfolio_gross *= scale
-                    portfolio_net *= scale
+                return self._reject(
+                    context,
+                    RiskReasonCode.CONCENTRATION_CAP_EXCEEDED,
+                    f"Max concentration {max_concentration:.4f} > limit "
+                    f"{self.config.max_concentration_pct:.4f}; rejecting multi-asset proposal",
+                )
 
         # Final drawdown check after all scaling
         if current_drawdown >= self.config.max_drawdown_limit:
@@ -443,12 +460,11 @@ class RiskEngine:
         """Compute current portfolio gross exposure from existing positions."""
         if not context.current_prices:
             return 0.0
-        ref_price = next(iter(context.current_prices.values()))
-        equity = context.portfolio_state.net_equity(ref_price)
+        prices = context.current_prices
+        equity = context.portfolio_state.multi_asset_equity(prices)
         if equity <= 0:
             return 0.0
-        # Current exposure is position notional / equity
-        return abs(context.portfolio_state.exposure(ref_price))
+        return context.portfolio_state.multi_asset_gross_exposure(prices)
 
     def _targets_equal(
         self, original: Sequence[CombinedTarget], approved: Sequence[CombinedTarget]
@@ -478,9 +494,9 @@ class RiskEngine:
             for t in context.combination_result.targets
         )
 
-        if context.current_prices:
-            ref_price = next(iter(context.current_prices.values()))
-            current_drawdown = context.portfolio_state.drawdown(ref_price)
+        # For drawdown in rejection, compute multi-asset drawdown
+        if context.current_prices and context.combination_result.targets:
+            current_drawdown = context.portfolio_state.multi_asset_drawdown(context.current_prices)
         else:
             current_drawdown = 0.0
 

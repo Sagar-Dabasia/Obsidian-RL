@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
@@ -291,7 +291,16 @@ class PortfolioCombinationEngine:
         if portfolio_gross > self.config.max_gross_exposure and portfolio_gross > 0.0:
             scale = self.config.max_gross_exposure / portfolio_gross
             combined_targets = [
-                replace(t, target_exposure=t.target_exposure * scale) for t in combined_targets
+                CombinedTarget(
+                    asset_class=t.asset_class,
+                    venue=t.venue,
+                    symbol=t.symbol,
+                    target_exposure=t.target_exposure * scale,
+                    contributing_engines=t.contributing_engines,
+                    gross_exposure_contribution=abs(t.target_exposure * scale),
+                    net_exposure_contribution=t.target_exposure * scale,
+                )
+                for t in combined_targets
             ]
             portfolio_gross = self.config.max_gross_exposure
             portfolio_net *= scale
@@ -300,7 +309,16 @@ class PortfolioCombinationEngine:
         if net_abs > self.config.max_net_exposure and net_abs > 0.0:
             scale = self.config.max_net_exposure / net_abs
             combined_targets = [
-                replace(t, target_exposure=t.target_exposure * scale) for t in combined_targets
+                CombinedTarget(
+                    asset_class=t.asset_class,
+                    venue=t.venue,
+                    symbol=t.symbol,
+                    target_exposure=t.target_exposure * scale,
+                    contributing_engines=t.contributing_engines,
+                    gross_exposure_contribution=abs(t.target_exposure * scale),
+                    net_exposure_contribution=t.target_exposure * scale,
+                )
+                for t in combined_targets
             ]
             portfolio_net *= scale
             portfolio_gross *= scale

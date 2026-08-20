@@ -10,6 +10,7 @@ after the decision (per ADR-003, the open of the following candle) — never the
 price that produced the observation.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
@@ -64,8 +65,24 @@ class ExecutionResult:
 
 
 @dataclass
+class PositionState:
+    """Per-symbol position state for multi-asset portfolio."""
+
+    qty: float = 0.0
+    avg_entry_price: float = 0.0
+    realized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    spread_paid: float = 0.0
+    slippage_paid: float = 0.0
+    funding_paid: float = 0.0
+    turnover: float = 0.0
+    trade_count: int = 0
+
+
+@dataclass
 class PortfolioState:
     cash: float
+    # Single-asset fields (preserved for backwards compatibility)
     qty: float = 0.0
     avg_entry_price: float = 0.0
     realized_pnl: float = 0.0
@@ -79,10 +96,26 @@ class PortfolioState:
     current_drawdown_pct: float = 0.0
     path_maximum_drawdown_pct: float = 0.0
 
+    # Multi-asset extension: per-symbol position state
+    positions: dict[str, "PositionState"] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Initialize peak_equity if not set
+        if self.peak_equity <= 0:
+            self.peak_equity = self.cash
+
+    def get_position(self, symbol: str) -> "PositionState":
+        """Get or create position state for a symbol."""
+        if symbol not in self.positions:
+            self.positions[symbol] = PositionState()
+        return self.positions[symbol]
+
     def unrealized_pnl(self, price: float) -> float:
+        """Single-asset unrealized PnL (backwards compatibility)."""
         return self.qty * (price - self.avg_entry_price)
 
     def net_equity(self, price: float) -> float:
+        """Single-asset net equity (backwards compatibility)."""
         return self.cash + self.unrealized_pnl(price)
 
     def total_costs(self) -> float:
@@ -93,16 +126,75 @@ class PortfolioState:
         return self.net_equity(price) + self.total_costs()
 
     def exposure(self, price: float) -> float:
+        """Single-asset exposure (backwards compatibility)."""
         equity = self.net_equity(price)
         if equity <= 0:
             return 0.0
         return self.qty * price / equity
 
     def drawdown(self, price: float) -> float:
+        """Single-asset drawdown (backwards compatibility)."""
         equity = self.net_equity(price)
         if self.peak_equity <= 0:
             return 0.0
         return max(0.0, 1.0 - equity / self.peak_equity)
+
+    # Multi-asset methods
+    def multi_asset_equity(self, prices: Mapping[str, float]) -> float:
+        """Total portfolio equity across all assets using their own mark prices."""
+        total = self.cash
+        for symbol, pos in self.positions.items():
+            if symbol in prices:
+                total += pos.qty * (prices[symbol] - pos.avg_entry_price)
+        return total
+
+    def multi_asset_gross_exposure(self, prices: Mapping[str, float]) -> float:
+        """Gross exposure = sum of absolute position notionals / total equity."""
+        equity = self.multi_asset_equity(prices)
+        if equity <= 0:
+            return 0.0
+        gross = 0.0
+        # Check positions dict first
+        if self.positions:
+            for symbol, pos in self.positions.items():
+                if symbol in prices and pos.qty != 0:
+                    gross += abs(pos.qty * prices[symbol]) / equity
+        # Fall back to single-asset fields for backwards compatibility
+        elif self.qty != 0 and prices:
+            # Use the first price as reference
+            price = next(iter(prices.values()))
+            gross += abs(self.qty * price) / equity
+        return gross
+
+    def multi_asset_net_exposure(self, prices: Mapping[str, float]) -> float:
+        """Net exposure = sum of signed position notionals / total equity."""
+        equity = self.multi_asset_equity(prices)
+        if equity <= 0:
+            return 0.0
+        net = 0.0
+        # Check positions dict first
+        if self.positions:
+            for symbol, pos in self.positions.items():
+                if symbol in prices and pos.qty != 0:
+                    net += pos.qty * prices[symbol] / equity
+        # Fall back to single-asset fields for backwards compatibility
+        elif self.qty != 0 and prices:
+            price = next(iter(prices.values()))
+            net += self.qty * price / equity
+        return net
+
+    def multi_asset_drawdown(self, prices: Mapping[str, float]) -> float:
+        """Drawdown based on total multi-asset equity."""
+        equity = self.multi_asset_equity(prices)
+        if self.peak_equity <= 0:
+            return 0.0
+        return max(0.0, 1.0 - equity / self.peak_equity)
+
+    def update_peak_equity(self, prices: Mapping[str, float]) -> None:
+        """Update peak equity based on multi-asset equity."""
+        equity = self.multi_asset_equity(prices)
+        if equity > self.peak_equity:
+            self.peak_equity = equity
 
 
 class PortfolioEngine:
