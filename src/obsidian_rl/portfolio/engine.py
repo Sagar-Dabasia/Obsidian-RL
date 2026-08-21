@@ -160,12 +160,19 @@ class PortfolioState:
                     )
 
     def multi_asset_equity(self, prices: Mapping[str, float]) -> float:
-        """Total portfolio equity across all assets using their own mark prices."""
+        """Total portfolio equity across all assets using their own mark prices.
+
+        Zero-qty positions are completely skipped — their marks are not accessed,
+        so invalid marks for closed positions cannot contaminate equity.
+        """
         self._validate_marks_for_held_positions(prices)
         total = self.cash
         for symbol, pos in self.positions.items():
-            if symbol in prices:
-                total += pos.qty * (prices[symbol] - pos.avg_entry_price)
+            # Skip zero-qty positions entirely (no mark access = no contamination)
+            if pos.qty == 0:
+                continue
+            # At this point symbol is guaranteed to be in prices with valid mark
+            total += pos.qty * (prices[symbol] - pos.avg_entry_price)
         return total
 
     def multi_asset_gross_exposure(self, prices: Mapping[str, float]) -> float:
@@ -240,6 +247,18 @@ class PortfolioEngine:
             reason = f"target clamped from {proposed} to {approved}"
         return approved, reason
 
+    def _validate_execution_price(self, price: float) -> None:
+        """Validate execution price is finite and positive."""
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+            raise ValueError(f"non-finite or non-positive execution price {price!r}")
+
+    def _validate_funding_params(self, price: float, funding_rate: float) -> None:
+        """Validate funding price and rate are numeric and finite."""
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+            raise ValueError(f"non-finite or non-positive funding price {price!r}")
+        if not isinstance(funding_rate, (int, float)) or not math.isfinite(funding_rate):
+            raise ValueError(f"non-finite funding rate {funding_rate!r}")
+
     def mark_to_market(self, price: float) -> PortfolioState:
         """Update peak equity; return a snapshot copy of state."""
         equity = self.state.net_equity(price)
@@ -277,8 +296,7 @@ class PortfolioEngine:
             rebalance(target, price, symbol="BTCUSDT",
                       marks={"BTCUSDT": 100, "ETHUSDT": 2000})
         """
-        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
-            raise ValueError(f"non-finite or non-positive execution price {price!r}")
+        self._validate_execution_price(price)
 
         # Determine if this is a multi-asset call
         is_multi_asset = symbol is not None
@@ -287,6 +305,22 @@ class PortfolioEngine:
             # Multi-asset path: require marks for all held symbols
             if marks is None:
                 raise ValueError("multi-asset rebalance requires marks mapping")
+
+            # NEW SYMBOL ATOMICITY: target symbol must have a valid mark BEFORE any mutation
+            # symbol is guaranteed to be str here due to is_multi_asset check
+            assert symbol is not None
+            if symbol not in marks:
+                raise ValueError(f"missing mark for target symbol: {symbol}")
+            target_mark = marks[symbol]
+            if (
+                not isinstance(target_mark, (int, float))
+                or not math.isfinite(target_mark)
+                or target_mark <= 0
+            ):
+                raise ValueError(
+                    f"non-finite or non-positive mark for target symbol {symbol}: {target_mark!r}"
+                )
+
             # Validate all held nonzero positions have marks (skip DEFAULT which is legacy)
             for sym, pos in self.state.positions.items():
                 if sym == "DEFAULT":
@@ -538,7 +572,10 @@ class PortfolioEngine:
 
         Raises:
             ValueError: If symbol is specified but not present in authoritative positions.
+            ValueError: If price or funding_rate are non-numeric or non-finite.
         """
+        self._validate_funding_params(price, funding_rate)
+
         if symbol is None:
             # Legacy single-asset behavior
             flow = funding_cash_flow(self.state.qty, price, funding_rate)
