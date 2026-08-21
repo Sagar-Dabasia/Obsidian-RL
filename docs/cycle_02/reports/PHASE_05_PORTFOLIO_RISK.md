@@ -143,6 +143,62 @@ RiskEngine operates on proposed targets from PortfolioCombinationEngine → Comb
 | No holdout access | Engines operate only on provided point-in-time data |
 | No live/Testnet/private orders | No exchange connectivity, no order placement capability |
 
+## Final Persisted Protections (Phase 5 Accounting & Execution Closeout)
+
+The following protections are implemented in `src/obsidian_rl/portfolio/engine.py` and validated by persisted regressions in `tests/test_portfolio_engine.py`:
+
+### Authoritative Multi-Asset Accounting
+- **PortfolioEngine owns all financial state**: cash, positions, PnL, fees, spread, slippage, funding, turnover, trade_count
+- **Per-symbol PositionState**: each real symbol has independent qty, avg_entry_price, realized_pnl, fees_paid, spread_paid, slippage_paid, funding_paid, turnover, trade_count
+- **Aggregate accounting reconciliation**: global `realized_pnl`, `fees_paid`, `spread_paid`, `slippage_paid`, `funding_paid`, `turnover`, `trade_count` always equal exact sum of per-symbol values (DEFAULT excluded)
+- **No DEFAULT ghost in multi-asset mode**: legacy `qty`/`avg_entry_price`/`DEFAULT` position NOT updated by symbol-aware API to prevent overwriting other symbols' accounting
+
+### Symbol-Aware Rebalance & Funding
+- **Multi-asset rebalance**: `rebalance(target, price, symbol, marks)` uses total multi-asset equity for sizing, per-symbol entry prices, central cost accounting
+- **Symbol-aware funding**: `apply_funding(price, rate, symbol)` updates only specified symbol + global aggregates; fails closed on unknown symbol
+- **Per-symbol realized PnL**: partial reduction, full close, and direction flip correctly realize PnL on closed portion
+
+### Fail-Closed Market Data Validation
+- **Held-position marks required**: every nonzero real position must have a mark in `marks` Mapping; missing → `ValueError`
+- **Non-finite marks rejected**: NaN, +inf, -inf, zero, negative marks on held positions → `ValueError`
+- **Target symbol atomicity**: brand-new target symbol must have valid mark BEFORE any state mutation; missing/invalid → `ValueError` with state unchanged
+- **Zero-qty safety**: closed/zero-qty positions with invalid marks do NOT contaminate multi-asset equity/exposure/drawdown
+- **Invalid execution price**: NaN, ±inf, zero, negative → `ValueError` before mutation
+- **Invalid funding params**: non-finite/non-positive price or non-finite funding_rate → `ValueError` before mutation
+- **Malformed target rejection**: NaN, ±inf, non-numeric → `ValueError` before any clamping/mutation
+
+### State Unchanged on Rejection
+Every rejection path (invalid mark, invalid price, invalid funding, malformed target) asserts complete financial state unchanged: cash, realized_pnl, fees_paid, spread_paid, slippage_paid, funding_paid, turnover, trade_count, all per-symbol positions
+
+### Snapshot Isolation
+- `replace_state_copy()` deep-copies positions Mapping and each PositionState
+- Mutating returned snapshot cannot mutate authoritative PortfolioEngine state
+
+### RiskEngine Read-Only
+- `RiskEngine.evaluate()` never mutates `PortfolioState`
+- Peak equity updated by caller via `mark_to_market_multi()` / `update_peak_equity()`
+- Repeated `evaluate()` with identical inputs produces byte/value-equivalent portfolio state
+
+### Leverage & Concentration Gates (Reachable)
+- **Leverage cap test**: multi-asset gross 2.0 with max_leverage 1.5 → SCALE to 1.5
+- **Exact boundary test**: gross 1.5 with max_leverage 1.5 → APPROVE
+- **Concentration cap test**: single asset > max_concentration_pct → REJECT with `CONCENTRATION_CAP_EXCEEDED`
+
+### Short No-Trade Sign Correctness
+- **Signed current exposure**: `current_qty * price / equity` preserves short sign
+- Short position with same negative target → no-trade band respected, zero churn
+- Equivalent long behavior verified
+
+### Post-Cost Executed_Target Correctness
+- `executed_target` equals actual post-trade symbol exposure against post-cost multi-asset equity
+- Uses `multi_asset_equity(marks)` AFTER cash mutation for fees/spread/slippage
+- NOT pre-trade equity
+
+### Legacy Compatibility
+- Legacy `rebalance(target, price)` and `apply_funding(price, rate)` behavior unchanged
+- Legacy `mark_to_market(price)` rejects invalid price before mutation
+- Single-asset fields (`qty`, `avg_entry_price`) maintained for legacy API callers
+
 ## Verification
 
 All verification commands run in clean CI environment matching repository `pip install -e ".[dev,rl,gate,dashboard]"`.
@@ -154,7 +210,7 @@ python -m compileall -q src tests  # exit 0
 python -m ruff check src tests  # exit 0
 python -m ruff format --check src tests  # exit 0
 python -m mypy src           # exit 0 (all source files)
-python -m pytest -q          # exit 0 (481 passed, 1 skipped)
+python -m pytest -q          # exit 0 (655 passed, 1 skipped)
 python -m build              # exit 0
 git diff --check             # exit 0
 ```
@@ -162,27 +218,37 @@ git diff --check             # exit 0
 ### Test Coverage
 - `tests/engines/test_portfolio_combination.py`: 18 tests (determinism, weights, caps, scaling, ordering, confidence, zero-confidence, contributing engines)
 - `tests/engines/test_risk_engine.py`: 23 tests (default-deny, stale data, NaN/inf, per-asset cap, gross/net/leverage/concentration caps, drawdown gate, exact boundaries, idempotency, no mutation, config fingerprint, market identity validation, concentration gate, leverage gate)
+- `tests/test_portfolio_engine.py`: 53 tests (single-asset legacy, multi-asset BTC/ETH rebalance, symbol-aware funding, fail-closed market data, state-unchanged-on-reject, snapshot isolation, price-order invariance, realized PnL/cost reconciliation, target numeric fail-closed, short no-trade sign, post-cost executed_target, legacy mark fail-closed, zero-qty invalid mark safety, funding numeric fail-closed, target numeric fail-closed, legacy compat)
 
 ### Adversarial Tests Verified
 - Price order invariance: same BTC+ETH positions/prices with reversed Mapping insertion order produce identical results
-- Own price valuation: BTC=100000, ETH=4000 each valued with own mark price
+- Own price valuation: BTC and ETH each valued with own mark price + total equity
 - Market identity validation: symbol/venue/asset_class mismatches default-deny
 - Concentration gate reachable: BTC 0.9 / ETH 0.1 with cap 0.5 triggers `CONCENTRATION_CAP_EXCEEDED`
-- Leverage gate reachable: single asset at max per-asset exposure shows correct leverage computation
+- Leverage gate reachable: multi-asset gross 2.0 / max_leverage 1.5 → SCALE to 1.5
 - Missing/mismatched market data fail closed: missing price, missing bar, stale bar, symbol/venue/asset_class mismatches all default-deny
 - Drawdown gate allows reductions while blocking increases
 - Price order invariance: same portfolio with reversed price/bar Mapping insertion order produces identical results
+- Invalid marks on held positions fail closed (missing, NaN, ±inf, zero, negative)
+- Target symbol atomicity: new symbol must have valid mark before ANY mutation
+- Zero-qty invalid mark safety: closed positions with NaN/inf/zero/negative marks do not contaminate
+- Invalid execution price/funding params/malformed target fail closed with state unchanged
+- Short no-trade band preserves sign, zero churn
+- Post-cost executed_target matches actual exposure against post-cost equity
+- Legacy mark_to_market rejects invalid price before mutation
 
-## Files Added/Modified
+## Files Modified in Phase 5 Closeout
 ```
-src/obsidian_rl/engines/__init__.py
-src/obsidian_rl/engines/portfolio_combination.py
-src/obsidian_rl/engines/risk.py
 src/obsidian_rl/portfolio/engine.py
-tests/engines/test_portfolio_combination.py
-tests/engines/test_risk_engine.py
+tests/test_portfolio_engine.py
 ```
+
+(PortfolioCombinationEngine and RiskEngine files from earlier Phase 5 commits remain unchanged.)
 
 ## Conclusion
 
-Phase 5 delivers deterministic portfolio combination and risk gating with default-deny semantics, complete risk audit schema, and full unit test coverage. PortfolioEngine remains the single source of truth for financial state with authoritative multi-asset accounting. RiskEngine evaluates multi-asset proposals using complete authoritative portfolio state with per-target market data identity validation. Concentration and leverage gates are reachable and proven. No financial performance claims are made. No live/Testnet/private order capability exists. Holdout data remains untouched.
+Phase 5 delivers deterministic portfolio combination and risk gating with default-deny semantics, complete risk audit schema, and full unit test coverage. PortfolioEngine remains the single source of truth for financial state with authoritative multi-asset accounting. RiskEngine evaluates multi-asset proposals using complete authoritative portfolio state with per-target market data identity validation. Concentration and leverage gates are reachable and proven.
+
+**Verification result: 655 passed, 1 skipped** — all CI checks pass (pip, compileall, ruff, format, mypy, pytest, build, git diff --check).
+
+**Important**: Passing tests are engineering evidence of correct implementation against specified requirements; they are NOT proof of financial correctness, profitability, or an edge. Phase 5 changed architecture/accounting/risk only — no strategy tuning, no Phase-4 conclusion changes, no holdout access, paper trading only, no live/Testnet/private order capability.
