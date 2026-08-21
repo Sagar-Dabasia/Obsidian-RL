@@ -237,7 +237,13 @@ class PortfolioEngine:
         self.state = PortfolioState(cash=config.initial_cash, peak_equity=config.initial_cash)
 
     # ------------------------------------------------------------------ helpers
+    def _validate_target(self, proposed: float) -> None:
+        """Validate target is numeric and finite before any clamping."""
+        if not isinstance(proposed, (int, float)) or not math.isfinite(proposed):
+            raise ValueError(f"non-finite or non-numeric target {proposed!r}")
+
     def _approve_target(self, proposed: float) -> tuple[float, str | None]:
+        self._validate_target(proposed)
         if proposed < 0 and not self.config.allow_short:
             raise ValueError(f"short exposure disabled but requested target: {proposed}")
         limit = self.config.max_abs_exposure
@@ -261,6 +267,7 @@ class PortfolioEngine:
 
     def mark_to_market(self, price: float) -> PortfolioState:
         """Update peak equity; return a snapshot copy of state."""
+        self._validate_execution_price(price)
         equity = self.state.net_equity(price)
         if equity > self.state.peak_equity:
             self.state.peak_equity = equity
@@ -359,7 +366,8 @@ class PortfolioEngine:
             traded_notional = abs(delta_qty) * price
 
             is_close_request = approved == 0.0 and current_qty != 0.0
-            current_exposure = abs(current_qty) * price / equity if equity > 0 else 0.0
+            # Use SIGNED current exposure (preserves short sign)
+            current_exposure = current_qty * price / equity if equity > 0 else 0.0
             skip = (
                 delta_qty != 0.0
                 and not is_close_request
@@ -449,7 +457,9 @@ class PortfolioEngine:
             assert marks is not None
             self.mark_to_market_multi(marks)
 
-            executed_exposure = pos.qty * price / equity if equity > 0 else 0.0
+            # Calculate executed_target using post-trade multi-asset equity
+            post_equity = self.state.multi_asset_equity(marks)
+            executed_exposure = pos.qty * price / post_equity if post_equity > 0 else 0.0
             return ExecutionResult(
                 proposed_target=proposed_target,
                 approved_target=approved,

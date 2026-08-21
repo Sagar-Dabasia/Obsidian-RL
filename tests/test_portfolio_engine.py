@@ -882,5 +882,121 @@ def test_funding_numeric_fail_closed() -> None:
     assert eng.state.positions["ETHUSDT"].qty == pytest.approx(eth_qty_before)
 
 
+def test_target_numeric_fail_closed() -> None:
+    """Non-finite/non-numeric target => reject before mutation."""
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Test legacy rebalance
+    for bad_target in [float("nan"), float("inf"), float("-inf"), "not_a_number"]:
+        eng2 = make_engine()
+        cash_before = eng2.state.cash
+        with pytest.raises(ValueError, match="non-finite or non-numeric target"):
+            eng2.rebalance(bad_target, 100.0)
+        assert eng2.state.cash == pytest.approx(cash_before)
+
+    # Test symbol-aware rebalance
+    for bad_target in [float("nan"), float("inf"), float("-inf"), "not_a_number"]:
+        eng2 = make_engine()
+        cash_before = eng2.state.cash
+        with pytest.raises(ValueError, match="non-finite or non-numeric target"):
+            eng2.rebalance(bad_target, 100.0, symbol="BTCUSDT", marks=marks)
+        assert eng2.state.cash == pytest.approx(cash_before)
+
+    # Valid targets outside bounds still clamp
+    eng2 = make_engine(max_abs_exposure=0.5)
+    r = eng2.rebalance(1.0, 100.0)
+    assert r.approved_target == 0.5
+    assert r.rejection_reason is not None
+
+
+def test_short_no_trade_sign_correct() -> None:
+    """Short position with same/near target => no churn due to sign loss."""
+    # Use zero min_trade_notional so tolerance branch is genuinely tested
+    eng = make_engine(min_trade_notional=0.0)
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Create short BTC position
+    eng.rebalance(-0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    short_qty = eng.state.positions["BTCUSDT"].qty
+    assert short_qty < 0
+
+    # Capture state
+    cash_before = eng.state.cash
+    realized_before = eng.state.realized_pnl
+    fees_before = eng.state.fees_paid
+    turnover_before = eng.state.turnover
+    trades_before = eng.state.trade_count
+
+    # Request same negative target (should be within tolerance)
+    r = eng.rebalance(-0.5, 100.0, symbol="BTCUSDT", marks=marks)
+
+    # Must produce zero trade
+    assert r.delta_qty == 0.0
+    assert r.traded_notional == 0.0
+    assert r.fee == 0.0
+    assert r.spread_cost == 0.0
+    assert r.slippage_cost == 0.0
+    assert r.realized_pnl_delta == 0.0
+
+    # State unchanged
+    assert eng.state.cash == pytest.approx(cash_before)
+    assert eng.state.realized_pnl == pytest.approx(realized_before)
+    assert eng.state.fees_paid == pytest.approx(fees_before)
+    assert eng.state.turnover == pytest.approx(turnover_before)
+    assert eng.state.trade_count == trades_before
+    assert eng.state.positions["BTCUSDT"].qty == pytest.approx(short_qty)
+
+    # Test equivalent long behavior
+    eng2 = make_engine(min_trade_notional=0.0)
+    eng2.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    long_qty = eng2.state.positions["BTCUSDT"].qty
+    assert long_qty > 0
+
+    r2 = eng2.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    assert r2.delta_qty == 0.0
+    assert eng2.state.positions["BTCUSDT"].qty == pytest.approx(long_qty)
+
+
+def test_post_cost_executed_target_correct() -> None:
+    """executed_target must equal actual post-trade exposure against post-cost equity."""
+    eng = make_engine()  # Cost model has fees/spread/slippage = 0.2%
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Open BTC
+    r1 = eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+
+    # Post-trade equity with marks
+    post_equity = eng.state.multi_asset_equity(marks)
+    # executed_target should use post-cost equity
+    expected_exposure = eng.state.positions["BTCUSDT"].qty * 100.0 / post_equity
+
+    assert r1.executed_target == pytest.approx(expected_exposure)
+    # Verify it's NOT using pre-trade equity
+    pre_equity = 10000.0
+    wrong_exposure = eng.state.positions["BTCUSDT"].qty * 100.0 / pre_equity
+    assert r1.executed_target != pytest.approx(wrong_exposure)
+
+
+def test_legacy_mark_fail_closed() -> None:
+    """Legacy mark_to_market rejects invalid price before mutation."""
+    eng = make_engine()
+    eng.rebalance(1.0, 100.0)
+
+    cash_before = eng.state.cash
+    peak_before = eng.state.peak_equity
+
+    for bad_price in [float("nan"), float("inf"), float("-inf"), 0.0, -100.0]:
+        with pytest.raises(ValueError, match="non-finite or non-positive execution price"):
+            eng.mark_to_market(bad_price)
+
+    # State unchanged
+    assert eng.state.cash == pytest.approx(cash_before)
+    assert eng.state.peak_equity == pytest.approx(peak_before)
+
+    # Valid price still works
+    eng.mark_to_market(110.0)
+    assert eng.state.peak_equity > peak_before
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
