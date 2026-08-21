@@ -379,27 +379,11 @@ class PortfolioEngine:
             if traded_notional > 0:
                 pos.trade_count += 1
 
-            # Legacy backwards compat: mirror to legacy fields and DEFAULT position
-            s.qty = pos.qty
-            s.avg_entry_price = pos.avg_entry_price
-            s.realized_pnl = pos.realized_pnl
-            s.fees_paid = pos.fees_paid
-            s.spread_paid = pos.spread_paid
-            s.slippage_paid = pos.slippage_paid
-            s.funding_paid = pos.funding_paid
-            s.turnover = pos.turnover
-            s.trade_count = pos.trade_count
-
-            default_pos = s.get_position("DEFAULT")
-            default_pos.qty = pos.qty
-            default_pos.avg_entry_price = pos.avg_entry_price
-            default_pos.realized_pnl = pos.realized_pnl
-            default_pos.fees_paid = pos.fees_paid
-            default_pos.spread_paid = pos.spread_paid
-            default_pos.slippage_paid = pos.slippage_paid
-            default_pos.funding_paid = pos.funding_paid
-            default_pos.turnover = pos.turnover
-            default_pos.trade_count = pos.trade_count
+            # In multi-asset mode, we don't mirror to legacy qty/avg_entry/DEFAULT
+            # because that would overwrite other symbols' accounting
+            # Global portfolio fields (realized_pnl, fees_paid, etc.) are already
+            # correctly maintained as cumulative sums by the central accounting above
+            # Legacy single-asset path handles its own mirroring to DEFAULT
 
             # We know marks is not None here due to is_multi_asset check
             assert marks is not None

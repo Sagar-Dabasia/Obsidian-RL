@@ -458,9 +458,10 @@ def test_multi_asset_rebalance_btc_creates_position() -> None:
     assert r.traded_notional == pytest.approx(5000.0)
     assert eng.state.positions["BTCUSDT"].qty == pytest.approx(50.0)
     assert eng.state.positions["BTCUSDT"].avg_entry_price == pytest.approx(100.0)
-    # Legacy compatibility
-    assert eng.state.qty == pytest.approx(50.0)
-    assert "DEFAULT" in eng.state.positions
+    # Multi-asset mode: legacy qty/avg_entry are NOT updated (avoids overwriting other symbols)
+    # Legacy compatibility is only for legacy API calls
+    # assert eng.state.qty == pytest.approx(50.0)  # NOT updated in multi-asset mode
+    # assert "DEFAULT" in eng.state.positions  # NOT updated in multi-asset mode
 
 
 def test_multi_asset_rebalance_eth_after_btc() -> None:
