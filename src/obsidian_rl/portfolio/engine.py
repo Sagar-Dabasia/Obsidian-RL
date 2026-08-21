@@ -10,6 +10,7 @@ after the decision (per ADR-003, the open of the following candle) — never the
 price that produced the observation.
 """
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -140,8 +141,27 @@ class PortfolioState:
         return max(0.0, 1.0 - equity / self.peak_equity)
 
     # Multi-asset methods
+    def _validate_marks_for_held_positions(self, prices: Mapping[str, float]) -> None:
+        """Validate all nonzero held positions have finite positive marks.
+
+        Raises ValueError if any held position (qty != 0, excluding DEFAULT)
+        is missing a mark or has a non-finite/non-positive mark.
+        """
+        for symbol, pos in self.positions.items():
+            if symbol == "DEFAULT":
+                continue
+            if pos.qty != 0:
+                if symbol not in prices:
+                    raise ValueError(f"missing mark for held symbol: {symbol}")
+                mark = prices[symbol]
+                if not isinstance(mark, (int, float)) or not math.isfinite(mark) or mark <= 0:
+                    raise ValueError(
+                        f"non-finite or non-positive mark for held symbol {symbol}: {mark!r}"
+                    )
+
     def multi_asset_equity(self, prices: Mapping[str, float]) -> float:
         """Total portfolio equity across all assets using their own mark prices."""
+        self._validate_marks_for_held_positions(prices)
         total = self.cash
         for symbol, pos in self.positions.items():
             if symbol in prices:
@@ -150,6 +170,7 @@ class PortfolioState:
 
     def multi_asset_gross_exposure(self, prices: Mapping[str, float]) -> float:
         """Gross exposure = sum of absolute position notionals / total equity."""
+        self._validate_marks_for_held_positions(prices)
         equity = self.multi_asset_equity(prices)
         if equity <= 0:
             return 0.0
@@ -168,6 +189,7 @@ class PortfolioState:
 
     def multi_asset_net_exposure(self, prices: Mapping[str, float]) -> float:
         """Net exposure = sum of signed position notionals / total equity."""
+        self._validate_marks_for_held_positions(prices)
         equity = self.multi_asset_equity(prices)
         if equity <= 0:
             return 0.0
@@ -185,6 +207,7 @@ class PortfolioState:
 
     def multi_asset_drawdown(self, prices: Mapping[str, float]) -> float:
         """Drawdown based on total multi-asset equity."""
+        self._validate_marks_for_held_positions(prices)
         equity = self.multi_asset_equity(prices)
         if self.peak_equity <= 0:
             return 0.0
@@ -192,6 +215,7 @@ class PortfolioState:
 
     def update_peak_equity(self, prices: Mapping[str, float]) -> None:
         """Update peak equity based on multi-asset equity."""
+        self._validate_marks_for_held_positions(prices)
         equity = self.multi_asset_equity(prices)
         if equity > self.peak_equity:
             self.peak_equity = equity
@@ -253,8 +277,8 @@ class PortfolioEngine:
             rebalance(target, price, symbol="BTCUSDT",
                       marks={"BTCUSDT": 100, "ETHUSDT": 2000})
         """
-        if price <= 0:
-            raise ValueError(f"non-positive execution price {price}")
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+            raise ValueError(f"non-finite or non-positive execution price {price!r}")
 
         # Determine if this is a multi-asset call
         is_multi_asset = symbol is not None
@@ -269,10 +293,12 @@ class PortfolioEngine:
                     continue
                 if pos.qty != 0 and sym not in marks:
                     raise ValueError(f"missing mark for held symbol: {sym}")
-                if sym in marks and (not isinstance(marks[sym], (int, float)) or marks[sym] <= 0):
-                    raise ValueError(
-                        f"non-positive or invalid mark for symbol {sym}: {marks[sym]!r}"
-                    )
+                if sym in marks:
+                    mark = marks[sym]
+                    if not isinstance(mark, (int, float)) or not math.isfinite(mark) or mark <= 0:
+                        raise ValueError(
+                            f"non-finite or non-positive mark for symbol {sym}: {mark!r}"
+                        )
             # Use multi-asset equity for sizing
             equity = self.state.multi_asset_equity(marks)
         else:

@@ -635,3 +635,151 @@ def test_symbol_funding_still_passes() -> None:
 
     # Aggregate
     assert eng.state.funding_paid == pytest.approx(70.0)
+
+
+def test_multi_asset_missing_held_mark_fail_closed() -> None:
+    """Held BTC+ETH; omit ETH mark => fail closed on multi-asset equity."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    # ETH mark missing from equity call
+    with pytest.raises(ValueError, match="missing mark for held symbol: ETHUSDT"):
+        eng.state.multi_asset_equity({"BTCUSDT": 100.0})
+
+
+def test_multi_asset_nan_held_mark_fail_closed() -> None:
+    """Held ETH mark NaN => reject."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    with pytest.raises(ValueError, match="non-finite or non-positive mark for held symbol ETHUSDT"):
+        eng.state.multi_asset_equity({"BTCUSDT": 100.0, "ETHUSDT": float("nan")})
+
+
+def test_multi_asset_inf_held_mark_fail_closed() -> None:
+    """Held ETH mark +inf/-inf => reject."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    with pytest.raises(ValueError, match="non-finite or non-positive mark for held symbol ETHUSDT"):
+        eng.state.multi_asset_equity({"BTCUSDT": 100.0, "ETHUSDT": float("inf")})
+
+    with pytest.raises(ValueError, match="non-finite or non-positive mark for held symbol ETHUSDT"):
+        eng.state.multi_asset_equity({"BTCUSDT": 100.0, "ETHUSDT": float("-inf")})
+
+
+def test_multi_asset_zero_held_mark_fail_closed() -> None:
+    """Held ETH mark 0 => reject."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    with pytest.raises(ValueError, match="non-finite or non-positive mark for held symbol ETHUSDT"):
+        eng.state.multi_asset_equity({"BTCUSDT": 100.0, "ETHUSDT": 0.0})
+
+
+def test_multi_asset_negative_held_mark_fail_closed() -> None:
+    """Held ETH mark negative => reject."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    with pytest.raises(ValueError, match="non-finite or non-positive mark for held symbol ETHUSDT"):
+        eng.state.multi_asset_equity({"BTCUSDT": 100.0, "ETHUSDT": -100.0})
+
+
+def test_invalid_execution_price_fail_closed() -> None:
+    """Execution price NaN/+inf/-inf/0/negative => reject with state unchanged."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    # Capture state before
+    cash_before = eng.state.cash
+    realized_before = eng.state.realized_pnl
+    fees_before = eng.state.fees_paid
+    btc_qty_before = eng.state.positions["BTCUSDT"].qty
+    eth_qty_before = eng.state.positions["ETHUSDT"].qty
+
+    invalid_prices = [float("nan"), float("inf"), float("-inf"), 0.0, -100.0]
+    for bad_price in invalid_prices:
+        with pytest.raises(ValueError, match="non-finite or non-positive execution price"):
+            eng.rebalance(0.5, bad_price, symbol="BTCUSDT", marks=marks)
+
+    # State unchanged after all rejections
+    assert eng.state.cash == pytest.approx(cash_before)
+    assert eng.state.realized_pnl == pytest.approx(realized_before)
+    assert eng.state.fees_paid == pytest.approx(fees_before)
+    assert eng.state.positions["BTCUSDT"].qty == pytest.approx(btc_qty_before)
+    assert eng.state.positions["ETHUSDT"].qty == pytest.approx(eth_qty_before)
+
+
+def test_zero_qty_symbol_mark_optional() -> None:
+    """Zero-qty symbol does not require a mark."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0}
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+
+    # ETH has zero qty, should not require mark
+    # Cash after BTC: 10000 - 10 fee = 9990
+    equity = eng.state.multi_asset_equity({"BTCUSDT": 100.0})
+    assert equity == pytest.approx(9990.0)
+
+    # Gross/net exposure and drawdown also work
+    gross = eng.state.multi_asset_gross_exposure({"BTCUSDT": 100.0})
+    net = eng.state.multi_asset_net_exposure({"BTCUSDT": 100.0})
+    dd = eng.state.multi_asset_drawdown({"BTCUSDT": 100.0})
+    # gross = net = 5000/9990 = 0.5005...
+    assert gross == pytest.approx(5000.0 / 9990.0)
+    assert net == pytest.approx(5000.0 / 9990.0)
+    # peak_equity=10000, equity=9990 => dd = 1 - 9990/10000 = 0.001
+    assert dd == pytest.approx(0.001)
+
+
+def test_valid_multi_asset_accounting_reproduces_results() -> None:
+    """Valid BTC+ETH marks still reproduce existing numerical results."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Open BTC
+    r1 = eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    assert r1.delta_qty == pytest.approx(50.0)
+
+    # Open ETH
+    r2 = eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+    assert r2.delta_qty == pytest.approx(2.4975)
+
+    # Multi-asset equity = cash + BTC_unrealized + ETH_unrealized
+    # Cash after BTC: 9990, after ETH: 9990 - 9.99 = 9980.01
+    equity = eng.state.multi_asset_equity(marks)
+    assert equity == pytest.approx(9980.01)
+
+    # Gross/net exposure
+    gross = eng.state.multi_asset_gross_exposure(marks)
+    net = eng.state.multi_asset_net_exposure(marks)
+    # BTC: 50*100/9980.01, ETH: 2.4975*2000/9980.01
+    # gross = net = (5000 + 4995) / 9980.01 = 9995 / 9980.01
+    assert gross == pytest.approx(9995.0 / 9980.01)
+    assert net == pytest.approx(9995.0 / 9980.01)
+
+    # Drawdown: peak_equity=10000, current_equity=9980.01 => dd = 1 - 9980.01/10000 = 0.001999
+    dd = eng.state.multi_asset_drawdown(marks)
+    assert dd == pytest.approx(0.001999)
+
+    # Mark to market multi
+    snapshot = eng.mark_to_market_multi(marks)
+    assert snapshot.cash == eng.state.cash
+    assert snapshot.peak_equity == eng.state.peak_equity
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
