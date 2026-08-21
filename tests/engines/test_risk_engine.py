@@ -779,6 +779,107 @@ class TestRiskEngine:
         assert engine1._config_fingerprint == engine2._config_fingerprint
         assert len(engine1._config_fingerprint) == 16
 
+    def test_leverage_cap_exceeded_multi_asset(self) -> None:
+        """Multi-asset proposal exceeding max_leverage is scaled down."""
+        config = RiskConfig(
+            max_leverage=1.5,
+            max_gross_exposure=2.0,
+            max_net_exposure=2.0,
+            max_per_asset_exposure=1.0,
+            max_concentration_pct=1.0,
+        )
+        engine = RiskEngine(config)
+        engine.initialize()
+
+        state = PortfolioState(cash=10_000.0, peak_equity=10_000.0)
+        bars = {
+            "BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000),
+            "ETHUSDT": make_market_bar("ETHUSDT", 1_000_000_000_000),
+        }
+        prices = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+        # Multi-asset proposal: BTC 1.0 + ETH 1.0 = gross 2.0 > max_leverage 1.5
+        targets = [
+            CombinedTarget(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE",
+                symbol="BTCUSDT",
+                target_exposure=1.0,
+                contributing_engines=(EngineType.TREND,),
+                gross_exposure_contribution=1.0,
+                net_exposure_contribution=1.0,
+            ),
+            CombinedTarget(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE",
+                symbol="ETHUSDT",
+                target_exposure=1.0,
+                contributing_engines=(EngineType.TREND,),
+                gross_exposure_contribution=1.0,
+                net_exposure_contribution=1.0,
+            ),
+        ]
+        combo = make_combination_result(targets)
+        context = make_risk_context(state, prices, bars, combo)
+
+        result = engine.evaluate(context)
+        # Should be scaled to max_leverage=1.5
+        assert result.decision == RiskDecision.SCALE
+        assert result.portfolio_leverage == pytest.approx(1.5)
+        assert result.portfolio_gross_exposure == pytest.approx(1.5)
+        # Both targets should be scaled proportionally
+        scale = 1.5 / 2.0
+        assert result.approved_targets[0].target_exposure == pytest.approx(1.0 * scale)
+        assert result.approved_targets[1].target_exposure == pytest.approx(1.0 * scale)
+
+    def test_leverage_cap_exact_boundary(self) -> None:
+        """Exact leverage boundary (== max_leverage) is approved without scaling."""
+        config = RiskConfig(
+            max_leverage=1.5,
+            max_gross_exposure=2.0,
+            max_net_exposure=2.0,
+            max_per_asset_exposure=1.0,
+            max_concentration_pct=1.0,
+        )
+        engine = RiskEngine(config)
+        engine.initialize()
+
+        state = PortfolioState(cash=10_000.0, peak_equity=10_000.0)
+        bars = {
+            "BTCUSDT": make_market_bar("BTCUSDT", 1_000_000_000_000),
+            "ETHUSDT": make_market_bar("ETHUSDT", 1_000_000_000_000),
+        }
+        prices = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+        # Multi-asset proposal: BTC 0.75 + ETH 0.75 = gross 1.5 == max_leverage
+        targets = [
+            CombinedTarget(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE",
+                symbol="BTCUSDT",
+                target_exposure=0.75,
+                contributing_engines=(EngineType.TREND,),
+                gross_exposure_contribution=0.75,
+                net_exposure_contribution=0.75,
+            ),
+            CombinedTarget(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE",
+                symbol="ETHUSDT",
+                target_exposure=0.75,
+                contributing_engines=(EngineType.TREND,),
+                gross_exposure_contribution=0.75,
+                net_exposure_contribution=0.75,
+            ),
+        ]
+        combo = make_combination_result(targets)
+        context = make_risk_context(state, prices, bars, combo)
+
+        result = engine.evaluate(context)
+        # Should be APPROVED at exact boundary
+        assert result.decision == RiskDecision.APPROVE
+        assert result.portfolio_leverage == pytest.approx(1.5)
+        assert result.approved_targets[0].target_exposure == 0.75
+        assert result.approved_targets[1].target_exposure == 0.75
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -251,3 +251,386 @@ def test_path_maximum_drawdown_survives_recovery() -> None:
     eng.mark_to_market(120.0)
     assert eng.state.current_drawdown_pct == 0.0
     assert eng.state.path_maximum_drawdown_pct == max_dd
+
+
+def test_multi_asset_funding_symbol_specific() -> None:
+    """Symbol-aware funding updates only the specified symbol's position."""
+    eng = make_engine()
+    # Set up BTC and ETH positions directly
+    btc_pos = eng.state.get_position("BTCUSDT")
+    btc_pos.qty = 50.0
+    btc_pos.avg_entry_price = 100.0
+    eth_pos = eng.state.get_position("ETHUSDT")
+    eth_pos.qty = 2.0
+    eth_pos.avg_entry_price = 2000.0
+
+    cash_before = eng.state.cash
+    btc_funding_before = btc_pos.funding_paid
+    eth_funding_before = eth_pos.funding_paid
+
+    # Apply funding to BTC only: 1% rate on 50 qty @ $100 = -$50 (long pays)
+    flow = eng.apply_funding(100.0, 0.01, symbol="BTCUSDT")
+
+    # Check cash delta
+    assert flow == pytest.approx(-50.0)
+    assert eng.state.cash == pytest.approx(cash_before - 50.0)
+
+    # BTC position funding updated
+    assert btc_pos.funding_paid == pytest.approx(btc_funding_before + 50.0)
+
+    # ETH position funding unchanged
+    assert eth_pos.funding_paid == pytest.approx(eth_funding_before)
+
+    # Aggregate funding equals cash charge
+    assert eng.state.funding_paid == pytest.approx(50.0)
+
+
+def test_multi_asset_funding_eth_after_btc() -> None:
+    """ETH funding after BTC updates independently."""
+    eng = make_engine()
+    btc_pos = eng.state.get_position("BTCUSDT")
+    btc_pos.qty = 50.0
+    btc_pos.avg_entry_price = 100.0
+    eth_pos = eng.state.get_position("ETHUSDT")
+    eth_pos.qty = 2.0
+    eth_pos.avg_entry_price = 2000.0
+
+    # BTC funding first
+    eng.apply_funding(100.0, 0.01, symbol="BTCUSDT")  # -50
+    btc_funding_after_btc = btc_pos.funding_paid
+    eth_funding_after_btc = eth_pos.funding_paid
+    cash_after_btc = eng.state.cash
+
+    # ETH funding: 0.5% rate on 2 qty @ $2000 = -$20 (long pays)
+    flow = eng.apply_funding(2000.0, 0.005, symbol="ETHUSDT")
+
+    assert flow == pytest.approx(-20.0)
+    assert eng.state.cash == pytest.approx(cash_after_btc - 20.0)
+
+    # ETH updated
+    assert eth_pos.funding_paid == pytest.approx(eth_funding_after_btc + 20.0)
+
+    # BTC unchanged
+    assert btc_pos.funding_paid == pytest.approx(btc_funding_after_btc)
+
+    # Aggregate reconciles
+    assert eng.state.funding_paid == pytest.approx(70.0)
+
+
+def test_multi_asset_funding_no_double_booking() -> None:
+    """Repeated funding events each accounted exactly once."""
+    eng = make_engine()
+    btc_pos = eng.state.get_position("BTCUSDT")
+    btc_pos.qty = 50.0
+    btc_pos.avg_entry_price = 100.0
+
+    # First funding event
+    eng.apply_funding(100.0, 0.01, symbol="BTCUSDT")
+    funding_after_first = btc_pos.funding_paid
+    cash_after_first = eng.state.cash
+
+    # Second funding event at same rate
+    eng.apply_funding(100.0, 0.01, symbol="BTCUSDT")
+    funding_after_second = btc_pos.funding_paid
+    cash_after_second = eng.state.cash
+
+    # Each event charges exactly the same amount
+    assert funding_after_second == pytest.approx(funding_after_first * 2)
+    assert cash_after_second == pytest.approx(cash_after_first - 50.0)
+
+
+def test_legacy_funding_compatibility() -> None:
+    """Legacy two-argument apply_funding behavior remains identical."""
+    eng = make_engine()
+    eng.rebalance(1.0, 100.0)  # qty 100 via legacy API
+
+    cash_before = eng.state.cash
+    flow = eng.apply_funding(100.0, 0.0001)  # long pays 100*100*1e-4 = 1.0
+
+    assert flow == pytest.approx(-1.0)
+    assert eng.state.funding_paid == pytest.approx(1.0)
+    assert eng.state.cash == pytest.approx(cash_before - 1.0)
+    # DEFAULT position updated
+    assert eng.state.positions["DEFAULT"].funding_paid == pytest.approx(1.0)
+
+
+def test_unknown_symbol_funding_fail_closed() -> None:
+    """Explicit unknown symbol cannot silently create/fund a position."""
+    eng = make_engine()
+    btc_pos = eng.state.get_position("BTCUSDT")
+    btc_pos.qty = 50.0
+    btc_pos.avg_entry_price = 100.0
+
+    # Unknown symbol must raise, not silently create
+    with pytest.raises(ValueError, match="funding symbol 'UNKNOWN' not in authoritative positions"):
+        eng.apply_funding(100.0, 0.01, symbol="UNKNOWN")
+
+    # State unchanged
+    assert eng.state.cash == pytest.approx(10_000.0)
+    assert eng.state.funding_paid == pytest.approx(0.0)
+    assert "UNKNOWN" not in eng.state.positions
+
+
+def test_funding_sign_long_short() -> None:
+    """Opposite long/short signs produce correct funding direction."""
+    eng = make_engine()
+
+    # Long position: positive rate => pays
+    btc_long = eng.state.get_position("BTCUSDT")
+    btc_long.qty = 50.0
+    flow_long = eng.apply_funding(100.0, 0.01, symbol="BTCUSDT")
+    assert flow_long < 0  # cash outflow (pays)
+
+    # Short position: positive rate => receives
+    eth_short = eng.state.get_position("ETHUSDT")
+    eth_short.qty = -2.0
+    flow_short = eng.apply_funding(2000.0, 0.01, symbol="ETHUSDT")
+    assert flow_short > 0  # cash inflow (receives)
+
+    # Negative rate reverses: long receives, short pays
+    btc_long2 = eng.state.get_position("BTCUSDT2")
+    btc_long2.qty = 50.0
+    flow_long_neg = eng.apply_funding(100.0, -0.01, symbol="BTCUSDT2")
+    assert flow_long_neg > 0  # receives
+
+
+def test_funding_snapshot_isolation() -> None:
+    """Snapshot returned after funding cannot mutate authoritative state."""
+    eng = make_engine()
+    btc_pos = eng.state.get_position("BTCUSDT")
+    btc_pos.qty = 50.0
+    btc_pos.avg_entry_price = 100.0
+
+    eng.apply_funding(100.0, 0.01, symbol="BTCUSDT")
+    # Verify state is correct after funding
+    assert btc_pos.funding_paid == pytest.approx(50.0)
+
+    # Now test mark_to_market snapshot isolation after funding
+    snapshot = eng.mark_to_market(100.0)
+    snapshot.positions["BTCUSDT"].funding_paid = 999999
+    assert eng.state.positions["BTCUSDT"].funding_paid == pytest.approx(50.0)
+
+
+def test_multi_asset_funding_no_corrupt_marking() -> None:
+    """Multi-asset funding must not corrupt peak equity/drawdown via single-price marking."""
+    eng = make_engine()
+    # Set up BTC and ETH positions
+    btc_pos = eng.state.get_position("BTCUSDT")
+    btc_pos.qty = 50.0
+    btc_pos.avg_entry_price = 100.0
+    eth_pos = eng.state.get_position("ETHUSDT")
+    eth_pos.qty = 2.0
+    eth_pos.avg_entry_price = 2000.0
+
+    # Initial multi-asset equity with both prices
+    prices = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    initial_equity = eng.state.multi_asset_equity(prices)
+    eng.state.update_peak_equity(prices)
+    initial_peak = eng.state.peak_equity
+
+    # Apply BTC funding using symbol-aware path (does NOT call mark_to_market)
+    eng.apply_funding(100.0, 0.01, symbol="BTCUSDT")
+
+    # Peak equity and drawdown must be unchanged (funding doesn't mark)
+    assert eng.state.peak_equity == pytest.approx(initial_peak)
+    # Cash changed but multi-asset equity uses live prices
+    post_funding_equity = eng.state.multi_asset_equity(prices)
+    # Equity dropped by funding paid (50)
+    assert post_funding_equity == pytest.approx(initial_equity - 50.0)
+
+    # Now properly mark with full price mapping
+    eng.state.update_peak_equity(prices)
+    # Peak unchanged (equity dropped, not rose)
+    assert eng.state.peak_equity == pytest.approx(initial_peak)
+    # Drawdown reflects the drop
+    dd = eng.state.multi_asset_drawdown(prices)
+    assert dd > 0.0
+
+
+def test_multi_asset_rebalance_btc_creates_position() -> None:
+    """Real engine API rebalance BTC creates BTC position."""
+    eng = make_engine()
+    # Multi-asset rebalance BTC with marks for all held (none initially)
+    marks = {"BTCUSDT": 100.0}
+    r = eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+
+    assert r.delta_qty == pytest.approx(50.0)  # 0.5 * 10000 / 100 = 50
+    assert r.traded_notional == pytest.approx(5000.0)
+    assert eng.state.positions["BTCUSDT"].qty == pytest.approx(50.0)
+    assert eng.state.positions["BTCUSDT"].avg_entry_price == pytest.approx(100.0)
+    # Legacy compatibility
+    assert eng.state.qty == pytest.approx(50.0)
+    assert "DEFAULT" in eng.state.positions
+
+
+def test_multi_asset_rebalance_eth_after_btc() -> None:
+    """ETH rebalance after BTC updates independently."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # First BTC
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    btc_qty_after = eng.state.positions["BTCUSDT"].qty
+
+    # Then ETH
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    # ETH updated - equity is 9990 (10000 - 10 fees), target = 0.5 * 9990 / 2000 = 2.4975
+    assert eng.state.positions["ETHUSDT"].qty == pytest.approx(2.4975)
+    assert eng.state.positions["ETHUSDT"].avg_entry_price == pytest.approx(2000.0)
+
+    # BTC unchanged (except portfolio-wide equity changes)
+    assert eng.state.positions["BTCUSDT"].qty == pytest.approx(btc_qty_after)
+    assert eng.state.positions["BTCUSDT"].avg_entry_price == pytest.approx(100.0)
+
+    # Both in positions
+    assert "BTCUSDT" in eng.state.positions
+    assert "ETHUSDT" in eng.state.positions
+
+
+def test_multi_asset_own_price_sizing() -> None:
+    """BTC and ETH materially different prices => sizing uses correct own marks + total equity."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Rebalance BTC at 50% exposure
+    r1 = eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    # Total equity = 10000 (cash only initially)
+    # BTC target = 0.5 * 10000 / 100 = 50 units
+    assert r1.delta_qty == pytest.approx(50.0)
+
+    # Now ETH at 50% exposure
+    # Total equity now includes BTC unrealized PnL (0 since entry=mark) minus fees
+    # Equity = 10000 - 10 = 9990
+    # ETH target = 0.5 * 9990 / 2000 = 2.4975
+    r2 = eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+    assert r2.delta_qty == pytest.approx(2.4975)
+
+
+def test_close_btc_preserves_eth() -> None:
+    """Close BTC via real engine API => BTC flat, ETH remains open."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Open both
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    eth_qty_before = eng.state.positions["ETHUSDT"].qty
+    eth_entry_before = eng.state.positions["ETHUSDT"].avg_entry_price
+
+    # Close BTC
+    marks2 = {"BTCUSDT": 110.0, "ETHUSDT": 2100.0}
+    r = eng.rebalance(0.0, 110.0, symbol="BTCUSDT", marks=marks2)
+
+    assert eng.state.positions["BTCUSDT"].qty == pytest.approx(0.0)
+    assert r.delta_qty < 0  # reduced
+
+    # ETH unchanged
+    assert eng.state.positions["ETHUSDT"].qty == pytest.approx(eth_qty_before)
+    assert eng.state.positions["ETHUSDT"].avg_entry_price == pytest.approx(eth_entry_before)
+
+
+def test_missing_held_mark_fail_closed() -> None:
+    """Missing ETH mark while ETH held and attempting BTC rebalance => fail closed."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0}
+
+    # Open ETH first
+    marks_with_eth = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    eng.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks_with_eth)
+
+    # Now try to rebalance BTC without ETH mark
+    cash_before = eng.state.cash
+    eth_qty_before = eng.state.positions["ETHUSDT"].qty
+
+    with pytest.raises(ValueError, match="missing mark for held symbol: ETHUSDT"):
+        eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+
+    # State unchanged
+    assert eng.state.cash == pytest.approx(cash_before)
+    assert eng.state.positions["ETHUSDT"].qty == pytest.approx(eth_qty_before)
+
+
+def test_price_order_invariant() -> None:
+    """Reverse price-map insertion order => identical result."""
+    eng1 = make_engine()
+    eng2 = make_engine()
+
+    # Same marks, different insertion order
+    marks1 = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    marks2 = {"ETHUSDT": 2000.0, "BTCUSDT": 100.0}
+
+    r1 = eng1.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks1)
+    r2 = eng2.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks2)
+
+    assert r1.delta_qty == pytest.approx(r2.delta_qty)
+    assert eng1.state.positions["BTCUSDT"].qty == pytest.approx(eng2.state.positions["BTCUSDT"].qty)
+
+    # Add ETH in same way
+    eng1.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks1)
+    eng2.rebalance(0.5, 2000.0, symbol="ETHUSDT", marks=marks2)
+
+    assert eng1.state.positions["ETHUSDT"].qty == pytest.approx(eng2.state.positions["ETHUSDT"].qty)
+    assert eng1.state.cash == pytest.approx(eng2.state.cash)
+
+
+def test_realized_pnl_cost_reconciliation() -> None:
+    """Partial reduction and direction flip reconcile."""
+    eng = make_engine()
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Go long BTC
+    eng.rebalance(1.0, 100.0, symbol="BTCUSDT", marks=marks)
+
+    # Price rises to 120
+    marks2 = {"BTCUSDT": 120.0, "ETHUSDT": 2000.0}
+    r2 = eng.rebalance(0.5, 120.0, symbol="BTCUSDT", marks=marks2)
+    # Should realize PnL on the closed portion
+    assert r2.realized_pnl_delta > 0
+
+    # Now reverse to short
+    marks3 = {"BTCUSDT": 110.0, "ETHUSDT": 2000.0}
+    r3 = eng.rebalance(-0.5, 110.0, symbol="BTCUSDT", marks=marks3)
+    # Should realize on full close + open short
+    assert r3.realized_pnl_delta != 0.0
+
+    # Cash and position should be consistent
+    final_qty = eng.state.positions["BTCUSDT"].qty
+    assert final_qty < 0  # short
+
+
+def test_legacy_rebalance_compat() -> None:
+    """Legacy rebalance(target, price) behavior unchanged."""
+    eng = make_engine()
+
+    # Legacy call (no symbol, no marks)
+    r = eng.rebalance(1.0, 100.0)
+
+    assert r.delta_qty == pytest.approx(100.0)
+    assert r.traded_notional == pytest.approx(10000.0)
+    assert eng.state.qty == pytest.approx(100.0)
+    assert eng.state.positions["DEFAULT"].qty == pytest.approx(100.0)
+
+
+def test_symbol_funding_still_passes() -> None:
+    """Existing symbol-aware funding tests still pass after execution changes."""
+    eng = make_engine()
+    btc_pos = eng.state.get_position("BTCUSDT")
+    btc_pos.qty = 50.0
+    btc_pos.avg_entry_price = 100.0
+    eth_pos = eng.state.get_position("ETHUSDT")
+    eth_pos.qty = 2.0
+    eth_pos.avg_entry_price = 2000.0
+
+    # BTC funding
+    flow = eng.apply_funding(100.0, 0.01, symbol="BTCUSDT")
+    assert flow == pytest.approx(-50.0)
+    assert btc_pos.funding_paid == pytest.approx(50.0)
+
+    # ETH funding after BTC
+    eng.apply_funding(2000.0, 0.005, symbol="ETHUSDT")
+    assert eth_pos.funding_paid == pytest.approx(20.0)
+
+    # Aggregate
+    assert eng.state.funding_paid == pytest.approx(70.0)

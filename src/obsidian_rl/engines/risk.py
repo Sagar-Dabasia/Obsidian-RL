@@ -281,13 +281,64 @@ class RiskEngine:
                     f"{age_ms}ms > limit {self.config.market_freshness_ms}ms",
                 )
 
-        # Compute current portfolio metrics using multi-asset methods
+        # Open-position market data fail-closed validation:
+        # Required symbols = union(proposed target symbols, all nonzero
+        # authoritative open-position symbols)
+        target_symbols = {
+            context.combination_result.targets[i].symbol
+            for i in range(len(context.combination_result.targets))
+        }
+        required_symbols = set(target_symbols)
+        # Add all symbols with nonzero positions
+        for symbol, pos in context.portfolio_state.positions.items():
+            if pos.qty != 0:
+                required_symbols.add(symbol)
+
+        # For EVERY required symbol require finite positive price,
+        # matching bar, fresh observed_at_utc
+        for symbol in required_symbols:
+            if symbol not in context.current_prices:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_PRICE,
+                    f"Missing current price for open position symbol: {symbol}",
+                )
+            if symbol not in context.market_bars:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_BAR,
+                    f"Missing market bar for open position symbol: {symbol}",
+                )
+            bar = context.market_bars[symbol]
+            # Validate market bar identity
+            if bar.symbol != symbol:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_BAR,
+                    f"Market bar symbol mismatch for open position: "
+                    f"bar={bar.symbol}, required={symbol}",
+                )
+            price = context.current_prices[symbol]
+            if not math.isfinite(price) or price <= 0:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_MISSING_TARGET_PRICE,
+                    f"Non-finite or non-positive price for open position {symbol}: {price!r}",
+                )
+            age_ms = context.current_time_ms - bar.observed_at_utc
+            if age_ms > self.config.market_freshness_ms:
+                return self._reject(
+                    context,
+                    RiskReasonCode.DEFAULT_DENY_STALE_TARGET_BAR,
+                    f"Stale market bar for open position {symbol}; age "
+                    f"{age_ms}ms > limit {self.config.market_freshness_ms}ms",
+                )
+
+        # Compute current portfolio metrics using multi-asset methods (read-only)
         prices = context.current_prices
         portfolio_state = context.portfolio_state
 
-        # Update peak equity with current prices
-        portfolio_state.update_peak_equity(prices)
-
+        # Use multi-asset equity without mutating portfolio state
         current_equity = portfolio_state.multi_asset_equity(prices)
 
         # If equity is non-positive, force flat (handled by PortfolioEngine)
