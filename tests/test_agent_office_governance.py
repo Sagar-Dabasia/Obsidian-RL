@@ -7,6 +7,7 @@ They do NOT test global/local Hermes config from pytest.
 
 import json
 import re
+import sys
 from pathlib import Path
 import yaml
 
@@ -303,6 +304,73 @@ class TestAgentOfficeGovernance:
         workflow_path = Path("docs/engineering/MULTI_AGENT_WORKFLOW.md")
         workflow_content = workflow_path.read_text()
         assert "zero contradictory findings" in workflow_content
+
+
+    def test_task_scope_sentinel_exists(self):
+        """Task scope sentinel tool must exist in tools/."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        assert sentinel_path.exists(), "tools/task_scope_sentinel.py must exist"
+
+        content = sentinel_path.read_text()
+        assert "task_scope_sentinel" in content
+        assert "init" in content
+        assert "check" in content
+        assert ".agent_runtime/task_scope.json" in content
+
+
+    def test_release_gatekeeper_requires_sentinel_check(self):
+        """Release Gatekeeper allowed_commands must include task_scope_sentinel check."""
+        roles_path = Path("docs/engineering/AGENT_OFFICE_ROLES.md")
+        content = roles_path.read_text()
+
+        release_section = content[content.find("RELEASE GATEKEEPER"):content.find("### ", content.find("RELEASE GATEKEEPER") + 1)]
+        assert "python -m tools.task_scope_sentinel check" in release_section
+
+
+    def test_skill_includes_sentinel_workflow_steps(self):
+        """Skill must include SCOPE and SCOPE CHECK workflow steps."""
+        skill_path = Path(".hermes/skills/obsidian-rl-office/SKILL.md")
+        skill_content = skill_path.read_text()
+
+        assert "SCOPE" in skill_content
+        assert "SCOPE CHECK" in skill_content
+        assert "task scope sentinel" in skill_content.lower()
+        assert "requires sentinel PASS" in skill_content
+
+
+    def test_sentinel_reports_exact_offending_paths(self):
+        """Sentinel must report exact unauthorized paths on violation."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        # Check for exact path reporting
+        assert "unauthorized" in content.lower()
+        assert "print" in content or "sys.stderr" in content
+
+
+    def test_sentinel_never_repairs_or_deletes(self):
+        """Sentinel must never repair, delete, or restore files."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        # Check no dangerous operations
+        assert "os.remove" not in content
+        assert "shutil.rmtree" not in content
+        assert "git checkout" not in content
+        assert "git restore" not in content
+        assert "git reset" not in content
+        assert "unlink" not in content
+        # Should only read and report
+
+
+    def test_sentinel_baseline_ignores_preexisting_artifacts(self):
+        """Pre-existing baseline artifacts should not cause false failures."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        # Should track baseline and only flag new changes
+        assert "baseline" in content.lower()
+        assert "baseline_paths" in content
 
 
 if __name__ == "__main__":

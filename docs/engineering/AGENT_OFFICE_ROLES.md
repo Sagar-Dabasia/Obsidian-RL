@@ -343,6 +343,7 @@ allowed_commands:
   - ruff format --check src tests
   - mypy src
   - python -m build --dry-run
+  - python -m tools.task_scope_sentinel check
 forbidden_commands:
   - git add
   - git commit
@@ -411,7 +412,7 @@ May ONLY be used for unique investigation if:
 
 ## Verification
 
-Role contracts are validated by governance tests in `.agent_runtime/tests/test_governance.py` (repository-owned, not Hermes internals).
+Role contracts are validated by governance tests in `tests/test_agent_office_governance.py` (repository-owned, not Hermes internals).
 
 ### Test Requirements
 1. Only Lead has write permission in role contract

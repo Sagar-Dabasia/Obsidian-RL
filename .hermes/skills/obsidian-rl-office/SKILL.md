@@ -82,17 +82,19 @@ These enforce:
 
 1. **PREFLIGHT** — git branch/HEAD/worktree/invariants check
 2. **PLAN** — Delegate Planning/Workflow Manager first
-3. **IMPLEMENT** — Delegate ONE Lead/Writer when implementation required
-4. **REVIEW WAVES** — Delegate relevant read-only reviewers in batches ≤3
-5. **SEQUENTIAL** — Never run Lead concurrently with reviewers
-6. **FINDINGS ONLY** — Reviewers return findings only; they never repair
-7. **REPAIR** — Confirmed findings return to Lead for bounded repair
-8. **LEDGER** — Consult `.agent_runtime/ledger.jsonl` before rerunning checks
-9. **INVALIDATION** — Invalidate only evidence affected by later edits
-10. **FULL CI** — Run only after focused review is clean
-11. **RELEASE GATE** — Delegate Release Gatekeeper last
-12. **VERDICT** — Chief returns `READY_FOR_USER_REVIEW` or `BLOCKED: <exact reason>`
-13. **COMMIT** — Never commit/push without explicit user authorization
+3. **SCOPE** — Lead initializes task scope sentinel with authorized paths
+4. **IMPLEMENT** — Delegate ONE Lead/Writer when implementation required
+5. **SCOPE CHECK** — Run sentinel after every implementation/repair batch
+6. **REVIEW WAVES** — Delegate relevant read-only reviewers in batches ≤3
+7. **SEQUENTIAL** — Never run Lead concurrently with reviewers
+8. **FINDINGS ONLY** — Reviewers return findings only; they never repair
+9. **REPAIR** — Confirmed findings return to Lead for bounded repair
+10. **LEDGER** — Consult `.agent_runtime/ledger.jsonl` before rerunning checks
+11. **INVALIDATION** — Invalidate only evidence affected by later edits
+12. **FULL CI** — Run only after focused review is clean
+13. **RELEASE GATE** — Delegate Release Gatekeeper last (requires sentinel PASS)
+14. **VERDICT** — Chief returns `READY_FOR_USER_REVIEW` or `BLOCKED: <exact reason>`
+15. **COMMIT** — Never commit/push without explicit user authorization
 
 ## Verdict Integrity Rules (Mandatory)
 
