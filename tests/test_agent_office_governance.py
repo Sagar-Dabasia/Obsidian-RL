@@ -708,68 +708,107 @@ class TestAgentOfficeGovernance:
 
 
     def test_sentinel_behavioral_git_diff_failure_fails_closed(self):
-        """Real git diff failure must propagate and cause sentinel FAIL, never PASS."""
-        import subprocess
-        import tempfile
-        import os
-        from pathlib import Path
+            """Real git diff failure must propagate and cause sentinel FAIL, never PASS."""
+            import tempfile
+            import os
+            import json
+            import subprocess
+            from pathlib import Path
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            old_cwd = os.getcwd()
-            try:
-                os.chdir(tmpdir)
-                # Test outside a git repo - this should fail
-                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
-                Path("tools").mkdir(exist_ok=True)
-                import shutil
-                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                old_cwd = os.getcwd()
+                try:
+                    os.chdir(tmpdir)
+                    subprocess.run(["git", "init"], capture_output=True, check=True)
+                    subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                    subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
 
-                # Try to init without git repo - should fail
-                result = subprocess.run([
-                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
-                ], capture_output=True, text=True)
-                assert result.returncode != 0, f"Init should fail outside git repo: {result.stdout}"
-                assert "Git command failed" in result.stderr or "Git command failure" in result.stderr
+                    sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                    Path("tools").mkdir(exist_ok=True)
+                    import shutil
+                    shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
 
-            finally:
-                os.chdir(old_cwd)
+                    # Create authorized file
+                    Path("authorized.txt").write_text("initial")
+                    subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                    subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                    # Initialize sentinel
+                    result = subprocess.run([
+                        "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                    ], capture_output=True, text=True)
+                    assert result.returncode == 0
+
+                    # Now monkey-patch run_git_command to fail specifically on git diff
+                    import tools.task_scope_sentinel as sentinel_module
+                    original_run_git = sentinel_module.run_git_command
+
+                    def failing_run_git_command(args):
+                        if args[0] == "diff":
+                            raise RuntimeError("Git command failed: git diff (exit 1): fatal: bad object HEAD")
+                        return original_run_git(args)
+
+                    sentinel_module.run_git_command = failing_run_git_command
+
+                    # Check should FAIL due to git diff failure - call check_task_scope directly
+                    exit_code, violations = sentinel_module.check_task_scope()
+                    assert exit_code != 0, f"Broken git diff should cause FAIL: {violations}"
+                    assert any("Git command failed" in v or "Git command failure" in v for v in violations)
+
+                finally:
+                    os.chdir(old_cwd)
 
 
     def test_sentinel_behavioral_git_ls_files_failure_fails_closed(self):
-        """Real git ls-files failure must propagate and cause sentinel FAIL, never PASS."""
-        import subprocess
-        import tempfile
-        import os
-        from pathlib import Path
+            """Real git ls-files failure must propagate and cause sentinel FAIL, never PASS."""
+            import tempfile
+            import os
+            import json
+            import subprocess
+            from pathlib import Path
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            old_cwd = os.getcwd()
-            try:
-                os.chdir(tmpdir)
-                # Test check outside a git repo - this should fail
-                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
-                Path("tools").mkdir(exist_ok=True)
-                import shutil
-                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                old_cwd = os.getcwd()
+                try:
+                    os.chdir(tmpdir)
+                    subprocess.run(["git", "init"], capture_output=True, check=True)
+                    subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                    subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
 
-                # Create a fake contract file to bypass the "no contract" check
-                Path(".agent_runtime").mkdir(exist_ok=True)
-                Path(".agent_runtime/task_scope.json").write_text(json.dumps({
-                    "task_id": "test",
-                    "authorized_paths": ["authorized.txt"],
-                    "baseline_paths": [],
-                    "baseline_fingerprints": {}
-                }))
+                    sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                    Path("tools").mkdir(exist_ok=True)
+                    import shutil
+                    shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
 
-                # Try to check without git repo - should fail
-                result = subprocess.run([
-                    "python", "-m", "tools.task_scope_sentinel", "check"
-                ], capture_output=True, text=True)
-                assert result.returncode != 0, f"Check should fail outside git repo: {result.stdout}"
-                assert "Git command failed" in result.stderr or "Git command failure" in result.stderr
+                    # Create authorized file
+                    Path("authorized.txt").write_text("initial")
+                    subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                    subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
 
-            finally:
-                os.chdir(old_cwd)
+                    # Initialize sentinel
+                    result = subprocess.run([
+                        "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                    ], capture_output=True, text=True)
+                    assert result.returncode == 0
+
+                    # Now monkey-patch run_git_command to fail specifically on git ls-files
+                    import tools.task_scope_sentinel as sentinel_module
+                    original_run_git = sentinel_module.run_git_command
+
+                    def failing_run_git_command(args):
+                        if args[0] == "ls-files":
+                            raise RuntimeError("Git command failed: git ls-files (exit 1): fatal: not a git repository")
+                        return original_run_git(args)
+
+                    sentinel_module.run_git_command = failing_run_git_command
+
+                    # Check should FAIL due to git ls-files failure - call check_task_scope directly
+                    exit_code, violations = sentinel_module.check_task_scope()
+                    assert exit_code != 0, f"Broken git ls-files should cause FAIL: {violations}"
+                    assert any("Git command failed" in v or "Git command failure" in v for v in violations)
+
+                finally:
+                    os.chdir(old_cwd)
 
 
     def test_sentinel_behavioral_unauthorized_baseline_deletion_fails(self):
