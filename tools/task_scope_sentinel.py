@@ -42,36 +42,26 @@ def get_git_status():
     - '??' = untracked
     """
     # First verify we're in a git repo
-    try:
-        run_git_command(["rev-parse", "--git-dir"])
-    except RuntimeError:
-        raise RuntimeError("Not a git repository (or git not available)")
+    run_git_command(["rev-parse", "--git-dir"])
 
     changes = []
 
     # Get both staged and unstaged tracked changes from HEAD
     # --no-renames treats renames as delete + add for path-based detection
-    try:
-        stdout, _, _ = run_git_command(["diff", "--name-only", "--no-renames", "HEAD"])
-        if stdout:
-            for line in stdout.splitlines():
-                path = line.strip()
-                if path:
-                    changes.append(("M", path))
-    except RuntimeError:
-        # If git diff fails, we fail closed - but we'll raise from run_git_command
-        pass
+    stdout, _, _ = run_git_command(["diff", "--name-only", "--no-renames", "HEAD"])
+    if stdout:
+        for line in stdout.splitlines():
+            path = line.strip()
+            if path:
+                changes.append(("M", path))
 
     # Get untracked files (excluding .gitignored)
-    try:
-        stdout, _, _ = run_git_command(["ls-files", "--others", "--exclude-standard"])
-        if stdout:
-            for line in stdout.splitlines():
-                path = line.strip()
-                if path:
-                    changes.append(("??", path))
-    except RuntimeError:
-        pass
+    stdout, _, _ = run_git_command(["ls-files", "--others", "--exclude-standard"])
+    if stdout:
+        for line in stdout.splitlines():
+            path = line.strip()
+            if path:
+                changes.append(("??", path))
 
     return changes
 
@@ -162,20 +152,31 @@ def check_task_scope():
             unauthorized.append(path)
 
     # Also check for mutations in baseline files (files that existed at baseline but now changed)
-    # This catches modifications to baseline files that don't add new paths
-    for baseline_path, baseline_fp in baseline_fingerprints.items():
-        if baseline_path in current_paths and not baseline_path.startswith(".agent_runtime/"):
-            # File still exists in current - check if fingerprint changed
-            current_fp = compute_file_hash(Path(baseline_path))
-            if current_fp and current_fp != baseline_fp:
-                # File mutated - check if authorized
+        # This catches modifications to baseline files that don't add new paths
+        for baseline_path, baseline_fp in baseline_fingerprints.items():
+            if baseline_path.startswith(".agent_runtime/"):
+                continue
+            if baseline_path in current_paths:
+                # File still exists in current - check if fingerprint changed
+                current_fp = compute_file_hash(Path(baseline_path))
+                if current_fp and current_fp != baseline_fp:
+                    # File mutated - check if authorized
+                    is_authorized = False
+                    for auth in authorized:
+                        if baseline_path == auth or baseline_path.startswith(auth.rstrip("/") + "/"):
+                            is_authorized = True
+                            break
+                    if not is_authorized:
+                        unauthorized.append(f"{baseline_path} (mutated)")
+            else:
+                # File existed at baseline but is now missing (deleted) - check if authorized
                 is_authorized = False
                 for auth in authorized:
                     if baseline_path == auth or baseline_path.startswith(auth.rstrip("/") + "/"):
                         is_authorized = True
                         break
                 if not is_authorized:
-                    unauthorized.append(f"{baseline_path} (mutated)")
+                    unauthorized.append(f"{baseline_path} (deleted)")
 
     if unauthorized:
         print("TASK SCOPE VIOLATION: Unauthorized paths detected:", file=sys.stderr)
