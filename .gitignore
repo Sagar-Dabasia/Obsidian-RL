@@ -1,51 +1,95 @@
-# Secrets - never commit
-.env
-.env.*
-!.env.example
+# Obsidian-RL .gitignore
 
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
-.eggs/
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
-.venv/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
 venv/
+ENV/
+env/
+.venv/
 
-# Tooling caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Data, models, runtime artifacts - local only
-/data/
-/artifacts/
-/models/
-/checkpoints/
-/runs/
-/tb_logs/
-*.pkl
-*.joblib
-*.zip
-*.pt
-*.pth
-*.parquet
-*.db
-*.sqlite
-*.sqlite3
-*.log
-*.png
-!docs/**/*.png
-
-# OS / editor
-.DS_Store
-Thumbs.db
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# Graphify, context exports and diagnostic tools
-graphify-out/
-_context_export/
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Agent runtime (temporary evidence ledger, session recovery)
+.agent_runtime/
+
+# Logs
+*.log
+logs/
+
+# Local config
+local_config.yaml
+*.local.yaml
+
+# Build artifacts
+dist/
+build/
+*.whl
+*.tar.gz
+
+# Data files (large, not for version control)
+data/
+/data/
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+*.pt
+
+# Model artifacts
+/models/
+/models/
+/artifacts/
+
+# Databases
+*.db
+*.sqlite
+
+# Secrets (never commit)
+.env
+*.env
+*.pem
+*.key
+*.crt
