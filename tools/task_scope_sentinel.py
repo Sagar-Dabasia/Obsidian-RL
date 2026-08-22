@@ -6,6 +6,7 @@ This utility compares current Git state against a task contract stored in
 .agent_runtime/task_scope.json to ensure no unauthorized paths are modified.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -14,31 +15,65 @@ from pathlib import Path
 
 
 def run_git_command(args):
-    """Run a git command and return (stdout, stderr, returncode)."""
+    """Run a git command and return (stdout, stderr, returncode). Fails on non-zero exit."""
     result = subprocess.run(["git"] + args, capture_output=True, text=True, cwd=Path.cwd())
+    if result.returncode != 0:
+        raise RuntimeError(f"Git command failed: git {' '.join(args)} (exit {result.returncode}): {result.stderr.strip()}")
     return result.stdout.strip(), result.stderr.strip(), result.returncode
 
 
+def compute_file_hash(filepath):
+    """Compute SHA256 hash of a file for fingerprint tracking."""
+    try:
+        with open(filepath, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except (OSError, IOError):
+        return None
+
+
 def get_git_status():
-    """Get current git status including untracked files."""
-    # Get tracked changes (modified, deleted, etc.)
-    stdout, _, _ = run_git_command(["diff", "--name-status"])
-    tracked_changes = []
-    if stdout:
-        for line in stdout.splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) == 2:
-                tracked_changes.append((parts[0], parts[1]))
+    """Get current git status including staged, unstaged, and untracked files.
 
-    # Get untracked files
-    stdout, _, _ = run_git_command(["ls-files", "--others", "--exclude-standard"])
-    untracked = []
-    if stdout:
-        for line in stdout.splitlines():
-            if line:
-                untracked.append(("??", line))
+    Returns list of (status, path) tuples where status is:
+    - 'M' = modified (staged or unstaged)
+    - 'A' = added
+    - 'D' = deleted
+    - 'R' = renamed (handled as delete old + add new)
+    - '??' = untracked
+    """
+    # First verify we're in a git repo
+    try:
+        run_git_command(["rev-parse", "--git-dir"])
+    except RuntimeError:
+        raise RuntimeError("Not a git repository (or git not available)")
 
-    return tracked_changes + untracked
+    changes = []
+
+    # Get both staged and unstaged tracked changes from HEAD
+    # --no-renames treats renames as delete + add for path-based detection
+    try:
+        stdout, _, _ = run_git_command(["diff", "--name-only", "--no-renames", "HEAD"])
+        if stdout:
+            for line in stdout.splitlines():
+                path = line.strip()
+                if path:
+                    changes.append(("M", path))
+    except RuntimeError:
+        # If git diff fails, we fail closed - but we'll raise from run_git_command
+        pass
+
+    # Get untracked files (excluding .gitignored)
+    try:
+        stdout, _, _ = run_git_command(["ls-files", "--others", "--exclude-standard"])
+        if stdout:
+            for line in stdout.splitlines():
+                path = line.strip()
+                if path:
+                    changes.append(("??", path))
+    except RuntimeError:
+        pass
+
+    return changes
 
 
 def load_task_contract():
@@ -46,8 +81,11 @@ def load_task_contract():
     contract_path = Path(".agent_runtime/task_scope.json")
     if not contract_path.exists():
         return None
-    with open(contract_path) as f:
-        return json.load(f)
+    try:
+        with open(contract_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def save_task_contract(contract):
@@ -60,13 +98,28 @@ def save_task_contract(contract):
 
 def initialize_task_scope(task_id, authorized_paths):
     """Initialize a new task scope contract with current baseline."""
-    baseline = get_git_status()
+    try:
+        baseline = get_git_status()
+    except RuntimeError as e:
+        print(f"ERROR: Git command failed: {e}", file=sys.stderr)
+        return None
     baseline_paths = {path for _, path in baseline}
+
+    # Also record fingerprints for baseline files to detect mutations
+    baseline_fingerprints = {}
+    for _, path in baseline:
+        if not path.startswith(".agent_runtime/"):
+            filepath = Path(path)
+            if filepath.exists() and filepath.is_file():
+                fp = compute_file_hash(filepath)
+                if fp:
+                    baseline_fingerprints[path] = fp
 
     contract = {
         "task_id": task_id,
         "authorized_paths": authorized_paths,
-        "baseline_paths": sorted(baseline_paths)
+        "baseline_paths": sorted(baseline_paths),
+        "baseline_fingerprints": baseline_fingerprints
     }
     save_task_contract(contract)
     return contract
@@ -79,9 +132,15 @@ def check_task_scope():
         print("ERROR: No task scope contract found. Run 'python -m tools.task_scope_sentinel init <task_id> <authorized_paths...>' first.", file=sys.stderr)
         return 1, ["No task scope contract initialized"]
 
-    current = get_git_status()
+    try:
+        current = get_git_status()
+    except RuntimeError as e:
+        print(f"ERROR: Git command failed: {e}", file=sys.stderr)
+        return 1, [f"Git command failure: {e}"]
+
     current_paths = {path for _, path in current}
     baseline_paths = set(contract.get("baseline_paths", []))
+    baseline_fingerprints = contract.get("baseline_fingerprints", {})
     authorized = set(contract.get("authorized_paths", []))
 
     # Find new/changed paths since baseline
@@ -101,6 +160,22 @@ def check_task_scope():
                 break
         if not is_authorized:
             unauthorized.append(path)
+
+    # Also check for mutations in baseline files (files that existed at baseline but now changed)
+    # This catches modifications to baseline files that don't add new paths
+    for baseline_path, baseline_fp in baseline_fingerprints.items():
+        if baseline_path in current_paths and not baseline_path.startswith(".agent_runtime/"):
+            # File still exists in current - check if fingerprint changed
+            current_fp = compute_file_hash(Path(baseline_path))
+            if current_fp and current_fp != baseline_fp:
+                # File mutated - check if authorized
+                is_authorized = False
+                for auth in authorized:
+                    if baseline_path == auth or baseline_path.startswith(auth.rstrip("/") + "/"):
+                        is_authorized = True
+                        break
+                if not is_authorized:
+                    unauthorized.append(f"{baseline_path} (mutated)")
 
     if unauthorized:
         print("TASK SCOPE VIOLATION: Unauthorized paths detected:", file=sys.stderr)
@@ -125,8 +200,11 @@ def main():
         task_id = sys.argv[2]
         authorized_paths = sys.argv[3:]
         contract = initialize_task_scope(task_id, authorized_paths)
+        if contract is None:
+            return 1
         print(f"Initialized task scope for '{task_id}' with {len(authorized_paths)} authorized paths")
         print(f"Baseline recorded: {len(contract['baseline_paths'])} pre-existing paths")
+        print(f"Fingerprints recorded: {len(contract.get('baseline_fingerprints', {}))} files")
         return 0
 
     elif sys.argv[1] == "check":

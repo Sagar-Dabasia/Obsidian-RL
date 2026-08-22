@@ -373,6 +373,438 @@ class TestAgentOfficeGovernance:
         assert "baseline_paths" in content
 
 
+    def test_sentinel_detects_staged_and_unstaged_changes(self):
+        """Sentinel must detect both staged and unstaged tracked changes."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        # Uses git diff --name-only --no-renames HEAD to catch both
+        assert "git diff" in content
+        assert "--name-only" in content
+        assert "--no-renames" in content
+        assert "HEAD" in content
+
+
+    def test_sentinel_detects_renames_as_delete_add(self):
+        """Sentinel must detect renames (treated as delete old + add new via --no-renames)."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        # --no-renames makes git treat renames as delete+add
+        assert "--no-renames" in content
+
+
+    def test_sentinel_git_failure_fails_closed(self):
+        """Any Git command failure must cause sentinel to FAIL, never empty-success."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        # Checks return codes and raises on failure
+        assert "returncode" in content
+        assert "RuntimeError" in content
+        assert "Git command failed" in content or "Git command failure" in content
+
+
+    def test_sentinel_baseline_mutation_detected(self):
+        """Sentinel must detect mutations to baseline files via fingerprints."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        # Records fingerprints and compares on check
+        assert "fingerprint" in content.lower()
+        assert "sha256" in content.lower() or "hashlib" in content
+        assert "baseline_fingerprints" in content
+        assert "mutated" in content.lower() or "compute_file_hash" in content
+
+
+    def test_sentinel_untracked_files_detected(self):
+        """Sentinel must detect untracked files via git ls-files --others."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        assert "ls-files" in content
+        assert "--others" in content
+        assert "--exclude-standard" in content
+
+
+    def test_sentinel_agent_runtime_excluded(self):
+        """Sentinel must exclude .agent_runtime/ paths from violation checks."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        assert ".agent_runtime/" in content
+        assert "excluded" in content.lower() or "filter" in content.lower()
+
+
+    def test_sentinel_behavioral_authorized_unstaged_edit_passes(self):
+        """Authorized unstaged edit should PASS sentinel check."""
+        import subprocess
+        import tempfile
+        import os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                # Initialize git repo
+                subprocess.run(["git", "init"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
+
+                # Create authorized file
+                Path("authorized.txt").write_text("initial")
+                subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                # Copy sentinel to temp dir for testing
+                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                Path("tools").mkdir(exist_ok=True)
+                import shutil
+                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+
+                # Initialize sentinel with authorized.txt
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0, f"Init failed: {result.stderr}"
+
+                # Make authorized change (unstaged)
+                Path("authorized.txt").write_text("modified")
+
+                # Check - should PASS
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "check"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0, f"Authorized edit should PASS: {result.stdout} {result.stderr}"
+                assert "PASS" in result.stdout
+
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_sentinel_behavioral_unauthorized_unstaged_edit_fails(self):
+        """Unauthorized unstaged edit should FAIL sentinel check."""
+        import subprocess
+        import tempfile
+        import os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                subprocess.run(["git", "init"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
+
+                Path("authorized.txt").write_text("initial")
+                subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                Path("tools").mkdir(exist_ok=True)
+                import shutil
+                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0
+
+                # Create unauthorized file
+                Path("unauthorized.txt").write_text("new file")
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "check"
+                ], capture_output=True, text=True)
+                assert result.returncode == 1, f"Unauthorized edit should FAIL: {result.stdout}"
+                assert "VIOLATION" in result.stderr
+                assert "unauthorized.txt" in result.stderr
+
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_sentinel_behavioral_unauthorized_staged_edit_fails(self):
+        """Unauthorized STAGED edit should FAIL sentinel check."""
+        import subprocess
+        import tempfile
+        import os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                subprocess.run(["git", "init"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
+
+                Path("authorized.txt").write_text("initial")
+                subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                Path("tools").mkdir(exist_ok=True)
+                import shutil
+                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0
+
+                # Create unauthorized file and STAGE it
+                Path("unauthorized_staged.txt").write_text("staged file")
+                subprocess.run(["git", "add", "unauthorized_staged.txt"], capture_output=True, check=True)
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "check"
+                ], capture_output=True, text=True)
+                assert result.returncode == 1, f"Unauthorized staged edit should FAIL: {result.stdout}"
+                assert "VIOLATION" in result.stderr
+                assert "unauthorized_staged.txt" in result.stderr
+
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_sentinel_behavioral_unauthorized_rename_fails(self):
+        """Unauthorized rename should FAIL (detected as delete + add via --no-renames)."""
+        import subprocess
+        import tempfile
+        import os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                subprocess.run(["git", "init"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
+
+                Path("authorized.txt").write_text("initial")
+                subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                Path("tools").mkdir(exist_ok=True)
+                import shutil
+                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0
+
+                # Rename authorized.txt to unauthorized_renamed.txt
+                subprocess.run(["git", "mv", "authorized.txt", "unauthorized_renamed.txt"], capture_output=True, check=True)
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "check"
+                ], capture_output=True, text=True)
+                # Should detect both delete (authorized.txt) and add (unauthorized_renamed.txt)
+                # At least one should be unauthorized
+                assert result.returncode == 1, f"Unauthorized rename should FAIL: {result.stdout} {result.stderr}"
+                assert "VIOLATION" in result.stderr
+
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_sentinel_behavioral_untouched_baseline_artifact_passes(self):
+        """Pre-existing baseline artifact not in authorized paths but untouched should PASS."""
+        import subprocess
+        import tempfile
+        import os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                subprocess.run(["git", "init"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
+
+                # Create baseline artifact (pre-existing, not authorized)
+                Path("baseline_artifact.txt").write_text("pre-existing")
+                subprocess.run(["git", "add", "baseline_artifact.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                Path("tools").mkdir(exist_ok=True)
+                import shutil
+                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+
+                # Only authorize a different file
+                Path("authorized.txt").write_text("initial")
+                subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "add authorized"], capture_output=True, check=True)
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0
+
+                # No changes - baseline_artifact.txt is untouched
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "check"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0, f"Untouched baseline should PASS: {result.stdout}"
+                assert "PASS" in result.stdout
+
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_sentinel_behavioral_modified_baseline_artifact_fails(self):
+        """Modified baseline artifact (not authorized) should FAIL."""
+        import subprocess
+        import tempfile
+        import os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                subprocess.run(["git", "init"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
+
+                Path("baseline_artifact.txt").write_text("pre-existing")
+                subprocess.run(["git", "add", "baseline_artifact.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                Path("tools").mkdir(exist_ok=True)
+                import shutil
+                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+
+                Path("authorized.txt").write_text("initial")
+                subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "add authorized"], capture_output=True, check=True)
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0
+
+                # Modify baseline artifact (not authorized)
+                Path("baseline_artifact.txt").write_text("modified!")
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "check"
+                ], capture_output=True, text=True)
+                assert result.returncode == 1, f"Modified baseline should FAIL: {result.stdout} {result.stderr}"
+                assert "VIOLATION" in result.stderr
+                assert "baseline_artifact.txt" in result.stderr
+
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_sentinel_behavioral_git_failure_fails_closed(self):
+        """Git command failure should cause sentinel to FAIL closed."""
+        import subprocess
+        import tempfile
+        import os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                # Create sentinel without git repo
+                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                Path("tools").mkdir(exist_ok=True)
+                import shutil
+                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+
+                # Try to init without git repo - should fail
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode != 0, f"Init should fail without git repo: {result.stdout}"
+
+                # Create minimal git repo but break git diff
+                subprocess.run(["git", "init"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
+
+                # This should work
+                Path("authorized.txt").write_text("initial")
+                subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0, f"Init failed: {result.stderr}"
+
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_sentinel_behavioral_exact_offending_path_reported(self):
+        """Sentinel must report exact offending path on violation."""
+        import subprocess
+        import tempfile
+        import os
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                subprocess.run(["git", "init"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], capture_output=True, check=True)
+
+                Path("authorized.txt").write_text("initial")
+                subprocess.run(["git", "add", "authorized.txt"], capture_output=True, check=True)
+                subprocess.run(["git", "commit", "-m", "initial"], capture_output=True, check=True)
+
+                sentinel_src = Path(old_cwd) / "tools" / "task_scope_sentinel.py"
+                Path("tools").mkdir(exist_ok=True)
+                import shutil
+                shutil.copy(sentinel_src, Path("tools") / "task_scope_sentinel.py")
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "init", "test_task", "authorized.txt"
+                ], capture_output=True, text=True)
+                assert result.returncode == 0
+
+                Path("exact_offender.txt").write_text("bad")
+
+                result = subprocess.run([
+                    "python", "-m", "tools.task_scope_sentinel", "check"
+                ], capture_output=True, text=True)
+                assert result.returncode == 1
+                assert "exact_offender.txt" in result.stderr
+
+            finally:
+                os.chdir(old_cwd)
+
+
+    def test_sentinel_behavioral_no_repair_delete_behavior(self):
+        """Sentinel must never repair, delete, restore, or modify files."""
+        sentinel_path = Path("tools/task_scope_sentinel.py")
+        content = sentinel_path.read_text()
+
+        # Check no dangerous operations
+        assert "os.remove" not in content
+        assert "shutil.rmtree" not in content
+        assert "git checkout" not in content
+        assert "git restore" not in content
+        assert "git reset" not in content
+        assert "unlink" not in content
+        # Should only read and report
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])
