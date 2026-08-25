@@ -169,6 +169,11 @@ class Ledger:
                 "ALTER TABLE run_closures ADD COLUMN "
                 "path_maximum_drawdown_pct REAL NOT NULL DEFAULT 0.0"
             )
+        # RT004: add positions_json columns for multi-asset persistence
+        with contextlib.suppress(sqlite3.OperationalError):
+            self._conn.execute("ALTER TABLE decisions ADD COLUMN positions_json TEXT")
+        with contextlib.suppress(sqlite3.OperationalError):
+            self._conn.execute("ALTER TABLE run_closures ADD COLUMN positions_json TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -280,6 +285,29 @@ class Ledger:
         funding: float = 0.0,
     ) -> None:
         key = self.idempotency_key(run_id, candle_open_ms)
+
+        # RT004: serialize multi-asset positions for persistence
+        positions_json = json.dumps(
+            {
+                sym: {
+                    "qty": pos.qty,
+                    "avg_entry_price": pos.avg_entry_price,
+                    "realized_pnl": pos.realized_pnl,
+                    "fees_paid": pos.fees_paid,
+                    "spread_paid": pos.spread_paid,
+                    "slippage_paid": pos.slippage_paid,
+                    "funding_paid": pos.funding_paid,
+                    "turnover": pos.turnover,
+                    "trade_count": pos.trade_count,
+                }
+                for sym, pos in state.positions.items()
+                if sym != "DEFAULT"  # exclude legacy DEFAULT ghost position
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
         try:
             self._conn.execute(
                 "INSERT INTO decisions (run_id, idempotency_key, candle_open_ms,"
@@ -289,9 +317,9 @@ class Ledger:
                 " rejection_reason, position_qty, avg_entry_price, cash, unrealized_pnl,"
                 " net_equity, gross_equity, realized_pnl_total, fees_total, spread_total,"
                 " slippage_total, funding_total, turnover_total, trade_count, peak_equity,"
-                " path_maximum_drawdown_pct,"
+                " path_maximum_drawdown_pct, positions_json,"
                 " created_at_ms)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id,
                     key,
@@ -326,6 +354,7 @@ class Ledger:
                     state.trade_count,
                     state.peak_equity,
                     state.path_maximum_drawdown_pct,
+                    positions_json,
                     int(time.time() * 1000),
                 ),
             )
@@ -383,7 +412,7 @@ class Ledger:
             )
             raise RuntimeError(msg)
         if closure_row is not None and ended_at is not None:
-            return PortfolioState(
+            state = PortfolioState(
                 cash=closure_row["cash"],
                 qty=closure_row["position_qty"],
                 avg_entry_price=closure_row["avg_entry_price"],
@@ -397,6 +426,58 @@ class Ledger:
                 peak_equity=closure_row["peak_equity"],
                 path_maximum_drawdown_pct=closure_row["path_maximum_drawdown_pct"],
             )
+            # RT004: restore multi-asset positions from closure
+            positions_json = closure_row["positions_json"]
+            if positions_json:
+                try:
+                    positions_data = json.loads(positions_json)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(f"malformed positions_json in closure: {exc}") from exc
+                for sym, pos_data in positions_data.items():
+                    if sym == "DEFAULT":
+                        continue
+                    # Validate non-finite values - fail closed
+                    for field in (
+                        "qty",
+                        "avg_entry_price",
+                        "realized_pnl",
+                        "fees_paid",
+                        "spread_paid",
+                        "slippage_paid",
+                        "funding_paid",
+                        "turnover",
+                    ):
+                        val = pos_data.get(field, 0.0)
+                        if (
+                            isinstance(val, bool)
+                            or not isinstance(val, (int, float))
+                            or not math.isfinite(val)
+                        ):
+                            raise ValueError(
+                                f"non-finite {field} in positions_json for {sym}: {val!r}"
+                            )
+                    # Validate trade_count
+                    trade_count = pos_data.get("trade_count", 0)
+                    if (
+                        isinstance(trade_count, bool)
+                        or not isinstance(trade_count, int)
+                        or trade_count < 0
+                    ):
+                        raise ValueError(
+                            f"invalid trade_count in positions_json for {sym}: {trade_count!r}"
+                        )
+
+                    pos = state.get_position(sym)
+                    pos.qty = pos_data.get("qty", 0.0)
+                    pos.avg_entry_price = pos_data.get("avg_entry_price", 0.0)
+                    pos.realized_pnl = pos_data.get("realized_pnl", 0.0)
+                    pos.fees_paid = pos_data.get("fees_paid", 0.0)
+                    pos.spread_paid = pos_data.get("spread_paid", 0.0)
+                    pos.slippage_paid = pos_data.get("slippage_paid", 0.0)
+                    pos.funding_paid = pos_data.get("funding_paid", 0.0)
+                    pos.turnover = pos_data.get("turnover", 0.0)
+                    pos.trade_count = pos_data.get("trade_count", 0)
+            return state
 
         dec_row = self.last_decision(run_id)
         funding_rows = self.funding_events(run_id)
@@ -419,6 +500,57 @@ class Ledger:
                 peak_equity=dec_row["peak_equity"],
                 path_maximum_drawdown_pct=dec_row["path_maximum_drawdown_pct"],
             )
+            # RT004: restore multi-asset positions from decision
+            positions_json = dec_row["positions_json"]
+            if positions_json:
+                try:
+                    positions_data = json.loads(positions_json)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(f"malformed positions_json in decision: {exc}") from exc
+                for sym, pos_data in positions_data.items():
+                    if sym == "DEFAULT":
+                        continue
+                    # Validate non-finite values - fail closed
+                    for field in (
+                        "qty",
+                        "avg_entry_price",
+                        "realized_pnl",
+                        "fees_paid",
+                        "spread_paid",
+                        "slippage_paid",
+                        "funding_paid",
+                        "turnover",
+                    ):
+                        val = pos_data.get(field, 0.0)
+                        if (
+                            isinstance(val, bool)
+                            or not isinstance(val, (int, float))
+                            or not math.isfinite(val)
+                        ):
+                            raise ValueError(
+                                f"non-finite {field} in positions_json for {sym}: {val!r}"
+                            )
+                    # Validate trade_count
+                    trade_count = pos_data.get("trade_count", 0)
+                    if (
+                        isinstance(trade_count, bool)
+                        or not isinstance(trade_count, int)
+                        or trade_count < 0
+                    ):
+                        raise ValueError(
+                            f"invalid trade_count in positions_json for {sym}: {trade_count!r}"
+                        )
+
+                    pos = state.get_position(sym)
+                    pos.qty = pos_data.get("qty", 0.0)
+                    pos.avg_entry_price = pos_data.get("avg_entry_price", 0.0)
+                    pos.realized_pnl = pos_data.get("realized_pnl", 0.0)
+                    pos.fees_paid = pos_data.get("fees_paid", 0.0)
+                    pos.spread_paid = pos_data.get("spread_paid", 0.0)
+                    pos.slippage_paid = pos_data.get("slippage_paid", 0.0)
+                    pos.funding_paid = pos_data.get("funding_paid", 0.0)
+                    pos.turnover = pos_data.get("turnover", 0.0)
+                    pos.trade_count = pos_data.get("trade_count", 0)
             dec_ms = int(dec_row["candle_open_ms"])
         else:
             init_cash = float(run_row["initial_cash"])
@@ -563,6 +695,28 @@ class Ledger:
         state: PortfolioState,
         closure_reason: str = "close_session",
     ) -> sqlite3.Row:
+        # RT004: serialize multi-asset positions for persistence
+        positions_json = json.dumps(
+            {
+                sym: {
+                    "qty": pos.qty,
+                    "avg_entry_price": pos.avg_entry_price,
+                    "realized_pnl": pos.realized_pnl,
+                    "fees_paid": pos.fees_paid,
+                    "spread_paid": pos.spread_paid,
+                    "slippage_paid": pos.slippage_paid,
+                    "funding_paid": pos.funding_paid,
+                    "turnover": pos.turnover,
+                    "trade_count": pos.trade_count,
+                }
+                for sym, pos in state.positions.items()
+                if sym != "DEFAULT"  # exclude legacy DEFAULT ghost position
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
         try:
             self._conn.execute(
                 "INSERT INTO run_closures (run_id, terminal_ts_ms, mark_price,"
@@ -572,8 +726,8 @@ class Ledger:
                 " unrealized_pnl, net_equity, gross_equity, realized_pnl_total,"
                 " fees_total, spread_total, slippage_total, funding_total,"
                 " turnover_total, trade_count, peak_equity, path_maximum_drawdown_pct,"
-                " closure_reason, created_at_ms)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " positions_json, closure_reason, created_at_ms)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id,
                     terminal_ts_ms,
@@ -603,6 +757,7 @@ class Ledger:
                     state.trade_count,
                     state.peak_equity,
                     state.path_maximum_drawdown_pct,
+                    positions_json,
                     closure_reason,
                     int(time.time() * 1000),
                 ),
@@ -650,6 +805,28 @@ class Ledger:
             with contextlib.suppress(sqlite3.OperationalError):
                 self._conn.execute("BEGIN")
 
+        # RT004: serialize multi-asset positions for persistence
+        positions_json = json.dumps(
+            {
+                sym: {
+                    "qty": pos.qty,
+                    "avg_entry_price": pos.avg_entry_price,
+                    "realized_pnl": pos.realized_pnl,
+                    "fees_paid": pos.fees_paid,
+                    "spread_paid": pos.spread_paid,
+                    "slippage_paid": pos.slippage_paid,
+                    "funding_paid": pos.funding_paid,
+                    "turnover": pos.turnover,
+                    "trade_count": pos.trade_count,
+                }
+                for sym, pos in state.positions.items()
+                if sym != "DEFAULT"  # exclude legacy DEFAULT ghost position
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
         try:
             try:
                 self._conn.execute(
@@ -660,8 +837,8 @@ class Ledger:
                     " unrealized_pnl, net_equity, gross_equity, realized_pnl_total,"
                     " fees_total, spread_total, slippage_total, funding_total,"
                     " turnover_total, trade_count, peak_equity, path_maximum_drawdown_pct,"
-                    " closure_reason, created_at_ms)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " positions_json, closure_reason, created_at_ms)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         run_id,
                         terminal_ts_ms,
@@ -691,6 +868,7 @@ class Ledger:
                         state.trade_count,
                         state.peak_equity,
                         state.path_maximum_drawdown_pct,
+                        positions_json,
                         closure_reason,
                         created_at,
                     ),
