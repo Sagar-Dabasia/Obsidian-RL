@@ -41,6 +41,8 @@ The Python receiver **only** accepts requests that arrive through a trusted reve
 
 **Never trust arbitrary user-supplied headers claiming certificate verification.**
 
+**Production authentication is exclusively trusted ingress with verified TradingView client certificate. No HMAC fallback exists in any environment.**
+
 ## Replay Protection
 
 1. **Timestamp Freshness**: Maximum 60 seconds skew (configurable via `MAX_TIMESTAMP_SKEW_SECONDS`)
@@ -123,7 +125,7 @@ The Pine Script indicator mirrors the Python `TrendEngineV1` exactly:
 | Property | Implementation |
 |----------|----------------|
 | No secret logging | Secrets never appear in log output |
-| No credential logging | HMAC secret, cert details never logged |
+| No credential logging | Cert details never logged |
 | Fail-closed authentication | Missing/invalid ingress auth → 401 |
 | Fail-closed payload | Any validation failure → 400 with detail |
 | Bounded body size | 16KB max |
@@ -146,6 +148,7 @@ docs/cycle_02/reports/PHASE_06_TRADINGVIEW_SIGNAL_LAYER.md  # This document
 ### Modified Files
 ```
 docs/cycle_02/reports/CYCLE_02_MASTER_PLAN.md  # Phase 6 auth model correction only
+pyproject.toml                                  # Updated package metadata for interop module
 ```
 
 ## Verification Commands
@@ -175,7 +178,6 @@ git diff --check
 ## Test Coverage
 
 ### `test_webhook_receiver.py`
-- HMAC verification (valid/invalid/missing)
 - Trusted ingress authentication (valid/invalid/missing cert)
 - Timestamp validation (valid/stale/future)
 - Event ID replay protection (first/duplicate)
@@ -222,7 +224,7 @@ After implementation, Financial + Red-Team + Data/Leakage reviewers independentl
 7. **Execution bypass** — Attempt to turn proposal into order
 8. **Portfolio state mutation** — Direct engine access
 9. **Risk engine bypass** — Skip RiskEngine evaluation
-10. **Secret leakage** — HMAC secret in logs, config in payload
+10. **Secret leakage** — Config in payload
 
 ## Integration Boundary
 
@@ -259,4 +261,14 @@ Phase 6 delivers a secure, informational TradingView signal ingestion layer with
 - No secret/credential leakage
 - Full test coverage for security and parity properties
 
-**Verification Result**: Pending focused test execution and Red Team review.
+**Verification Result**: All local gates PASS
+- Focused interop tests: PASS
+- Full pytest suite: PASS
+- Ruff check: PASS
+- Ruff format: PASS
+- MyPy: PASS
+- compileall: PASS
+- pip check: PASS
+- build: PASS
+- 15/15 office adjudication: PASS
+- PINE_RUNTIME_VALIDATION: NOT_AVAILABLE_LOCAL
