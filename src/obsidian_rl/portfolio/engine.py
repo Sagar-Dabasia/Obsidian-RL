@@ -472,8 +472,10 @@ class PortfolioEngine:
             self.mark_to_market_multi(marks)
 
             # Calculate executed_target using post-trade multi-asset equity
+            # Use mark price for position notional, execution price for cash accounting
             post_equity = self.state.multi_asset_equity(marks)
-            executed_exposure = pos.qty * price / post_equity if post_equity > 0 else 0.0
+            mark_price = marks[symbol]
+            executed_exposure = pos.qty * mark_price / post_equity if post_equity > 0 else 0.0
             return ExecutionResult(
                 proposed_target=proposed_target,
                 approved_target=approved,

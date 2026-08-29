@@ -958,23 +958,33 @@ def test_short_no_trade_sign_correct() -> None:
 
 
 def test_post_cost_executed_target_correct() -> None:
-    """executed_target must equal actual post-trade exposure against post-cost equity."""
+    """executed_target must equal actual post-trade exposure against post-cost equity.
+
+    Uses different execution price vs mark price to verify the fix:
+    - mark price = 100.0 (used for position notional)
+    - execution price = 101.0 (simulating slippage, used for cash accounting)
+    """
     eng = make_engine()  # Cost model has fees/spread/slippage = 0.2%
+    # mark price = 100.0, execution price = 101.0 (simulating slippage)
     marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+    execution_price = 101.0
 
-    # Open BTC
-    r1 = eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    # Open BTC at execution price 101.0, but mark is 100.0
+    r1 = eng.rebalance(0.5, execution_price, symbol="BTCUSDT", marks=marks)
 
-    # Post-trade equity with marks
+    # Post-trade equity with marks (mark price = 100.0)
     post_equity = eng.state.multi_asset_equity(marks)
-    # executed_target should use post-cost equity
+    # executed_target should use MARK price for position notional, not execution price
     expected_exposure = eng.state.positions["BTCUSDT"].qty * 100.0 / post_equity
 
     assert r1.executed_target == pytest.approx(expected_exposure)
+    # Verify it's NOT using execution price
+    wrong_exposure = eng.state.positions["BTCUSDT"].qty * execution_price / post_equity
+    assert r1.executed_target != pytest.approx(wrong_exposure)
     # Verify it's NOT using pre-trade equity
     pre_equity = 10000.0
-    wrong_exposure = eng.state.positions["BTCUSDT"].qty * 100.0 / pre_equity
-    assert r1.executed_target != pytest.approx(wrong_exposure)
+    wrong_exposure_pre = eng.state.positions["BTCUSDT"].qty * 100.0 / pre_equity
+    assert r1.executed_target != pytest.approx(wrong_exposure_pre)
 
 
 def test_legacy_mark_fail_closed() -> None:
