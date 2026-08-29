@@ -1,23 +1,25 @@
 {
   "task_id": "phase6-final-governance",
   "authorized_paths": [
-        "pine/ObsidianMultiAssetTrend.pine",
-        "src/obsidian_rl/interop",
-        "tests/interop",
-        "docs/cycle_02/reports/PHASE_06_TRADINGVIEW_SIGNAL_LAYER.md",
-        "docs/cycle_02/reports/CYCLE_02_MASTER_PLAN.md",
-        "pyproject.toml",
-        ".hermes/skills/obsidian-rl-office/SKILL.md",
-        ".hermes/skills/obsidian-rl-office/references/phase6-tradingview-auth-model.md",
-        "tools/council_runner.py",
-        ".hermes/skills/obsidian-rl-council/SKILL.md",
-        ".hermes/skills/obsidian-rl-council/references/advisor-prompts.md",
-        ".hermes/skills/obsidian-rl-council/references/anonymization.md",
-        ".hermes/skills/obsidian-rl-council/references/chairman-prompts.md",
-        ".hermes/skills/obsidian-rl-council/references/reviewer-prompts.md",
-        "docs/engineering/LLM_COUNCIL_PROTOCOL.md",
-        "tests/test_llm_council_governance.py"
-      ],
+            "pine/ObsidianMultiAssetTrend.pine",
+            "src/obsidian_rl/interop",
+            "tests/interop",
+            "docs/cycle_02/reports/PHASE_06_TRADINGVIEW_SIGNAL_LAYER.md",
+            "docs/cycle_02/reports/CYCLE_02_MASTER_PLAN.md",
+            "docs/cycle_02/reports/PRE_PHASE_6_REMEDIATION.md",
+            "pyproject.toml",
+            ".hermes/skills/obsidian-rl-office/SKILL.md",
+            ".hermes/skills/obsidian-rl-office/references/phase6-tradingview-auth-model.md",
+            "tools/council_runner.py",
+            ".hermes/skills/obsidian-rl-council/SKILL.md",
+            ".hermes/skills/obsidian-rl-council/references/advisor-prompts.md",
+            ".hermes/skills/obsidian-rl-council/references/anonymization.md",
+            ".hermes/skills/obsidian-rl-council/references/chairman-prompts.md",
+            ".hermes/skills/obsidian-rl-council/references/reviewer-prompts.md",
+            "docs/engineering/LLM_COUNCIL_PROTOCOL.md",
+            "tests/test_llm_council_governance.py",
+            "tests/test_agent_office_governance.py"
+          ],
   "baseline_paths": [
     ".hermes/skills/obsidian-rl-office/SKILL.md",
     ".hermes/skills/obsidian-rl-office/references/phase6-tradingview-auth-model.md",
@@ -33,17 +35,17 @@
     "tests/test_agent_office_governance.py"
   ],
   "baseline_fingerprints": {
-      ".hermes/skills/obsidian-rl-office/SKILL.md": "337660790106f7c74a531b4ee2b32897d8e2d8c1c4e2504a25623f6fd8fde96b",
-      "docs/cycle_02/reports/CYCLE_02_MASTER_PLAN.md": "f97f4d0f0ae445631c179fa0bb1faa85a247ac2df372340d985279087fbf5bac",
-      "pyproject.toml": "91e1292a1e0568a74b2f2e207a172f655249d91b3cec2b0eeb111a4686821b6e",
-      "tests/test_agent_office_governance.py": "fa062d9f19367a3617713511ce4cc06c80dfa54580f7a0cbc4deb66ec4f1c2c8",
-      ".hermes/skills/obsidian-rl-office/references/phase6-tradingview-auth-model.md": "82b32d034c68d3c16ba5596aee9dfef3fadbec56b5a95f1da334c35408c2c445",
-      ".hermes/skills/obsidian-rl-office/references/sentinel-hardening.md": "bb87c8478ba161bd8dfa985ec28cc820f5fa743440227661ad3e26fe87eaa329",
-      "docs/cycle_02/reports/PHASE_06_TRADINGVIEW_SIGNAL_LAYER.md": "0cb13e708ffe2c23d70f84e074817460385cd5c643c224e0193d15a144f16088",
-      "pine/ObsidianMultiAssetTrend.pine": "340a4dd58ab5429add8973a0d0069c4bbf04997cb03ac5a0ca4e44b03c4c8ce9",
-      "src/obsidian_rl/interop/__init__.py": "1aa7223d730532609740c09223772a0faf12f6f6257194c21d3697e132f11acc",
-      "src/obsidian_rl/interop/webhook_receiver.py": "fd4d68ae74744bd2fc9e8bc4aa01bd7b1734195e407a1279b53f78406d0f263e",
-      "tests/interop/test_pine_parity.py": "4923ef8c33255aaa37f75b198e2e016bb15924510b7a753b2f886c16d987f18e",
-      "tests/interop/test_webhook_receiver.py": "233ff15a96ad31a3505f7e31f0a7b279a71f1e9a5affdda6874279f76a4519df"
-    }
+        ".hermes/skills/obsidian-rl-office/SKILL.md": "337660790106f7c74a531b4ee2b32897d8e2d8c1c4e2504a25623f6fd8fde96b",
+        "docs/cycle_02/reports/CYCLE_02_MASTER_PLAN.md": "f97f4d0f0ae445631c179fa0bb1faa85a247ac2df372340d985279087fbf5bac",
+        "pyproject.toml": "91e1292a1e0568a74b2f2e207a172f655249d91b3cec2b0eeb111a4686821b6e",
+        "tests/test_agent_office_governance.py": "7dba878fc1629eaba39c79bc6db591db6a588d21e211c03a78e61e930c3ab00d",
+        ".hermes/skills/obsidian-rl-office/references/phase6-tradingview-auth-model.md": "82b32d034c68d3c16ba5596aee9dfef3fadbec56b5a95f1da334c35408c2c445",
+        ".hermes/skills/obsidian-rl-office/references/sentinel-hardening.md": "bb87c8478ba161bd8dfa985ec28cc820f5fa743440227661ad3e26fe87eaa329",
+        "docs/cycle_02/reports/PHASE_06_TRADINGVIEW_SIGNAL_LAYER.md": "0cb13e708ffe2c23d70f84e074817460385cd5c643c224e0193d15a144f16088",
+        "pine/ObsidianMultiAssetTrend.pine": "340a4dd58ab5429add8973a0d0069c4bbf04997cb03ac5a0ca4e44b03c4c8ce9",
+        "src/obsidian_rl/interop/__init__.py": "1aa7223d730532609740c09223772a0faf12f6f6257194c21d3697e132f11acc",
+        "src/obsidian_rl/interop/webhook_receiver.py": "fd4d68ae74744bd2fc9e8bc4aa01bd7b1734195e407a1279b53f78406d0f263e",
+        "tests/interop/test_pine_parity.py": "4923ef8c33255aaa37f75b198e2e016bb15924510b7a753b2f886c16d987f18e",
+        "tests/interop/test_webhook_receiver.py": "233ff15a96ad31a3505f7e31f0a7b279a71f1e9a5affdda6874279f76a4519df"
+      }
 }
