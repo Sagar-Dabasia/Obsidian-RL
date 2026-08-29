@@ -38,12 +38,26 @@ class PortfolioConfig:
     allow_short: bool = True
 
     def __post_init__(self) -> None:
+        # Reject booleans explicitly (bool is subclass of int in Python)
+        for name in ("initial_cash", "max_abs_exposure", "min_trade_notional", "exposure_tolerance"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"{name}={value!r} must be int or float, not {type(value).__name__}"
+                )
+            if not math.isfinite(value):
+                raise ValueError(f"{name}={value!r} must be finite")
+
         if self.initial_cash <= 0:
             raise ValueError("initial_cash must be positive")
         if not 0 < self.max_abs_exposure <= 1.0:
             raise ValueError(
                 "max_abs_exposure must be in (0, 1]; leverage >1 requires margin modeling"
             )
+        if self.min_trade_notional < 0:
+            raise ValueError("min_trade_notional must be >= 0")
+        if not 0 <= self.exposure_tolerance <= 1.0:
+            raise ValueError("exposure_tolerance must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -90,7 +104,7 @@ class PortfolioState:
     fees_paid: float = 0.0
     spread_paid: float = 0.0
     slippage_paid: float = 0.0
-    funding_paid: float = 0.0  # net funding cash outflow (negative = received)
+    funding_paid: float = 0.0  # net funding cash outflow (positive = paid, negative = received)
     turnover: float = 0.0  # cumulative traded notional
     trade_count: int = 0
     peak_equity: float = field(default=0.0)
@@ -239,7 +253,7 @@ class PortfolioEngine:
     # ------------------------------------------------------------------ helpers
     def _validate_target(self, proposed: float) -> None:
         """Validate target is numeric and finite before any clamping."""
-        if not isinstance(proposed, (int, float)) or not math.isfinite(proposed):
+        if isinstance(proposed, bool) or not isinstance(proposed, (int, float)) or not math.isfinite(proposed):
             raise ValueError(f"non-finite or non-numeric target {proposed!r}")
 
     def _approve_target(self, proposed: float) -> tuple[float, str | None]:
@@ -255,14 +269,14 @@ class PortfolioEngine:
 
     def _validate_execution_price(self, price: float) -> None:
         """Validate execution price is finite and positive."""
-        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
             raise ValueError(f"non-finite or non-positive execution price {price!r}")
 
     def _validate_funding_params(self, price: float, funding_rate: float) -> None:
         """Validate funding price and rate are numeric and finite."""
-        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
             raise ValueError(f"non-finite or non-positive funding price {price!r}")
-        if not isinstance(funding_rate, (int, float)) or not math.isfinite(funding_rate):
+        if isinstance(funding_rate, bool) or not isinstance(funding_rate, (int, float)) or not math.isfinite(funding_rate):
             raise ValueError(f"non-finite funding rate {funding_rate!r}")
 
     def mark_to_market(self, price: float) -> PortfolioState:

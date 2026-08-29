@@ -72,32 +72,43 @@ class RiskConfig:
     market_freshness_ms: int = 300_000  # 5 minutes
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.max_drawdown_limit) or not (
-            0.0 <= self.max_drawdown_limit <= 1.0
+        # Reject booleans explicitly (bool is subclass of int in Python)
+        for name in (
+            "max_drawdown_limit",
+            "max_leverage",
+            "max_per_asset_exposure",
+            "max_gross_exposure",
+            "max_net_exposure",
+            "max_concentration_pct",
         ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"{name}={value!r} must be int or float, not {type(value).__name__}"
+                )
+            if not math.isfinite(value):
+                raise ValueError(f"{name}={value!r} must be finite")
+
+        if not (0.0 <= self.max_drawdown_limit <= 1.0):
             raise ValueError(
                 f"max_drawdown_limit must be finite in [0, 1], got {self.max_drawdown_limit!r}"
             )
-        if not math.isfinite(self.max_leverage) or self.max_leverage < 1.0:
+        if self.max_leverage < 1.0:
             raise ValueError(f"max_leverage must be finite and >= 1.0, got {self.max_leverage!r}")
-        if not math.isfinite(self.max_per_asset_exposure) or not (
-            0.0 < self.max_per_asset_exposure <= 1.0
-        ):
+        if not (0.0 < self.max_per_asset_exposure <= 1.0):
             raise ValueError(
                 f"max_per_asset_exposure must be finite in (0, 1.0], "
                 f"got {self.max_per_asset_exposure!r}"
             )
-        if not math.isfinite(self.max_gross_exposure) or self.max_gross_exposure < 0.0:
+        if self.max_gross_exposure < 0.0:
             raise ValueError(
                 f"max_gross_exposure must be finite and >= 0, got {self.max_gross_exposure!r}"
             )
-        if not math.isfinite(self.max_net_exposure) or self.max_net_exposure < 0.0:
+        if self.max_net_exposure < 0.0:
             raise ValueError(
                 f"max_net_exposure must be finite and >= 0, got {self.max_net_exposure!r}"
             )
-        if not math.isfinite(self.max_concentration_pct) or not (
-            0.0 < self.max_concentration_pct <= 1.0
-        ):
+        if not (0.0 < self.max_concentration_pct <= 1.0):
             raise ValueError(
                 f"max_concentration_pct must be finite in (0, 1.0], "
                 f"got {self.max_concentration_pct!r}"

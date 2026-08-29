@@ -60,10 +60,18 @@ class EngineProposal:
             raise ValueError("venue must be a non-empty string")
         if not isinstance(self.symbol, str) or not self.symbol:
             raise ValueError("symbol must be a non-empty string")
+        if isinstance(self.target_exposure, bool) or not isinstance(self.target_exposure, (int, float)):
+            raise ValueError(
+                f"target_exposure must be int or float, not {type(self.target_exposure).__name__}"
+            )
         if not math.isfinite(self.target_exposure):
             raise ValueError(f"target_exposure must be finite, got {self.target_exposure!r}")
         if not -1.0 <= self.target_exposure <= 1.0:
             raise ValueError(f"target_exposure must be in [-1.0, 1.0], got {self.target_exposure}")
+        if isinstance(self.confidence, bool) or not isinstance(self.confidence, (int, float)):
+            raise ValueError(
+                f"confidence must be int or float, not {type(self.confidence).__name__}"
+            )
         if not math.isfinite(self.confidence):
             raise ValueError(f"confidence must be finite, got {self.confidence!r}")
         if not 0.0 <= self.confidence <= 1.0:
@@ -147,12 +155,24 @@ class CombinedTarget:
     def __post_init__(self) -> None:
         import math
 
+        if isinstance(self.target_exposure, bool) or not isinstance(self.target_exposure, (int, float)):
+            raise ValueError(
+                f"target_exposure must be int or float, not {type(self.target_exposure).__name__}"
+            )
         if not math.isfinite(self.target_exposure):
             raise ValueError(f"target_exposure must be finite, got {self.target_exposure!r}")
+        if isinstance(self.gross_exposure_contribution, bool) or not isinstance(self.gross_exposure_contribution, (int, float)):
+            raise ValueError(
+                f"gross_exposure_contribution must be int or float, not {type(self.gross_exposure_contribution).__name__}"
+            )
         if not math.isfinite(self.gross_exposure_contribution):
             raise ValueError(
                 f"gross_exposure_contribution must be finite, "
                 f"got {self.gross_exposure_contribution!r}"
+            )
+        if isinstance(self.net_exposure_contribution, bool) or not isinstance(self.net_exposure_contribution, (int, float)):
+            raise ValueError(
+                f"net_exposure_contribution must be int or float, not {type(self.net_exposure_contribution).__name__}"
             )
         if not math.isfinite(self.net_exposure_contribution):
             raise ValueError(
