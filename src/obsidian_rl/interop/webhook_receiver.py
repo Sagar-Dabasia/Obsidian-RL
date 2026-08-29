@@ -1,96 +1,187 @@
-"""TradingView Webhook Receiver - Secure Signal Ingestion Layer.
+"""Secure TradingView webhook receiver with strict validation and replay protection.
 
-This module receives and validates authenticated JSON webhook alerts originating
-from TradingView Pine Script indicators.
-
-SECURITY MODEL:
-- Uses real ingress-authentication abstraction based on VERIFIED TradingView
-  HTTPS client-certificate identity via trusted reverse proxy
-- Never trusts arbitrary user-supplied headers claiming certificate was verified
-- Direct untrusted requests fail closed
-
-REPLAY PROTECTION:
-- Strict timestamp freshness (max 60 seconds skew)
-- Unique event_id replay cache (in-memory for now, can be backed by Redis)
-- Duplicate event_id => reject
-- Future timestamp beyond allowed skew => reject
-- Stale timestamp => reject
-
-PAYLOAD VALIDATION:
-- Strict schema validation
-- Bounded body size
-- Reject malformed JSON
-- Reject missing required fields
-- Reject unsupported schema version
-- Reject non-finite numerics
-- Reject malformed symbol/timeframe
-- Reject unexpected dangerous fields
-- Fail closed
-
-NO SECRET LOGGING.
-NO CREDENTIAL LOGGING.
-
-TRADINGVIEW PROPOSAL = INFORMATIONAL ONLY.
-Python engine remains authoritative.
+This module implements the Python-side ingestion for TradingView alerts.
+Key invariants:
+- FAIL-CLOSED: Any validation error rejects the payload with 400/401
+- INFORMATIONAL ONLY: Returns parsed signal proposal; NEVER executes orders or mutates portfolio state
+- REPLAY PROTECTION: event_id deduplication + timestamp freshness check
+- ZERO EXECUTION: No imports of exchange clients, PortfolioEngine, or PaperTrader
 """
 
-import json
-import logging
-import time
-from collections import OrderedDict
-from dataclasses import dataclass
-from typing import Any
+from __future__ import annotations
 
-logger = logging.getLogger(__name__)
+import re
+import time
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field, field_validator, model_validator, ValidationError as PydanticValidationError
+
+
+class SignalDirection(Enum):
+    """Valid signal directions from TradingView."""
+
+    LONG = "LONG"
+    SHORT = "SHORT"
+    FLAT = "FLAT"
+
+
+class ValidationError(Exception):
+    """Raised when payload validation fails."""
+
+    def __init__(self, message: str, code: str = "VALIDATION_ERROR"):
+        self.code = code
+        super().__init__(message)
+
+
+class AuthenticationError(Exception):
+    """Raised when authentication fails."""
+
+    def __init__(self, message: str, code: str = "AUTHENTICATION_FAILED"):
+        self.code = code
+        super().__init__(message)
+
+
+class ReplayDetected(Exception):
+    """Raised when a duplicate event_id is detected."""
+
+    def __init__(self, message: str, code: str = "REPLAY_DETECTED"):
+        self.code = code
+        super().__init__(message)
+
 
 # Configuration constants
-MAX_PAYLOAD_SIZE_BYTES = 16_384  # 16 KB max body
-MAX_TIMESTAMP_SKEW_SECONDS = 60  # TradingView alerts must be within 60s of receipt
-SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = ("1",)
-SUPPORTED_TIMEFRAMES: tuple[str, ...] = ("4h", "1d", "240", "D")  # Pine uses "240" for 4h
-SUPPORTED_SIGNALS: tuple[str, ...] = ("LONG", "SHORT", "FLAT")
+MAX_TIMESTAMP_SKEW_SECONDS = 60
+MAX_EVENT_ID_LENGTH = 256
+MAX_SYMBOL_LENGTH = 64
+MAX_PAYLOAD_SIZE_BYTES = 16 * 1024  # 16KB
+
+# Regex patterns for validation
+SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+TIMEFRAME_PATTERN = re.compile(r"^(4h|1d|240|D)$")
+CONFIG_IDENTITY_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+ENGINE_VERSION_PREFIX = "TrendEngineV1"
 
 
-class WebhookError(Exception):
-    """Base exception for webhook processing errors."""
-
-    pass
+# In-memory replay cache (production would use Redis with TTL)
+_replay_cache: set[str] = set()
 
 
-class AuthenticationError(WebhookError):
-    """Authentication/authorization failure."""
+class TradingViewPayload(BaseModel):
+    """Strict Pydantic model for TradingView webhook payload.
 
-    pass
+    All fields required. No optional fields. Extra fields forbidden.
+    """
 
+    schema_version: str = Field(..., description="Must be '1'")
+    event_id: str = Field(..., min_length=1, max_length=MAX_EVENT_ID_LENGTH)
+    symbol: str = Field(..., min_length=1, max_length=MAX_SYMBOL_LENGTH)
+    timeframe: str = Field(..., pattern="^(4h|1d|240|D)$")
+    bar_timestamp_utc: int = Field(..., gt=0)
+    signal: SignalDirection
+    score: float
+    volatility_20d: float
+    latest_close: float
+    engine_version: str
+    config_identity: str = Field(..., pattern="^[a-f0-9]{64}$")
 
-class ReplayError(WebhookError):
-    """Replay attack detected (duplicate event_id or timestamp skew)."""
+    model_config = {
+        "extra": "forbid",  # Reject any unexpected fields
+        "use_enum_values": True,
+    }
 
-    pass
+    @field_validator("schema_version")
+    @classmethod
+    def validate_schema_version(cls, v: str) -> str:
+        if v != "1":
+            raise ValidationError(f"schema_version must be '1', got '{v}'", "INVALID_SCHEMA_VERSION")
+        return v
 
+    @field_validator("engine_version")
+    @classmethod
+    def validate_engine_version(cls, v: str) -> str:
+        if ENGINE_VERSION_PREFIX not in v:
+            raise ValidationError(
+                f"engine_version must contain '{ENGINE_VERSION_PREFIX}', got '{v}'",
+                "INVALID_ENGINE_VERSION",
+            )
+        return v
 
-class PayloadValidationError(WebhookError):
-    """Payload schema/validation failure."""
+    @field_validator("score", "volatility_20d", "latest_close")
+    @classmethod
+    def validate_finite(cls, v: float) -> float:
+        if not isinstance(v, (int, float)) or not (v == v and abs(v) != float("inf")):
+            raise ValidationError(f"value must be finite, got {v}", "NON_FINITE_VALUE")
+        return float(v)
 
-    pass
+    @field_validator("event_id")
+    @classmethod
+    def validate_event_id(cls, v: str) -> str:
+        if not v or len(v) > MAX_EVENT_ID_LENGTH:
+            raise ValidationError(
+                f"event_id must be non-empty and <= {MAX_EVENT_ID_LENGTH} chars",
+                "INVALID_EVENT_ID",
+            )
+        return v
 
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol_format(cls, v: str) -> str:
+        if not SYMBOL_PATTERN.match(v):
+            raise ValidationError(
+                f"symbol must match pattern [A-Za-z0-9_.-] and be <= {MAX_SYMBOL_LENGTH} chars",
+                "INVALID_SYMBOL",
+            )
+        return v
 
-class RateLimitError(WebhookError):
-    """Rate limit exceeded."""
+    @field_validator("config_identity")
+    @classmethod
+    def validate_config_identity(cls, v: str) -> str:
+        if not CONFIG_IDENTITY_PATTERN.match(v):
+            raise ValidationError(
+                "config_identity must be 64-char lowercase hex SHA256",
+                "INVALID_CONFIG_IDENTITY",
+            )
+        return v
 
-    pass
+    @model_validator(mode="after")
+    def validate_signal_specifics(self) -> "TradingViewPayload":
+        """Validate signal-specific constraints."""
+        # use_enum_values=True converts enums to their string values
+        signal_str = self.signal
+        if signal_str in ("LONG", "SHORT"):
+            if abs(self.score) < 1e-10:
+                raise ValidationError(
+                    f"LONG/SHORT signals require non-zero score, got {self.score}",
+                    "INVALID_SCORE_FOR_DIRECTION",
+                )
+            if self.volatility_20d <= 0:
+                raise ValidationError(
+                    f"LONG/SHORT signals require positive volatility, got {self.volatility_20d}",
+                    "INVALID_VOLATILITY",
+                )
+        elif signal_str == "FLAT":
+            if abs(self.score) > 1e-10:
+                raise ValidationError(
+                    f"FLAT signal requires near-zero score, got {self.score}",
+                    "INVALID_SCORE_FOR_FLAT",
+                )
+        return self
 
 
 @dataclass(frozen=True)
 class ValidatedSignal:
-    """Validated informational signal proposal from TradingView."""
+    """Parsed and validated signal proposal from TradingView.
 
-    schema_version: str
+    This is an INFORMATIONAL object only. It does NOT execute any trading action.
+    """
+
     event_id: str
     symbol: str
     timeframe: str
     bar_timestamp_utc: int
-    signal: str  # LONG, SHORT, FLAT
+    signal: SignalDirection
     score: float
     volatility_20d: float
     latest_close: float
@@ -99,292 +190,143 @@ class ValidatedSignal:
     received_at_utc: int
 
 
-class EventIdCache:
-    """In-memory replay cache for event_id deduplication.
+def clear_replay_cache() -> None:
+    """Clear the in-memory replay cache (for testing)."""
+    _replay_cache.clear()
 
-    For production, replace with Redis-backed cache with TTL.
-    """
 
-    def __init__(self, max_size: int = 100_000) -> None:
-        self._cache: OrderedDict[str, float] = OrderedDict()
-        self._max_size = max_size
-
-    def check_and_add(self, event_id: str, timestamp_utc: int) -> bool:
-        """Check if event_id is new, add if so. Returns True if new, False if duplicate."""
-        now = time.time()
-
-        # Clean old entries (older than 24 hours)
-        cutoff = now - 86_400
-        while self._cache and next(iter(self._cache.values())) < cutoff:
-            self._cache.popitem(last=False)
-
-        if event_id in self._cache:
-            return False
-
-        # Add new entry
-        self._cache[event_id] = timestamp_utc / 1000.0  # Convert to seconds
-
-        # Evict oldest if over max size
-        if len(self._cache) > self._max_size:
-            self._cache.popitem(last=False)
-
+def _check_replay(event_id: str) -> bool:
+    """Check if event_id is a replay. Returns True if duplicate."""
+    if event_id in _replay_cache:
         return True
+    _replay_cache.add(event_id)
+    return False
 
 
-# Global event_id cache (single instance per process)
-_event_id_cache = EventIdCache()
+def _validate_timestamp(bar_timestamp_utc: int, received_at_utc: Optional[int] = None) -> None:
+    """Validate timestamp freshness (within skew bounds)."""
+    now = received_at_utc or int(time.time() * 1000)
+    skew = abs(now - bar_timestamp_utc)
+
+    if skew > MAX_TIMESTAMP_SKEW_SECONDS * 1000:
+        raise ValidationError(
+            f"Timestamp skew {skew}ms exceeds limit {MAX_TIMESTAMP_SKEW_SECONDS}s",
+            "TIMESTAMP_STALE" if bar_timestamp_utc < now else "TIMESTAMP_FUTURE",
+        )
 
 
-def _verify_trusted_ingress_identity(headers: dict[str, str]) -> tuple[bool, str | None]:
-    """Verify request came through trusted reverse proxy with TradingView client cert.
+def _verify_trusted_ingress(headers: dict[str, str]) -> None:
+    """Verify request comes through trusted reverse proxy with mTLS.
 
-    This is the PRODUCTION authentication model. In development/test without a
-    reverse proxy, this will fail closed.
-
-    Expected headers from trusted ingress (e.g., nginx with client cert verification):
-    - X-Client-Cert-Verified: "SUCCESS"
-    - X-Client-Cert-Subject: TradingView's certificate subject
-    - X-Forwarded-For: TradingView IP ranges (defense in depth only)
-
-    Returns (is_valid, identity_description_or_None)
+    Production requirement: Reverse proxy must inject verified client certificate headers.
     """
-    cert_verified = headers.get("X-Client-Cert-Verified", "").upper()
-    cert_subject = headers.get("X-Client-Cert-Subject", "")
+    cert_verified = headers.get("X-Client-Cert-Verified")
+    cert_subject = headers.get("X-Client-Cert-Subject")
 
     if cert_verified != "SUCCESS":
-        return False, None
-
-    # Verify subject matches TradingView's known certificate
-    # TradingView's cert subject contains "TradingView" or known OU
-    if "tradingview" not in cert_subject.lower():
-        return False, None
-
-    return True, cert_subject
-
-
-def validate_timestamp(timestamp_utc: int, received_at_utc: int) -> None:
-    """Validate timestamp freshness. Raises ReplayError if invalid."""
-    skew_ms = abs(received_at_utc - timestamp_utc)
-    max_skew_ms = MAX_TIMESTAMP_SKEW_SECONDS * 1000
-
-    if skew_ms > max_skew_ms:
-        raise ReplayError(
-            f"Timestamp skew {skew_ms}ms exceeds maximum {max_skew_ms}ms. "
-            f"Got bar_timestamp_utc={timestamp_utc}, received_at={received_at_utc}"
+        raise AuthenticationError(
+            "Missing or invalid X-Client-Cert-Verified header (must be 'SUCCESS')",
+            "MISSING_CERT_VERIFIED",
         )
 
-    # Also reject timestamps in the future beyond allowed skew
-    if timestamp_utc > received_at_utc + max_skew_ms:
-        raise ReplayError(
-            f"Future timestamp rejected: bar_timestamp_utc={timestamp_utc} "
-            f"is {timestamp_utc - received_at_utc}ms in the future"
+    if not cert_subject or not cert_subject.startswith("CN="):
+        raise AuthenticationError(
+            "Missing or invalid X-Client-Cert-Subject header",
+            "INVALID_CERT_SUBJECT",
+        )
+
+    # Additional: verify subject contains expected TradingView CN
+    if "TradingView" not in cert_subject and "TV-" not in cert_subject:
+        raise AuthenticationError(
+            f"Client certificate subject does not appear to be TradingView: {cert_subject}",
+            "UNTRUSTED_CERT_SUBJECT",
         )
 
 
-def validate_event_id(event_id: str, received_at_utc: int) -> None:
-    """Validate event_id uniqueness (replay protection). Raises ReplayError if duplicate."""
-    if not _event_id_cache.check_and_add(event_id, received_at_utc):
-        raise ReplayError(f"Duplicate event_id detected: {event_id}")
-
-
-def validate_payload(payload: dict[str, Any]) -> ValidatedSignal:
-    """Validate webhook payload against strict schema. Raises PayloadValidationError if invalid."""
-    # Check required fields
-    required_fields = (
-        "schema_version",
-        "event_id",
-        "symbol",
-        "timeframe",
-        "bar_timestamp_utc",
-        "signal",
-        "score",
-        "volatility_20d",
-        "latest_close",
-        "engine_version",
-        "config_identity",
-    )
-
-    for field in required_fields:
-        if field not in payload:
-            raise PayloadValidationError(f"Missing required field: {field}")
-
-    # No unexpected dangerous fields
-    allowed_fields = set(required_fields)
-    unexpected = set(payload.keys()) - allowed_fields
-    if unexpected:
-        raise PayloadValidationError(f"Unexpected fields rejected: {sorted(unexpected)}")
-
-    # Schema version
-    schema_version = str(payload["schema_version"])
-    if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
-        supported = SUPPORTED_SCHEMA_VERSIONS
-        raise PayloadValidationError(
-            f"Unsupported schema_version: {schema_version}. Supported: {supported}"
-        )
-
-    # Event ID format validation
-    event_id = str(payload["event_id"])
-    if not event_id or len(event_id) > 256:
-        raise PayloadValidationError("event_id must be non-empty string <= 256 chars")
-
-    # Symbol validation (basic format)
-    symbol = str(payload["symbol"])
-    if not symbol or len(symbol) > 64:
-        raise PayloadValidationError("symbol must be non-empty string <= 64 chars")
-    # TradingView symbols like BTCUSDT, EUR_USD, etc.
-    if not all(c.isalnum() or c in "_-." for c in symbol):
-        raise PayloadValidationError(f"Invalid symbol format: {symbol}")
-
-    # Timeframe validation
-    timeframe = str(payload["timeframe"])
-    if timeframe not in SUPPORTED_TIMEFRAMES:
-        supported = SUPPORTED_TIMEFRAMES
-        raise PayloadValidationError(f"Unsupported timeframe: {timeframe}. Supported: {supported}")
-
-    # Bar timestamp validation
-    try:
-        bar_timestamp_utc = int(payload["bar_timestamp_utc"])
-    except (TypeError, ValueError) as exc:
-        raise PayloadValidationError("bar_timestamp_utc must be integer") from exc
-
-    if bar_timestamp_utc <= 0:
-        raise PayloadValidationError("bar_timestamp_utc must be positive")
-
-    # Signal validation
-    signal = str(payload["signal"])
-    if signal not in SUPPORTED_SIGNALS:
-        supported = SUPPORTED_SIGNALS
-        raise PayloadValidationError(f"Invalid signal: {signal}. Supported: {supported}")
-
-    # Numeric fields - must be finite
-    for field in ("score", "volatility_20d", "latest_close"):
-        try:
-            val = float(payload[field])
-        except (TypeError, ValueError) as exc:
-            raise PayloadValidationError(f"{field} must be numeric") from exc
-
-        if not (val == val and val != float("inf") and val != float("-inf")):
-            raise PayloadValidationError(f"{field} must be finite (not NaN/inf)")
-
-    score = float(payload["score"])
-    volatility_20d = float(payload["volatility_20d"])
-    latest_close = float(payload["latest_close"])
-
-    # latest_close must be positive (matching Pine/Python validation)
-    if latest_close <= 0.0:
-        raise PayloadValidationError(f"latest_close must be positive (> 0), got {latest_close}")
-
-    # Signal-specific validation
-    if signal in ("LONG", "SHORT") and abs(score) < 0.0001:
-        raise PayloadValidationError(f"Signal {signal} requires non-zero score magnitude")
-
-    if signal == "FLAT" and abs(score) > 0.5:
-        raise PayloadValidationError(f"FLAT signal has unexpected score magnitude: {score}")
-
-    # Engine version
-    engine_version = str(payload["engine_version"])
-    if not engine_version or "TrendEngineV1" not in engine_version:
-        raise PayloadValidationError(f"Unexpected engine_version: {engine_version}")
-
-    # Config identity (should be SHA256 hex)
-    config_identity = str(payload["config_identity"])
-    if (
-        not config_identity
-        or len(config_identity) != 64
-        or not all(c in "0123456789abcdef" for c in config_identity)
-    ):
-        raise PayloadValidationError(
-            f"config_identity must be 64-char hex SHA256: {config_identity}"
-        )
-
-    received_at_utc = int(time.time() * 1000)
-
-    # Validate timestamp freshness
-    validate_timestamp(bar_timestamp_utc, received_at_utc)
-
-    # Validate event_id replay protection
-    validate_event_id(event_id, received_at_utc)
-
-    return ValidatedSignal(
-        schema_version=schema_version,
-        event_id=event_id,
-        symbol=symbol,
-        timeframe=timeframe,
-        bar_timestamp_utc=bar_timestamp_utc,
-        signal=signal,
-        score=score,
-        volatility_20d=volatility_20d,
-        latest_close=latest_close,
-        engine_version=engine_version,
-        config_identity=config_identity,
-        received_at_utc=received_at_utc,
-    )
-
-
-async def receive_webhook(
-    request_body: bytes,
+def receive_tradingview_alert(
+    payload: dict,
     headers: dict[str, str],
+    received_at_utc: Optional[int] = None,
 ) -> ValidatedSignal:
-    """Main entry point: receive and validate TradingView webhook.
-
-    Production authentication ONLY: requires trusted reverse proxy with
-    TradingView HTTPS client-certificate verification.
+    """Main entry point for receiving TradingView webhook alerts.
 
     Args:
-        request_body: Raw request body bytes
-        headers: Request headers (case-insensitive)
+        payload: Parsed JSON body from TradingView webhook
+        headers: HTTP headers (must include X-Client-Cert-Verified and X-Client-Cert-Subject)
+        received_at_utc: Optional receipt timestamp for testing (ms since epoch)
 
     Returns:
-        ValidatedSignal if all checks pass
+        ValidatedSignal: Parsed, validated, replay-protected signal proposal
 
     Raises:
-        AuthenticationError: If authentication fails
-        ReplayError: If replay protection triggers
-        PayloadValidationError: If payload is invalid
-        RateLimitError: If rate limited
+        ValidationError: Payload schema/format validation failed (400)
+        AuthenticationError: Trusted ingress verification failed (401)
+        ReplayDetected: Duplicate event_id (409)
     """
-    # 1. Body size check
-    if len(request_body) > MAX_PAYLOAD_SIZE_BYTES:
-        raise PayloadValidationError(
-            f"Payload too large: {len(request_body)} bytes > {MAX_PAYLOAD_SIZE_BYTES}"
+    # 1. Verify trusted ingress authentication (fail-closed)
+    _verify_trusted_ingress(headers)
+
+    # 2. Strict payload validation via Pydantic (fail-closed, extra fields forbidden)
+    try:
+        tv_payload = TradingViewPayload(**payload)
+    except PydanticValidationError as e:
+        # Extract first error detail for fail-closed reporting
+        errors = e.errors()
+        if errors:
+            first_error = errors[0]
+            loc = ".".join(str(x) for x in first_error["loc"])
+            msg = first_error["msg"]
+            # Map Pydantic error types to our error codes
+            if "extra_forbidden" in first_error["type"]:
+                raise ValidationError(f"Extra field '{loc}' not allowed", "PAYLOAD_VALIDATION_FAILED")
+            elif "missing" in first_error["type"]:
+                raise ValidationError(f"Missing required field: {loc}", "PAYLOAD_VALIDATION_FAILED")
+            elif "string_too_short" in first_error["type"]:
+                raise ValidationError(f"{loc}: {msg}", "INVALID_EVENT_ID")
+            elif "greater_than" in first_error["type"]:
+                raise ValidationError(f"{loc}: {msg}", "PAYLOAD_VALIDATION_FAILED")
+            elif "string_pattern_mismatch" in first_error["type"]:
+                if loc == "symbol":
+                    raise ValidationError(f"symbol must match pattern [A-Za-z0-9_.-] and be <= {MAX_SYMBOL_LENGTH} chars", "INVALID_SYMBOL")
+                elif loc == "timeframe":
+                    raise ValidationError(f"timeframe must be one of 4h, 1d, 240, D", "PAYLOAD_VALIDATION_FAILED")
+                elif loc == "config_identity":
+                    raise ValidationError(f"config_identity must be 64-char lowercase hex SHA256", "INVALID_CONFIG_IDENTITY")
+                else:
+                    raise ValidationError(f"{loc}: {msg}", "PAYLOAD_VALIDATION_FAILED")
+            else:
+                raise ValidationError(f"{loc}: {msg}", "PAYLOAD_VALIDATION_FAILED")
+        else:
+            raise ValidationError("Payload validation failed", "PAYLOAD_VALIDATION_FAILED")
+    except ValidationError:
+        raise
+
+    # 3. Timestamp freshness check
+    _validate_timestamp(tv_payload.bar_timestamp_utc, received_at_utc)
+
+    # 4. Replay protection: event_id deduplication
+    if _check_replay(tv_payload.event_id):
+        raise ReplayDetected(
+            f"Duplicate event_id detected: {tv_payload.event_id}",
+            "DUPLICATE_EVENT_ID",
         )
 
-    # 2. Authentication: PRODUCTION ONLY - trusted ingress with client cert
-    is_valid, _identity = _verify_trusted_ingress_identity(headers)
-    if not is_valid:
-        logger.warning("Webhook rejected: missing/invalid trusted ingress identity")
-        raise AuthenticationError("Missing or invalid trusted ingress authentication")
+    # 5. Construct validated signal proposal (informational only)
+    received_at = received_at_utc or int(time.time() * 1000)
 
-    # 3. Parse JSON
-    try:
-        payload = json.loads(request_body.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise PayloadValidationError(f"Malformed JSON: {exc}") from exc
-    except UnicodeDecodeError as exc:
-        raise PayloadValidationError(f"Invalid UTF-8 encoding: {exc}") from exc
+    # tv_payload.signal is a string due to use_enum_values=True; convert to enum
+    signal_enum = SignalDirection(tv_payload.signal)
 
-    # 4. Validate payload
-    signal = validate_payload(payload)
-
-    logger.info(
-        "Webhook accepted: event_id=%s symbol=%s timeframe=%s signal=%s",
-        signal.event_id,
-        signal.symbol,
-        signal.timeframe,
-        signal.signal,
+    return ValidatedSignal(
+        event_id=tv_payload.event_id,
+        symbol=tv_payload.symbol,
+        timeframe=tv_payload.timeframe,
+        bar_timestamp_utc=tv_payload.bar_timestamp_utc,
+        signal=signal_enum,
+        score=tv_payload.score,
+        volatility_20d=tv_payload.volatility_20d,
+        latest_close=tv_payload.latest_close,
+        engine_version=tv_payload.engine_version,
+        config_identity=tv_payload.config_identity,
+        received_at_utc=received_at,
     )
-
-    return signal
-
-
-def get_event_id_cache_stats() -> dict[str, Any]:
-    """Get cache statistics for monitoring."""
-    return {
-        "size": len(_event_id_cache._cache),
-        "max_size": _event_id_cache._max_size,
-    }
-
-
-def clear_event_id_cache() -> None:
-    """Clear the event_id cache (for testing only)."""
-    _event_id_cache._cache.clear()
