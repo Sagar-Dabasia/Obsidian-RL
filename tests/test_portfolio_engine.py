@@ -408,7 +408,9 @@ def test_funding_snapshot_isolation() -> None:
     assert btc_pos.funding_paid == pytest.approx(50.0)
 
     # Now test mark_to_market snapshot isolation after funding
-    snapshot = eng.mark_to_market(100.0)
+    # Use multi-asset version since we have a BTCUSDT position
+    marks = {"BTCUSDT": 100.0}
+    snapshot = eng.mark_to_market_multi(marks)
     snapshot.positions["BTCUSDT"].funding_paid = 999999
     assert eng.state.positions["BTCUSDT"].funding_paid == pytest.approx(50.0)
 

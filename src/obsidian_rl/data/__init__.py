@@ -63,6 +63,7 @@ __all__ = [
     "compute_event_news_hash",
     "compute_market_bar_hash",
     "from_dict",
+    "interval_to_ms",
     "is_forex_weekend_gap",
     "run_migrations",
     "timeframe_to_ms",
