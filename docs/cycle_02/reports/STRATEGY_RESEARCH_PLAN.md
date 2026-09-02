@@ -47,16 +47,18 @@ The following components are **locked** and must not be changed during research:
 
 ## 3. Data & Holdout Protocol — Four-Tier Governance
 
-Per `docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md`, Cycle 02 enforces **four-tier window governance**. Calendar dates are **NOT frozen yet** — they must be formally defined and committed to `docs/CYCLE_02_EXPERIMENTAL_WINDOWS.md` before any data is downloaded or inspected.
+Per `docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md`, Cycle 02 enforces **four-tier window governance**. Calendar dates are **FROZEN** in `docs/CYCLE_02_EXPERIMENTAL_WINDOWS.md` (preregistered before any data access).
 
 ### 3.1 Four Tiers (Strict Isolation)
 
-| Tier | Purpose | Access |
-|------|---------|--------|
-| **DEV_TRAIN** | Engine design, indicator validation, Phase 9 ML cross-validation | Open read/write during Phases 4–9 |
-| **OUTER_VAL** | Walk-forward fold evaluation, pass/fail per completed engine phase | Isolated; used once per phase |
-| **CONFIRMATION** | One-time verification of finalized composite (Phase 8/9) before paper trading | **Locked**; loaded only after ALL OUTER_VAL criteria passed |
-| **FINAL_HOLDOUT** | Ultimate out-of-sample benchmark across all cycles | **STRICTLY LOCKED AND UNTOUCHED** — no access during Cycle 02 |
+| Tier | Purpose | Access | Interval (UTC, Half-Open) |
+|------|---------|--------|---------------------------|
+| **DEV_TRAIN** | Engine design, indicator validation, Phase 9 ML cross-validation | Open read/write during Phases 4–9 | `[2020-01-01T00:00:00Z, 2025-07-01T00:00:00Z)` |
+| **OUTER_VAL** | Walk-forward fold evaluation, pass/fail per completed engine phase | Isolated; used once per phase | `[2025-07-01T00:00:00Z, 2026-03-01T00:00:00Z)` |
+| **CONFIRMATION** | One-time verification of finalized composite (Phase 8/9) before paper trading | **Locked**; loaded only after ALL OUTER_VAL criteria passed | `[2026-03-01T00:00:00Z, 2026-07-01T00:00:00Z)` |
+| **FINAL_HOLDOUT** | Ultimate out-of-sample benchmark across all cycles | **STRICTLY LOCKED AND UNTOUCHED** — no access during Cycle 02 | `[2026-07-01T00:00:00Z, 2027-01-01T00:00:00Z)` |
+
+**Boundaries may NEVER move after preregistration.** Any modification = protocol violation.
 
 ### 3.2 Contamination Policy — Historical Exposure Inventory
 
@@ -72,16 +74,18 @@ Per `docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md`, Cycle 02 enforces **
 
 **Current reservoir status per repository evidence:**
 
-- **Cycle 2 CONFIRMATION window**: Dates UNASSIGNED — Phase 4C/4D reports state their *then-reserved* confirmation period (2024 to 2025-06) was untouched, **however overlapping dates were already exposed by Cycle 1 research (2023-01-01 → 2025-06-30)**. Therefore those dates cannot automatically serve as a pristine future Cycle 2 CONFIRMATION or FINAL_HOLDOUT. New `DEV_TRAIN`, `OUTER_VAL`, `CONFIRMATION`, and `FINAL_HOLDOUT` dates remain **UNASSIGNED** and require separate preregistration using contamination-aware boundaries. `FINAL_HOLDOUT` must be selected only from data not previously inspected.
-- **FINAL_HOLDOUT**: Locked/untouched — all reports confirm final holdout (2025-07+) "strictly prohibited" / "untouched" / "zero access verified across all audit logs".
-- **CYCLE_02_EXPERIMENTAL_WINDOWS.md**: Absent — recorded as a governance gap requiring a later preregistration task (not created in this task).
+- **DEV_TRAIN**: Preregistered — intentionally uses already-exposed history (2020–2025); no fresh-OOS claims.
+- **OUTER_VAL**: Preregistered — begins after last known exposure (2025-07-01).
+- **CONFIRMATION**: Preregistered — isolated, one-time, distinct from FINAL_HOLDOUT.
+- **FINAL_HOLDOUT**: Preregistered — locked/untouched; not used during Phase 11; cross-cycle benchmark.
+- **CYCLE_02_EXPERIMENTAL_WINDOWS.md**: **FROZEN** — committed before any Cycle 02 data access.
 
-**Important distinction:** The above dates are an **exposure inventory of already-inspected periods**, NOT the new Cycle 2 experimental-window assignment. Future `DEV_TRAIN`, `OUTER_VAL`, `CONFIRMATION`, and `FINAL_HOLDOUT` calendar dates require separate formal preregistration before any data access.
+**Important distinction:** The above exposure inventory documents already-inspected periods. The new experimental windows are **preregistered and frozen**; no retroactive shifting permitted.
 
 - Any historical period already inspected/evaluated in Cycle 2 (Phase 4D crypto screen, Phase 4E statistical review) is **excluded from FINAL_HOLDOUT**.
-- `docs/CYCLE_02_EXPERIMENTAL_WINDOWS.md` is **absent** — recorded as a governance gap requiring a later preregistration task (not created in this task).
 - No retroactive shifting of window boundaries once frozen.
 - CONFIRMATION is **one-time and distinct** from FINAL_HOLDOUT.
+- **Max drawdown and success metrics before Phase 11 use authorized OOS/CONFIRMATION only — NOT FINAL_HOLDOUT.**
 
 ### 3.3 Data Sources & Quality
 
@@ -216,7 +220,24 @@ Per repository governance (not Council-only), final research promotion requires:
 
 ---
 
-## 9. Initial Workstream (Week 1-2)
+## 11. Definition of Done (Research Phase)
+
+Research phase completes when **either**:
+
+1. **Success**: ≥1 candidate passes OUTER_VAL → proceeds to CONFIRMATION (one-time) → if passed, full governance gate to Paper Trading Pilot (Phase 11).
+2. **Exhaustion**: All prioritized families explored, no candidate passes OUTER_VAL → document negative results, archive, reassess.
+
+**No "almost passed" promotions.** CONFIRMATION is binary and one-time. FINAL_HOLDOUT remains locked.
+
+**Max drawdown and success metrics before Phase 11 use authorized OOS/CONFIRMATION only — NOT FINAL_HOLDOUT.**
+
+Phase 11 paper trading eligibility requires:
+1. Phases 7–10 complete.
+2. Finalized system passes authorized OUTER_VAL gates.
+3. One-time CONFIRMATION passes.
+4. All governance gates (Financial + Red Team + Release) pass.
+
+**FINAL_HOLDOUT remains completely sealed during Cycle 2 INCLUDING Phase 11 paper trading.** Its calendar end does NOT automatically authorize access. Any future FINAL_HOLDOUT opening requires separate explicit governance outside Cycle 2 development/paper trading.
 
 | Workstream | Owner | Deliverable |
 |------------|-------|-------------|
@@ -236,17 +257,6 @@ Per repository governance (not Council-only), final research promotion requires:
 - **No ensemble/stacking** until single signals pass OUTER_VAL.
 - **Maximum 3 concurrent candidates** in OUTER_VAL to prevent overfitting by selection.
 - **Weekly advisory review** — progress, failed candidates logged, scope creep check.
-
----
-
-## 11. Definition of Done (Research Phase)
-
-Research phase completes when **either**:
-
-1. **Success**: ≥1 candidate passes OUTER_VAL → proceeds to CONFIRMATION (one-time) → if passed, full governance gate to Paper Trading Pilot (Phase 11).
-2. **Exhaustion**: All prioritized families explored, no candidate passes OUTER_VAL → document negative results, archive, reassess.
-
-**No "almost passed" promotions.** CONFIRMATION is binary and one-time. FINAL_HOLDOUT remains locked.
 
 ---
 

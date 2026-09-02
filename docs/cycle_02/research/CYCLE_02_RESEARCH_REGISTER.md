@@ -68,6 +68,7 @@ To preserve absolute scientific integrity and prevent data dredging across cross
 ## Research Cycle 02 Governance Checklist
 - [x] Canonical Cross-Asset Contracts (`MarketBar`, `EventNewsItem`) finalized and tested (`Phase 1`).
 - [ ] Experimental window boundaries (`DEV_TRAIN`, `OUTER_VAL`, `CONFIRMATION`, `FINAL_HOLDOUT`) formally frozen before data download (`Phase 3`).
+  - **Remediation Note**: Phase 4C/4D occurred before formal Cycle 2 window freeze. This is a confirmed sequencing/governance defect. Current windows are frozen prospectively for future Strategy Research. No retroactive compliance claim.
 - [x] Cycle 01 hypotheses verified as retired and excluded from active strategy loops.
 - [ ] Multi-engine composite evaluated under strict walk-forward isolation (`Phase 8`).
 - [x] Zero access to `FINAL_HOLDOUT` verified across all audit logs.
