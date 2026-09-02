@@ -72,7 +72,7 @@ Per `docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md`, Cycle 02 enforces **
 
 **Current reservoir status per repository evidence:**
 
-- **Cycle 2 CONFIRMATION window**: Reserved/untouched — all Phase 4C/4D reports explicitly state confirmation (2024 to 2025-06) periods "remained entirely untouched" and "untouched and unqueried".
+- **Cycle 2 CONFIRMATION window**: Dates UNASSIGNED — Phase 4C/4D reports state their *then-reserved* confirmation period (2024 to 2025-06) was untouched, **however overlapping dates were already exposed by Cycle 1 research (2023-01-01 → 2025-06-30)**. Therefore those dates cannot automatically serve as a pristine future Cycle 2 CONFIRMATION or FINAL_HOLDOUT. New `DEV_TRAIN`, `OUTER_VAL`, `CONFIRMATION`, and `FINAL_HOLDOUT` dates remain **UNASSIGNED** and require separate preregistration using contamination-aware boundaries. `FINAL_HOLDOUT` must be selected only from data not previously inspected.
 - **FINAL_HOLDOUT**: Locked/untouched — all reports confirm final holdout (2025-07+) "strictly prohibited" / "untouched" / "zero access verified across all audit logs".
 - **CYCLE_02_EXPERIMENTAL_WINDOWS.md**: Absent — recorded as a governance gap requiring a later preregistration task (not created in this task).
 
@@ -209,7 +209,7 @@ Per repository governance (not Council-only), final research promotion requires:
 |------|-------------|----------|
 | **DEV_TRAIN → OUTER_VAL** | Financial Reviewer | No lookahead, costs correct, metrics computed per spec |
 | **OUTER_VAL → CONFIRMATION** | Red Team Reviewer | No holdout peek, single candidate per family, stability ≥2 assets |
-| **CONFIRMATION → Paper Trading (Phase 7)** | Office (Financial + Red Team + Release) | All success criteria met, evidence complete, test suite green |
+| **CONFIRMATION → Paper Trading (Phase 11)** | Office (Financial + Red Team + Release) | All success criteria met, evidence complete, test suite green |
 
 **No bypasses**. Each gate requires explicit sign-off in the research log.
 **Council is advisory**, not authorization. The "Council (Chairman + 3 Advisors)" in the original draft is replaced by the existing office/financial/red-team/release governance chain.
@@ -243,7 +243,7 @@ Per repository governance (not Council-only), final research promotion requires:
 
 Research phase completes when **either**:
 
-1. **Success**: ≥1 candidate passes OUTER_VAL → proceeds to CONFIRMATION (one-time) → if passed, full governance gate to Paper Trading Pilot (Phase 7).
+1. **Success**: ≥1 candidate passes OUTER_VAL → proceeds to CONFIRMATION (one-time) → if passed, full governance gate to Paper Trading Pilot (Phase 11).
 2. **Exhaustion**: All prioritized families explored, no candidate passes OUTER_VAL → document negative results, archive, reassess.
 
 **No "almost passed" promotions.** CONFIRMATION is binary and one-time. FINAL_HOLDOUT remains locked.
