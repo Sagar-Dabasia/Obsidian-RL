@@ -2,7 +2,7 @@
 
 **Status**: FROZEN (do not modify after commitment)
 **Branch**: `research/cycle-02-trend-pilot-02`
-**Date**: 2026-09-01
+**Date**: 2026-09-02
 **Context**: **This is the FIRST FORMAL Cycle 2 calendar freeze.** It occurred AFTER Phase 4C/4D data access/inspection; the original Phase-3 sequencing requirement (freeze before any Cycle 2 data access) was MISSED. Previous Phase 4 results remain classified under their existing reports; they are NOT retroactively claimed to be preregistered under these windows. Boundaries are prospectively immutable from this freeze onward.
 
 ---

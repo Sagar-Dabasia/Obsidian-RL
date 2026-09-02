@@ -16,7 +16,7 @@ Discover a **profitable, net-of-cost trading signal** for the Obsidian-RL multi-
 | Metric | Threshold | Notes |
 |--------|-----------|-------|
 | **Positive net-of-cost OOS performance** | > 0 | After *all* market-specific costs (fees, spread, slippage, funding) |
-| **Portfolio max drawdown** | ≤ 15% | Path maximum drawdown on holdout period |
+| **Portfolio max drawdown** | ≤ 15% | Path maximum drawdown on authorized OOS / CONFIRMATION data as applicable |
 | **Stability** | Positive on ≥2 independent assets/folds | Across multiple independent assets and chronological folds |
 | **Turnover** | Explicitly measured | Trades/year per asset and notional turnover (not ambiguous "<2x") |
 | **Baseline comparison** | Required | Always-long / buy-and-hold benchmark on identical data |
@@ -47,7 +47,7 @@ The following components are **locked** and must not be changed during research:
 
 ## 3. Data & Holdout Protocol — Four-Tier Governance
 
-Per `docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md`, Cycle 02 enforces **four-tier window governance**. Calendar dates are **FROZEN** in `docs/CYCLE_02_EXPERIMENTAL_WINDOWS.md` (preregistered before any data access).
+Per `docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md`, Cycle 02 enforces **four-tier window governance**. Calendar dates are **FROZEN** in `docs/CYCLE_02_EXPERIMENTAL_WINDOWS.md`. **This freeze occurred AFTER Phase 4C/4D historical data access; the original Phase-3 sequencing requirement was missed. The freeze is prospective and immutable for all future Strategy Research. No retroactive compliance claim.**
 
 ### 3.1 Four Tiers (Strict Isolation)
 
@@ -78,7 +78,7 @@ Per `docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md`, Cycle 02 enforces **
 - **OUTER_VAL**: Preregistered — begins after last known exposure (2025-07-01).
 - **CONFIRMATION**: Preregistered — isolated, one-time, distinct from FINAL_HOLDOUT.
 - **FINAL_HOLDOUT**: Preregistered — locked/untouched; not used during Phase 11; cross-cycle benchmark.
-- **CYCLE_02_EXPERIMENTAL_WINDOWS.md**: **FROZEN** — committed before any Cycle 02 data access.
+- **CYCLE_02_EXPERIMENTAL_WINDOWS.md**: **FROZEN** — committed after Phase 4C/4D access; prospective freeze for future Strategy Research. No retroactive compliance claim.
 
 **Important distinction:** The above exposure inventory documents already-inspected periods. The new experimental windows are **preregistered and frozen**; no retroactive shifting permitted.
 
@@ -282,7 +282,7 @@ TradingView / Phase 6 remains **frozen infrastructure** (visualization + alert p
 - No synthetic/fabricated data
 - No future leakage in features, labels, normalization, or selection
 - No holdout peeking (CONFIRMATION and FINAL_HOLDOUT locked)
-- No silent window shifting — dates frozen before data access
+- No silent window shifting — dates frozen prospectively; no retroactive shifts
 - Realistic market-specific costs (not universal 40 bp)
 - Next-bar/causal execution timing only
 - Centralized accounting/state (PortfolioEngine owns all position state)

@@ -3,17 +3,14 @@
   "authorized_paths": [
     ".agent_runtime/task_scope.json",
     "docs/CYCLE_02_EXPERIMENTAL_WINDOWS.md",
-    "docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md",
-    "docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md"
+    "docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md"
   ],
   "baseline_paths": [
     ".agent_runtime/task_scope.json",
     "docs/CYCLE_02_EXPERIMENTAL_WINDOWS.md",
-    "docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md",
-    "docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md"
+    "docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md"
   ],
   "baseline_fingerprints": {
-    "docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md": "e99874fae79e7e99517c24e0ef120e13fe0ed8e1c7e8eda2c51ed9361836a1bf",
-    "docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md": "70ef82850acd8acf9ce055ae1b2799c7135c5614bd9141938017fd7ed3ed9865"
+    "docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md": "e99874fae79e7e99517c24e0ef120e13fe0ed8e1c7e8eda2c51ed9361836a1bf"
   }
 }
