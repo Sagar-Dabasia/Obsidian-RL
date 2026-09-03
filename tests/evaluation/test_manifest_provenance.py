@@ -10,11 +10,11 @@ from obsidian_rl.data.historical_dataset import verify_and_digest_continuous_bar
 from obsidian_rl.data.storage import SQLiteStorage
 
 
-def test_builder_and_runner_digest_match():
+def test_builder_and_runner_digest_match() -> None:
     # Simple check that verify_and_digest_continuous_bars is deterministic
     b1 = MarketBar(
         asset_class=AssetClass.CRYPTO,
-        venue="BINANCE_PERPETUAL",
+        venue="BINANCE_FUTURES",
         symbol="BTCUSDT",
         timeframe=Timeframe.H4,
         timestamp_utc=1000000000000,
@@ -32,7 +32,7 @@ def test_builder_and_runner_digest_match():
     )
     b2 = MarketBar(
         asset_class=AssetClass.CRYPTO,
-        venue="BINANCE_PERPETUAL",
+        venue="BINANCE_FUTURES",
         symbol="BTCUSDT",
         timeframe=Timeframe.H4,
         timestamp_utc=1000000000000 + 4 * 3600 * 1000,
@@ -57,7 +57,7 @@ def test_builder_and_runner_digest_match():
         bars.append(
             MarketBar(
                 asset_class=AssetClass.CRYPTO,
-                venue="BINANCE_PERPETUAL",
+                venue="BINANCE_FUTURES",
                 symbol="BTCUSDT",
                 timeframe=Timeframe.H4,
                 timestamp_utc=ts + i * 4 * 3600 * 1000,
@@ -77,23 +77,23 @@ def test_builder_and_runner_digest_match():
 
     # 725 bars, eval_start_ms is ts + 722 * 4h -> 722 warmup bars
     digest1 = verify_and_digest_continuous_bars(
-        bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720
+        bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_FUTURES", min_warmup_bars=720
     )
     digest2 = verify_and_digest_continuous_bars(
-        bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720
+        bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_FUTURES", min_warmup_bars=720
     )
     assert digest1 == digest2
     assert len(digest1) == 64
 
 
-def test_unregistered_gaps_fail():
+def test_unregistered_gaps_fail() -> None:
     bars = []
     ts = 1570000000000
     for i in range(725):
         bars.append(
             MarketBar(
                 asset_class=AssetClass.CRYPTO,
-                venue="BINANCE_PERPETUAL",
+                venue="BINANCE_FUTURES",
                 symbol="BTCUSDT",
                 timeframe=Timeframe.H4,
                 timestamp_utc=ts + i * 4 * 3600 * 1000,
@@ -114,7 +114,7 @@ def test_unregistered_gaps_fail():
     # create gap
     bars[500] = MarketBar(
         asset_class=AssetClass.CRYPTO,
-        venue="BINANCE_PERPETUAL",
+        venue="BINANCE_FUTURES",
         symbol="BTCUSDT",
         timeframe=Timeframe.H4,
         timestamp_utc=bars[500].timestamp_utc + 4 * 3600 * 1000,
@@ -134,18 +134,18 @@ def test_unregistered_gaps_fail():
 
     with pytest.raises(ValueError, match="Unregistered gap found"):
         verify_and_digest_continuous_bars(
-            bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720
+            bars, ts + 722 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_FUTURES", min_warmup_bars=720
         )
 
 
-def test_insufficient_warmup_fails():
+def test_insufficient_warmup_fails() -> None:
     bars = []
     ts = 1570000000000
     for i in range(100):
         bars.append(
             MarketBar(
                 asset_class=AssetClass.CRYPTO,
-                venue="BINANCE_PERPETUAL",
+                venue="BINANCE_FUTURES",
                 symbol="BTCUSDT",
                 timeframe=Timeframe.H4,
                 timestamp_utc=ts + i * 4 * 3600 * 1000,
@@ -163,9 +163,9 @@ def test_insufficient_warmup_fails():
             )
         )
     with pytest.raises(ValueError, match="Insufficient continuous warm-up bars"):
-        verify_and_digest_continuous_bars(
-            bars, ts + 100 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720
-        )
+            verify_and_digest_continuous_bars(
+                bars, ts + 100 * 4 * 3600 * 1000, Timeframe.H4, "BINANCE_FUTURES", min_warmup_bars=720
+            )
 
 
 def run_backtest_with_manifest(db_path, manifest_path, **kwargs):
@@ -179,7 +179,7 @@ def run_backtest_with_manifest(db_path, manifest_path, **kwargs):
         "--asset-class",
         "CRYPTO",
         "--venue",
-        "BINANCE_PERPETUAL",
+        "BINANCE_FUTURES",
         "--symbol",
         "BTCUSDT",
         "--timeframe",
@@ -212,7 +212,7 @@ def test_runner_manifest_validation(tmp_path):
         bars.append(
             MarketBar(
                 asset_class=AssetClass.CRYPTO,
-                venue="BINANCE_PERPETUAL",
+                venue="BINANCE_FUTURES",
                 symbol="BTCUSDT",
                 timeframe=Timeframe.H4,
                 timestamp_utc=ts + i * 4 * 3600 * 1000,
@@ -236,7 +236,7 @@ def test_runner_manifest_validation(tmp_path):
         extra_bars.append(
             MarketBar(
                 asset_class=AssetClass.CRYPTO,
-                venue="BINANCE_PERPETUAL",
+                venue="BINANCE_FUTURES",
                 symbol="BTCUSDT",
                 timeframe=Timeframe.H4,
                 timestamp_utc=ts - 200 * 4 * 3600 * 1000 + i * 4 * 3600 * 1000,
@@ -259,14 +259,14 @@ def test_runner_manifest_validation(tmp_path):
 
     eval_start = ts + 725 * 4 * 3600 * 1000
     digest = verify_and_digest_continuous_bars(
-        bars, eval_start, Timeframe.H4, "BINANCE_PERPETUAL", min_warmup_bars=720
+        bars, eval_start, Timeframe.H4, "BINANCE_FUTURES", min_warmup_bars=720
     )
 
     manifest_data = {
         "components": [
             {
                 "asset_class": "CRYPTO",
-                "venue": "BINANCE_PERPETUAL",
+                "venue": "BINANCE_FUTURES",
                 "symbol": "BTCUSDT",
                 "timeframe": "4h",
                 "start_timestamp_utc": bars[0].timestamp_utc,

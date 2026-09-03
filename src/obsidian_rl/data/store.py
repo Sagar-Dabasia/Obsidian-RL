@@ -121,16 +121,16 @@ class CandleStore:
         return result
 
     def read(self, start_ms: int | None = None, end_ms: int | None = None) -> pd.DataFrame:
-        files = self._partition_files()
-        if not files:
-            return empty_candle_frame()
-        frames = [pd.read_parquet(f) for f in files]
-        df = pd.concat(frames, ignore_index=True).sort_values("open_time").reset_index(drop=True)
-        if start_ms is not None:
-            df = df[df["open_time"] >= start_ms]
-        if end_ms is not None:
-            df = df[df["open_time"] <= end_ms]
-        return coerce_candle_frame(df)
+            files = self._partition_files()
+            if not files:
+                return empty_candle_frame()
+            frames = [pd.read_parquet(f) for f in files]
+            df = pd.concat(frames, ignore_index=True).sort_values("open_time").reset_index(drop=True)
+            if start_ms is not None:
+                df = df[df["open_time"] >= start_ms]
+            if end_ms is not None:
+                df = df[df["open_time"] <= end_ms]
+            return coerce_candle_frame(df)
 
     def max_open_time(self) -> int | None:
         files = self._partition_files()

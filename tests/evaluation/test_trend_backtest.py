@@ -12,6 +12,7 @@ from obsidian_rl.data.contracts import (
     VolumeType,
     compute_market_bar_hash,
 )
+from obsidian_rl.data.research_access import ProductMismatchError
 from obsidian_rl.evaluation.trend_backtest import run_trend_backtest
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import ExposurePolicy, MarketModel
@@ -22,7 +23,7 @@ def make_bar(
     timestamp_ms: int,
     close: float,
     asset_class: AssetClass = AssetClass.CRYPTO,
-    venue: str = "BINANCE_SPOT",
+    venue: str = "BINANCE_FUTURES",
     symbol: str = "BTCUSDT",
     timeframe: Timeframe = Timeframe.H4,
 ) -> MarketBar:
@@ -89,7 +90,7 @@ def test_mixed_symbols_fail() -> None:
 def test_missing_forex_quotes_fail_closed() -> None:
     # Forex bar missing ask
     bars = [
-        make_bar(i * 14_400_000, close=100.0 + i, asset_class=AssetClass.FOREX) for i in range(800)
+        make_bar(i * 14_400_000, close=100.0 + i, asset_class=AssetClass.FOREX, venue="OANDA_PRACTICE") for i in range(800)
     ]
     object.__setattr__(bars[721], "ask", None)
     # The engine should fail when attempting to execute LONG at bar 721
@@ -99,7 +100,7 @@ def test_missing_forex_quotes_fail_closed() -> None:
             TrendConfig(),
             CostModel(),
             eval_start_ms=0,
-            market_model=MarketModel.PERPETUAL,
+            market_model=MarketModel.FOREX_MARGIN,
             exposure_policy=ExposurePolicy.BIDIRECTIONAL,
         )
 
@@ -434,7 +435,7 @@ def test_cli_boundaries(monkeypatch) -> None:
         "--asset-class",
         "CRYPTO",
         "--venue",
-        "BINANCE_PERPETUAL",
+                "BINANCE_FUTURES",
         "--symbol",
         "BTCUSDT",
         "--timeframe",
@@ -462,11 +463,11 @@ def test_cli_boundaries(monkeypatch) -> None:
 
 
 def test_backtest_result_uses_path_maximum_drawdown(monkeypatch) -> None:
-    bars = tuple(make_bar(i * 14_400_000, close=100.0) for i in range(150))
+    bars = tuple(make_bar(i * 14_400_000, close=100.0, venue="BINANCE_SPOT") for i in range(150))
     # inject a drawdown in the middle
     bars = list(bars)
-    bars[130] = make_bar(130 * 14_400_000, close=50.0)
-    bars[140] = make_bar(140 * 14_400_000, close=120.0)
+    bars[130] = make_bar(130 * 14_400_000, close=50.0, venue="BINANCE_SPOT")
+    bars[140] = make_bar(140 * 14_400_000, close=120.0, venue="BINANCE_SPOT")
     bars = tuple(bars)
     config = TrendConfig()
     cost = CostModel(taker_fee=0.0, half_spread=0.0, slippage=0.0)
@@ -492,25 +493,25 @@ def test_backtest_result_uses_path_maximum_drawdown(monkeypatch) -> None:
 
     monkeypatch.setattr(tb, "calculate_trend_signal", mock_calc)
 
-    # MarketModel.PERPETUAL
+    # MarketModel.SPOT for BINANCE_SPOT venue
     report = run_trend_backtest(
         bars,
         config,
         cost,
         eval_start_ms=0,
-        market_model=MarketModel.PERPETUAL,
-        exposure_policy=ExposurePolicy.BIDIRECTIONAL,
+        market_model=MarketModel.SPOT,
+        exposure_policy=ExposurePolicy.LONG_FLAT,
     )
     assert report.strategy.maximum_drawdown > 0.4
     assert report.strategy.ending_equity >= 10000.0  # recovered
 
 
 def test_spot_bidirectional_rejected_before_engine_creation() -> None:
-    bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(10))
+    bars = tuple(make_bar(i * 14_400_000, close=100.0 + i, venue="BINANCE_SPOT") for i in range(10))
     config = TrendConfig()
     cost = CostModel()
     with pytest.raises(
-        ValueError, match="SPOT market model cannot execute BIDIRECTIONAL positions"
+        ProductMismatchError, match="SPOT market model cannot be combined with BIDIRECTIONAL exposure policy"
     ):
         run_trend_backtest(
             bars,
@@ -688,8 +689,10 @@ def test_identity_changes_for_every_critical_input() -> None:
         market_model=MarketModel.PERPETUAL,
         exposure_policy=ExposurePolicy.BIDIRECTIONAL,
     )
+    # Use OANDA_PRACTICE venue for FOREX_MARGIN
+    bars_forex = tuple(make_bar(i * 14_400_000, close=100.0 + i, venue="OANDA_PRACTICE", asset_class=AssetClass.FOREX) for i in range(150))
     report2 = run_trend_backtest(
-        bars,
+        bars_forex,
         config,
         cost,
         eval_start_ms=0,

@@ -1,9 +1,21 @@
 {
-  "task_id": "cycle2-window-preregistration",
+  "task_id": "strategy-research-safety-batch1",
   "authorized_paths": [
     ".agent_runtime/task_scope.json",
     "docs/CYCLE_02_EXPERIMENTAL_WINDOWS.md",
-    "docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md"
+    "docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md",
+    "src/obsidian_rl/data/research_access.py",
+    "src/obsidian_rl/data/storage.py",
+    "src/obsidian_rl/data/store.py",
+    "src/obsidian_rl/data/historical_dataset.py",
+    "src/obsidian_rl/data/binance_client.py",
+    "src/obsidian_rl/evaluation/trend_backtest.py",
+    "tests/test_research_access.py",
+    "tests/data/test_storage.py",
+    "tests/data/test_ingestion.py",
+    "tests/evaluation/test_trend_backtest.py",
+    "tests/evaluation/test_manifest_provenance.py",
+    "tests/test_binance_client.py"
   ],
   "baseline_paths": [
     ".agent_runtime/task_scope.json",

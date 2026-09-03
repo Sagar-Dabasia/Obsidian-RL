@@ -61,7 +61,7 @@ Historical bars before `2020-01-01T00:00:00Z` may be used **ONLY** for causal in
 | Rule | Enforcement |
 |------|-------------|
 | Parameters/hypothesis frozen before first OUTER_VAL access | `CYCLE_02_EXPERIMENTAL_WINDOWS.md` must be committed before any OUTER_VAL download |
-| No tuning from OUTER_VAL results | Sentinel checks task_scope for new parameter commits after OUTER_VAL access |
+| No tuning from OUTER_VAL results | `tools/task_scope_sentinel.py` checks task_scope for new parameter commits after OUTER_VAL access |
 | One predetermined candidate per family enters OUTER_VAL | Research log must name candidate before OUTER_VAL run |
 | Failed candidate cannot be retuned on OUTER_VAL under same hypothesis | `FAILED_CANDIDATE` status blocks re-entry without new hypothesis |
 | Negative results preserved | All OUTER_VAL runs logged with full metrics; no deletion |
@@ -72,7 +72,7 @@ Historical bars before `2020-01-01T00:00:00Z` may be used **ONLY** for causal in
 
 | Rule | Enforcement |
 |------|-------------|
-| Do not access until required OUTER_VAL gates pass | `tools/task_scope_sentinel.py` blocks CONFIRMATION access if OUTER_VAL criteria unmet |
+| Do not access until required OUTER_VAL gates pass | Runtime data access guard (`src/obsidian_rl/data/research_access.py`) blocks CONFIRMATION access if OUTER_VAL criteria unmet |
 | Single finalized composite only | Only the exact configuration that passed OUTER_VAL may enter CONFIRMATION |
 | No partial-window peeking | CONFIRMATION window accessed exactly once, in full, after all prior gates |
 
@@ -82,7 +82,7 @@ Historical bars before `2020-01-01T00:00:00Z` may be used **ONLY** for causal in
 
 | Rule | Enforcement |
 |------|-------------|
-| No script/tool/person may load, query, plot, or evaluate FINAL_HOLDOUT during Cycle 02 | Sentinel + data-layer guards block any `store.read` / query overlapping `[2026-07-01T00:00:00Z, 2027-01-01T00:00:00Z)` |
+| No script/tool/person may load, query, plot, or evaluate FINAL_HOLDOUT during Cycle 02 | Runtime data access guard (`src/obsidian_rl/data/research_access.py`) blocks any `store.read` / query overlapping `[2026-07-01T00:00:00Z, 2027-01-01T00:00:00Z)` |
 | Do not inspect currently accrued portion | Even as real time progresses into this window, no evaluation permitted |
 | Do not use during Phase 11 paper trading | Phase 11 operates on live market time; FINAL_HOLDOUT remains the cross-cycle reserved benchmark |
 

@@ -22,6 +22,9 @@ from obsidian_rl.data.storage import (
     SQLiteStorage,
 )
 
+DEV_TRAIN_START_MS = 1577836800000
+DEV_TRAIN_END_MS = 1751328000000
+
 
 @pytest.fixture
 def sample_crypto_bar() -> MarketBar:
@@ -30,8 +33,8 @@ def sample_crypto_bar() -> MarketBar:
         venue="BINANCE_SPOT",
         symbol="BTCUSDT",
         timeframe=Timeframe.H4,
-        timestamp_utc=1784750400000,
-        observed_at_utc=1784764800000,
+        timestamp_utc=1704067200000,  # 2024-01-01T00:00:00Z - within DEV_TRAIN
+        observed_at_utc=1704074400000,
         open=65923.19,
         high=66138.24,
         low=65791.79,
@@ -49,11 +52,11 @@ def sample_crypto_bar() -> MarketBar:
 def sample_forex_bar() -> MarketBar:
     return MarketBar(
         asset_class=AssetClass.FOREX,
-        venue="OANDA",
+        venue="OANDA_PRACTICE",
         symbol="EUR_USD",
         timeframe=Timeframe.H4,
-        timestamp_utc=1784754000000,
-        observed_at_utc=1784768400000,
+        timestamp_utc=1704067200000,  # 2024-01-01T00:00:00Z - within DEV_TRAIN
+        observed_at_utc=1704074400000,
         open=1.14104,
         high=1.14176,
         low=1.14060,
@@ -73,9 +76,9 @@ def sample_event_item() -> EventNewsItem:
         event_id="FED_RATE_2026_07",
         source="FOREX_FACTORY",
         source_reliability=0.95,
-        original_published_at=1784750400000,
-        first_observed_at=1784750401000,
-        updated_at=1784750401000,
+        original_published_at=1704067200000,  # Within DEV_TRAIN
+        first_observed_at=1704067201000,
+        updated_at=1704067201000,
         affected_assets=("EUR_USD", "USD_JPY"),
         event_type=EventType.INTEREST_RATE,
         expected_value=5.25,
@@ -112,26 +115,26 @@ def test_market_bar_insertion_and_round_trip(
         inserted = store.insert_market_bars([sample_crypto_bar, sample_forex_bar])
         assert inserted == 2
 
-        # Query crypto
+        # Query crypto - use DEV_TRAIN range
         crypto_res = store.query_market_bars(
             asset_class=AssetClass.CRYPTO,
             venue="BINANCE_SPOT",
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
-            start_timestamp_utc=1784750400000,
-            end_timestamp_utc=1784750400001,
+            start_timestamp_utc=1577836800000,  # DEV_TRAIN_START_MS
+            end_timestamp_utc=1751328000000,  # DEV_TRAIN_END_MS
         )
         assert len(crypto_res) == 1
         assert crypto_res[0] == sample_crypto_bar
 
-        # Query forex
+        # Query forex - use DEV_TRAIN range
         forex_res = store.query_market_bars(
             asset_class=AssetClass.FOREX,
-            venue="OANDA",
+            venue="OANDA_PRACTICE",
             symbol="EUR_USD",
             timeframe=Timeframe.H4,
-            start_timestamp_utc=1784754000000,
-            end_timestamp_utc=1784754000001,
+            start_timestamp_utc=1577836800000,  # DEV_TRAIN_START_MS
+            end_timestamp_utc=1751328000000,  # DEV_TRAIN_END_MS
         )
         assert len(forex_res) == 1
         assert forex_res[0] == sample_forex_bar
@@ -237,8 +240,8 @@ def test_transaction_rollback_on_failure(
             "BINANCE_SPOT",
             "BTCUSDT",
             Timeframe.H4,
-            0,
-            2000000000000,
+            1577836800000,  # DEV_TRAIN_START_MS
+            1751328000000,  # DEV_TRAIN_END_MS
         )
         assert len(res) == 0
 
@@ -353,7 +356,7 @@ def test_deterministic_manifest(sample_crypto_bar: MarketBar) -> None:
             symbol="BTCUSDT",
             timeframe=Timeframe.H4,
             bars=bars,
-            created_at_utc=1784765000000,
+            created_at_utc=1704074400000,
         )
 
         assert manifest.dataset_id == "DS_BTCUSDT_4H_V1"

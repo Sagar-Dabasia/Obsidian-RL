@@ -11,6 +11,7 @@ from typing import Any
 from obsidian_rl.data.contracts import AssetClass, MarketBar, Timeframe
 from obsidian_rl.data.outages import OutageRegistry
 from obsidian_rl.data.storage import DatasetManifest, SQLiteStorage
+from obsidian_rl.data.research_access import validate_temporal_access
 
 CHUNK_SIZE_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
 
@@ -61,6 +62,9 @@ def ingest_historical_range(
     3. Persist to SQLite.
     4. Verify continuity and calculate deterministic digest.
     """
+    # Cycle 2 research temporal access guard
+    validate_temporal_access(start_ms, end_ms)
+
     try:
         provider = _get_provider(venue)
     except Exception:

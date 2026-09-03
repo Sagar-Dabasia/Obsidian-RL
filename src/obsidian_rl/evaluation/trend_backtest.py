@@ -15,6 +15,7 @@ from obsidian_rl.portfolio.engine import (
     PortfolioEngine,
 )
 from obsidian_rl.signals.trend import InsufficientHistoryError, TrendConfig, calculate_trend_signal
+from obsidian_rl.data.research_access import validate_backtest_access, validate_product_consistency
 
 
 @dataclass(frozen=True)
@@ -318,6 +319,19 @@ def run_trend_backtest(
     """Run backtests for strategy, flat baseline, and long baseline."""
     if not bars:
         raise ValueError("Cannot run backtest on empty data.")
+
+    # Cycle 2 research temporal + product access guard
+    bars_start_ms = bars[0].timestamp_utc
+    bars_end_ms = bars[-1].timestamp_utc + 1  # Exclusive end
+    validate_backtest_access(
+        bars_start_ms=bars_start_ms,
+        bars_end_ms=bars_end_ms,
+        eval_start_ms=eval_start_ms,
+        asset_class=bars[0].asset_class,
+        venue=bars[0].venue,
+        market_model=market_model,
+        exposure_policy=exposure_policy,
+    )
 
     asset = bars[0].asset_class
     venue = bars[0].venue
