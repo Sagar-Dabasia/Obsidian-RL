@@ -109,8 +109,14 @@ class TestTemporalAccess:
         assert "FINAL_HOLDOUT" in str(exc_info.value)
 
     def test_unbounded_read_fails_closed(self):
-        """Unbounded reads that could include protected windows must fail closed."""
-        # This is tested by the integration in store.py which maps None to max bounds
+        """Unbounded reads that could include protected windows must fail closed.
+
+        This is tested by the integration in store.py which maps None to max bounds.
+        """
+        # With None bounds mapped to [0, max_int64], should fail as it spans all windows
+        with pytest.raises(Exception) as exc_info:
+            validate_temporal_access(0, (1 << 63) - 1)
+        assert "FINAL_HOLDOUT" in str(exc_info.value)
 
     def test_malformed_range_rejected(self):
         """Malformed/bool/reversed ranges are rejected."""
@@ -297,17 +303,289 @@ class TestBacktestAccess:
 class TestStorageBypassBlocked:
     """Tests that storage layer enforces guards."""
 
-    def test_ingestion_blocks_outer_val(self):
-        """Ingestion blocks OUTER_VAL."""
-        pass
+    def test_sqlite_query_market_bars_blocks_outer_val(self):
+        """SQLiteStorage.query_market_bars blocks OUTER_VAL."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import Timeframe
 
-    def test_futures_fetch_blocks_outer_val(self):
+        with SQLiteStorage(":memory:") as store:
+            with pytest.raises(Exception) as exc_info:
+                store.query_market_bars(
+                    AssetClass.CRYPTO,
+                    "BINANCE_SPOT",
+                    "BTCUSDT",
+                    Timeframe.H4,
+                    OUTER_VAL_START_MS,
+                    OUTER_VAL_END_MS,
+                )
+            assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_sqlite_query_market_bars_blocks_confirmation(self):
+        """SQLiteStorage.query_market_bars blocks CONFIRMATION."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import Timeframe
+
+        with SQLiteStorage(":memory:") as store:
+            with pytest.raises(Exception) as exc_info:
+                store.query_market_bars(
+                    AssetClass.CRYPTO,
+                    "BINANCE_SPOT",
+                    "BTCUSDT",
+                    Timeframe.H4,
+                    CONFIRMATION_START_MS,
+                    CONFIRMATION_END_MS,
+                )
+            assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_sqlite_query_market_bars_blocks_final_holdout(self):
+        """SQLiteStorage.query_market_bars blocks FINAL_HOLDOUT unconditionally."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import Timeframe
+
+        with SQLiteStorage(":memory:") as store:
+            with pytest.raises(Exception) as exc_info:
+                store.query_market_bars(
+                    AssetClass.CRYPTO,
+                    "BINANCE_SPOT",
+                    "BTCUSDT",
+                    Timeframe.H4,
+                    FINAL_HOLDOUT_START_MS,
+                    FINAL_HOLDOUT_END_MS,
+                )
+            assert "FINAL_HOLDOUT" in str(exc_info.value)
+            assert "permanently sealed" in str(exc_info.value)
+
+    def test_sqlite_query_market_bars_partial_final_holdout_blocked(self):
+        """SQLiteStorage.query_market_bars blocks partial FINAL_HOLDOUT overlap."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import Timeframe
+
+        with SQLiteStorage(":memory:") as store:
+            with pytest.raises(Exception) as exc_info:
+                store.query_market_bars(
+                    AssetClass.CRYPTO,
+                    "BINANCE_SPOT",
+                    "BTCUSDT",
+                    Timeframe.H4,
+                    FINAL_HOLDOUT_START_MS - 86400000,
+                    FINAL_HOLDOUT_START_MS + 86400000,
+                )
+            assert "FINAL_HOLDOUT" in str(exc_info.value)
+
+    def test_candlestore_read_blocks_outer_val(self):
+        """CandleStore.read blocks OUTER_VAL."""
+        from obsidian_rl.data.store import CandleStore
+        from pathlib import Path
+
+        # Create a temp directory
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = CandleStore(Path(tmpdir), "BTCUSDT", "4h")
+            with pytest.raises(Exception) as exc_info:
+                store.read(start_ms=OUTER_VAL_START_MS, end_ms=OUTER_VAL_END_MS)
+            assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_candlestore_read_blocks_confirmation(self):
+        """CandleStore.read blocks CONFIRMATION."""
+        from obsidian_rl.data.store import CandleStore
+        from pathlib import Path
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = CandleStore(Path(tmpdir), "BTCUSDT", "4h")
+            with pytest.raises(Exception) as exc_info:
+                store.read(start_ms=CONFIRMATION_START_MS, end_ms=CONFIRMATION_END_MS)
+            assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_candlestore_read_blocks_final_holdout(self):
+        """CandleStore.read blocks FINAL_HOLDOUT unconditionally."""
+        from obsidian_rl.data.store import CandleStore
+        from pathlib import Path
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = CandleStore(Path(tmpdir), "BTCUSDT", "4h")
+            with pytest.raises(Exception) as exc_info:
+                store.read(start_ms=FINAL_HOLDOUT_START_MS, end_ms=FINAL_HOLDOUT_END_MS)
+            assert "FINAL_HOLDOUT" in str(exc_info.value)
+            assert "permanently sealed" in str(exc_info.value)
+
+    def test_candlestore_read_unbounded_fails_closed(self):
+        """CandleStore.read with unbounded bounds fails closed (spans protected windows)."""
+        from obsidian_rl.data.store import CandleStore
+        from pathlib import Path
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = CandleStore(Path(tmpdir), "BTCUSDT", "4h")
+            # Unbounded reads (None -> max bounds) span all windows including FINAL_HOLDOUT
+            with pytest.raises(Exception) as exc_info:
+                store.read(start_ms=None, end_ms=None)
+            assert "FINAL_HOLDOUT" in str(exc_info.value)
+
+
+class TestIngestionBypassBlocked:
+    """Tests that ingestion path enforces guards."""
+
+    def test_historical_dataset_ingest_blocks_outer_val(self):
+        """ingest_historical_range blocks OUTER_VAL."""
+        from obsidian_rl.data.historical_dataset import ingest_historical_range
+        from obsidian_rl.data.contracts import AssetClass, Timeframe
+        from obsidian_rl.data.storage import SQLiteStorage
+
+        with SQLiteStorage(":memory:") as store:
+            with pytest.raises(Exception) as exc_info:
+                ingest_historical_range(
+                    asset_class=AssetClass.CRYPTO,
+                    venue="BINANCE_FUTURES",
+                    symbol="BTCUSDT",
+                    timeframe=Timeframe.H4,
+                    start_ms=OUTER_VAL_START_MS,
+                    end_ms=OUTER_VAL_END_MS,
+                    storage=store,
+                )
+            assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_historical_dataset_ingest_blocks_confirmation(self):
+        """ingest_historical_range blocks CONFIRMATION."""
+        from obsidian_rl.data.historical_dataset import ingest_historical_range
+        from obsidian_rl.data.contracts import AssetClass, Timeframe
+        from obsidian_rl.data.storage import SQLiteStorage
+
+        with SQLiteStorage(":memory:") as store:
+            with pytest.raises(Exception) as exc_info:
+                ingest_historical_range(
+                    asset_class=AssetClass.CRYPTO,
+                    venue="BINANCE_FUTURES",
+                    symbol="BTCUSDT",
+                    timeframe=Timeframe.H4,
+                    start_ms=CONFIRMATION_START_MS,
+                    end_ms=CONFIRMATION_END_MS,
+                    storage=store,
+                )
+            assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_historical_dataset_ingest_blocks_final_holdout(self):
+        """ingest_historical_range blocks FINAL_HOLDOUT."""
+        from obsidian_rl.data.historical_dataset import ingest_historical_range
+        from obsidian_rl.data.contracts import AssetClass, Timeframe
+        from obsidian_rl.data.storage import SQLiteStorage
+
+        with SQLiteStorage(":memory:") as store:
+            with pytest.raises(Exception) as exc_info:
+                ingest_historical_range(
+                    asset_class=AssetClass.CRYPTO,
+                    venue="BINANCE_FUTURES",
+                    symbol="BTCUSDT",
+                    timeframe=Timeframe.H4,
+                    start_ms=FINAL_HOLDOUT_START_MS,
+                    end_ms=FINAL_HOLDOUT_END_MS,
+                    storage=store,
+                )
+            assert "FINAL_HOLDOUT" in str(exc_info.value)
+            assert "permanently sealed" in str(exc_info.value)
+
+
+class TestFuturesFetchBypassBlocked:
+    """Tests that BinanceFuturesRest fetch paths enforce guards."""
+
+    def test_fetch_klines_blocks_outer_val(self):
         """BinanceFuturesRest.fetch_klines blocks OUTER_VAL."""
-        pass
+        from obsidian_rl.data.binance_client import BinanceFuturesRest
+        from unittest.mock import MagicMock
 
-    def test_funding_fetch_blocks_outer_val(self):
+        client = BinanceFuturesRest()
+        client._session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = []
+        client._session.get.return_value = mock_response
+
+        with pytest.raises(Exception) as exc_info:
+            client.fetch_klines("BTCUSDT", "4h", OUTER_VAL_START_MS, OUTER_VAL_END_MS)
+        assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_fetch_klines_blocks_confirmation(self):
+        """BinanceFuturesRest.fetch_klines blocks CONFIRMATION."""
+        from obsidian_rl.data.binance_client import BinanceFuturesRest
+        from unittest.mock import MagicMock
+
+        client = BinanceFuturesRest()
+        client._session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = []
+        client._session.get.return_value = mock_response
+
+        with pytest.raises(Exception) as exc_info:
+            client.fetch_klines("BTCUSDT", "4h", CONFIRMATION_START_MS, CONFIRMATION_END_MS)
+        assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_fetch_klines_blocks_final_holdout(self):
+        """BinanceFuturesRest.fetch_klines blocks FINAL_HOLDOUT unconditionally."""
+        from obsidian_rl.data.binance_client import BinanceFuturesRest
+        from unittest.mock import MagicMock
+
+        client = BinanceFuturesRest()
+        client._session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = []
+        client._session.get.return_value = mock_response
+
+        with pytest.raises(Exception) as exc_info:
+            client.fetch_klines("BTCUSDT", "4h", FINAL_HOLDOUT_START_MS, FINAL_HOLDOUT_END_MS)
+        assert "FINAL_HOLDOUT" in str(exc_info.value)
+        assert "permanently sealed" in str(exc_info.value)
+
+    def test_fetch_funding_rates_blocks_outer_val(self):
         """BinanceFuturesRest.fetch_funding_rates blocks OUTER_VAL."""
-        pass
+        from obsidian_rl.data.binance_client import BinanceFuturesRest
+        from unittest.mock import MagicMock
+
+        client = BinanceFuturesRest()
+        client._session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = []
+        client._session.get.return_value = mock_response
+
+        with pytest.raises(Exception) as exc_info:
+            client.fetch_funding_rates("BTCUSDT", OUTER_VAL_START_MS, OUTER_VAL_END_MS)
+        assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_fetch_funding_rates_blocks_confirmation(self):
+        """BinanceFuturesRest.fetch_funding_rates blocks CONFIRMATION."""
+        from obsidian_rl.data.binance_client import BinanceFuturesRest
+        from unittest.mock import MagicMock
+
+        client = BinanceFuturesRest()
+        client._session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = []
+        client._session.get.return_value = mock_response
+
+        with pytest.raises(Exception) as exc_info:
+            client.fetch_funding_rates("BTCUSDT", CONFIRMATION_START_MS, CONFIRMATION_END_MS)
+        assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_fetch_funding_rates_blocks_final_holdout(self):
+        """BinanceFuturesRest.fetch_funding_rates blocks FINAL_HOLDOUT unconditionally."""
+        from obsidian_rl.data.binance_client import BinanceFuturesRest
+        from unittest.mock import MagicMock
+
+        client = BinanceFuturesRest()
+        client._session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = []
+        client._session.get.return_value = mock_response
+
+        with pytest.raises(Exception) as exc_info:
+            client.fetch_funding_rates("BTCUSDT", FINAL_HOLDOUT_START_MS, FINAL_HOLDOUT_END_MS)
+        assert "FINAL_HOLDOUT" in str(exc_info.value)
+        assert "permanently sealed" in str(exc_info.value)
 
 
 class TestInMemoryBacktestBlocked:
@@ -315,23 +593,187 @@ class TestInMemoryBacktestBlocked:
 
     def test_run_trend_backtest_blocks_outer_val(self):
         """run_trend_backtest blocks OUTER_VAL ranges."""
-        pass
+        from obsidian_rl.evaluation.trend_backtest import run_trend_backtest
+        from obsidian_rl.data.contracts import MarketBar, QuoteStatus, Timeframe, VolumeType
+        from obsidian_rl.signals.trend import TrendConfig
+        from obsidian_rl.portfolio.costs import CostModel
+        from obsidian_rl.data.contracts import compute_market_bar_hash
+
+        # Create OUTER_VAL bars
+        bars = []
+        for i in range(10):
+            bar = MarketBar(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_SPOT",
+                symbol="BTCUSDT",
+                timeframe=Timeframe.H4,
+                data_source="TEST",
+                timestamp_utc=OUTER_VAL_START_MS + i * 14_400_000,
+                observed_at_utc=OUTER_VAL_START_MS + i * 14_400_000 + 1000,
+                open=100.0 + i,
+                high=101.0 + i,
+                low=99.0 + i,
+                close=100.0 + i,
+                quote_status=QuoteStatus.UNAVAILABLE,
+                bid=None,
+                ask=None,
+                volume_type=VolumeType.BASE,
+                volume=100.0,
+                row_hash="",
+            )
+            object.__setattr__(bar, "row_hash", compute_market_bar_hash(bar))
+            bars.append(bar)
+
+        with pytest.raises(Exception) as exc_info:
+            run_trend_backtest(
+                tuple(bars),
+                TrendConfig(),
+                CostModel(),
+                eval_start_ms=OUTER_VAL_START_MS,
+                market_model=MarketModel.SPOT,
+                exposure_policy=ExposurePolicy.LONG_FLAT,
+            )
+        assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_run_trend_backtest_blocks_confirmation(self):
+        """run_trend_backtest blocks CONFIRMATION ranges."""
+        from obsidian_rl.evaluation.trend_backtest import run_trend_backtest
+        from obsidian_rl.data.contracts import MarketBar, QuoteStatus, Timeframe, VolumeType
+        from obsidian_rl.signals.trend import TrendConfig
+        from obsidian_rl.portfolio.costs import CostModel
+        from obsidian_rl.data.contracts import compute_market_bar_hash
+
+        # Create CONFIRMATION bars
+        bars = []
+        for i in range(10):
+            bar = MarketBar(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_SPOT",
+                symbol="BTCUSDT",
+                timeframe=Timeframe.H4,
+                data_source="TEST",
+                timestamp_utc=CONFIRMATION_START_MS + i * 14_400_000,
+                observed_at_utc=CONFIRMATION_START_MS + i * 14_400_000 + 1000,
+                open=100.0 + i,
+                high=101.0 + i,
+                low=99.0 + i,
+                close=100.0 + i,
+                quote_status=QuoteStatus.UNAVAILABLE,
+                bid=None,
+                ask=None,
+                volume_type=VolumeType.BASE,
+                volume=100.0,
+                row_hash="",
+            )
+            object.__setattr__(bar, "row_hash", compute_market_bar_hash(bar))
+            bars.append(bar)
+
+        with pytest.raises(Exception) as exc_info:
+            run_trend_backtest(
+                tuple(bars),
+                TrendConfig(),
+                CostModel(),
+                eval_start_ms=CONFIRMATION_START_MS,
+                market_model=MarketModel.SPOT,
+                exposure_policy=ExposurePolicy.LONG_FLAT,
+            )
+        assert "DEV_TRAIN stage only permits reads within DEV_TRAIN" in str(exc_info.value)
+
+    def test_run_trend_backtest_blocks_final_holdout(self):
+        """run_trend_backtest blocks FINAL_HOLDOUT ranges."""
+        from obsidian_rl.evaluation.trend_backtest import run_trend_backtest
+        from obsidian_rl.data.contracts import MarketBar, QuoteStatus, Timeframe, VolumeType
+        from obsidian_rl.signals.trend import TrendConfig
+        from obsidian_rl.portfolio.costs import CostModel
+        from obsidian_rl.data.contracts import compute_market_bar_hash
+
+        # Create FINAL_HOLDOUT bars
+        bars = []
+        for i in range(10):
+            bar = MarketBar(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_SPOT",
+                symbol="BTCUSDT",
+                timeframe=Timeframe.H4,
+                data_source="TEST",
+                timestamp_utc=FINAL_HOLDOUT_START_MS + i * 14_400_000,
+                observed_at_utc=FINAL_HOLDOUT_START_MS + i * 14_400_000 + 1000,
+                open=100.0 + i,
+                high=101.0 + i,
+                low=99.0 + i,
+                close=100.0 + i,
+                quote_status=QuoteStatus.UNAVAILABLE,
+                bid=None,
+                ask=None,
+                volume_type=VolumeType.BASE,
+                volume=100.0,
+                row_hash="",
+            )
+            object.__setattr__(bar, "row_hash", compute_market_bar_hash(bar))
+            bars.append(bar)
+
+        with pytest.raises(Exception) as exc_info:
+            run_trend_backtest(
+                tuple(bars),
+                TrendConfig(),
+                CostModel(),
+                eval_start_ms=FINAL_HOLDOUT_START_MS,
+                market_model=MarketModel.SPOT,
+                exposure_policy=ExposurePolicy.LONG_FLAT,
+            )
+        assert "FINAL_HOLDOUT" in str(exc_info.value)
+        assert "permanently sealed" in str(exc_info.value)
 
     def test_validate_backtest_access_integration(self):
-        """run_trend_backtest calls validate_backtest_access."""
-        pass
+        """run_trend_backtest calls validate_backtest_access internally."""
+        from obsidian_rl.evaluation.trend_backtest import run_trend_backtest
+        from obsidian_rl.data.contracts import MarketBar, QuoteStatus, Timeframe, VolumeType
+        from obsidian_rl.signals.trend import TrendConfig
+        from obsidian_rl.portfolio.costs import CostModel
+        from obsidian_rl.data.contracts import compute_market_bar_hash
+
+        # Create DEV_TRAIN bars (should pass)
+        bars = []
+        for i in range(10):
+            bar = MarketBar(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_FUTURES",
+                symbol="BTCUSDT",
+                timeframe=Timeframe.H4,
+                data_source="TEST",
+                timestamp_utc=DEV_TRAIN_START_MS + i * 14_400_000,
+                observed_at_utc=DEV_TRAIN_START_MS + i * 14_400_000 + 1000,
+                open=100.0 + i,
+                high=101.0 + i,
+                low=99.0 + i,
+                close=100.0 + i,
+                quote_status=QuoteStatus.UNAVAILABLE,
+                bid=None,
+                ask=None,
+                volume_type=VolumeType.BASE,
+                volume=100.0,
+                row_hash="",
+            )
+            object.__setattr__(bar, "row_hash", compute_market_bar_hash(bar))
+            bars.append(bar)
+
+        # This should pass without raising
+        result = run_trend_backtest(
+            tuple(bars),
+            TrendConfig(),
+            CostModel(),
+            eval_start_ms=DEV_TRAIN_START_MS,
+            market_model=MarketModel.PERPETUAL,
+            exposure_policy=ExposurePolicy.BIDIRECTIONAL,
+        )
+        assert result is not None
 
 
 class TestPostHoldoutAccess:
     """Tests for post-holdout access policy."""
 
-    def test_post_holdout_access_allowed_after_stage_change(self):
-        """Post-holdout access policy is explicitly designed.
-        
-        FINAL_HOLDOUT_END_MS = 2027-01-01T00:00:00Z = 1798761600000
-        After stage transition to post-holdout, access would be allowed.
-        This is explicitly documented as 2027-01-01T00:00:00Z earliest.
-        """
+    def test_final_holdout_end_matches_2027_01_01(self):
+        """FINAL_HOLDOUT_END_MS = 2027-01-01T00:00:00Z = 1798761600000."""
         assert FINAL_HOLDOUT_END_MS == 1798761600000
 
 
@@ -342,9 +784,17 @@ class TestPhase11HoldoutConflict:
         """Phase 11 paper trading does not require FINAL_HOLDOUT access.
         
         FINAL_HOLDOUT remains sealed during Phase 11.
-        Phase 11 uses live market time after holdout.
+        Phase 11 uses live market time after holdout (2027-01-01T00:00:00Z earliest).
         """
-        pass
+        # This is a documentation/design test - the policy is enforced by
+        # the FINAL_HOLDOUT hard block in validate_temporal_access
+        # and the explicit 2027-01-01T00:00:00Z earliest paper-market time
+        assert FINAL_HOLDOUT_END_MS == 1798761600000
+        # Any attempt to access FINAL_HOLDOUT is hard-blocked
+        with pytest.raises(Exception) as exc_info:
+            validate_temporal_access(FINAL_HOLDOUT_START_MS, FINAL_HOLDOUT_END_MS)
+        assert "FINAL_HOLDOUT" in str(exc_info.value)
+        assert "permanently sealed" in str(exc_info.value)
 
 
 if __name__ == "__main__":

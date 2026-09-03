@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from obsidian_rl.data.schema import coerce_candle_frame, empty_candle_frame
+from obsidian_rl.data.research_access import validate_temporal_access
 
 _MS_PER_MONTH_KEY = "%Y/%m"
 
@@ -121,6 +122,12 @@ class CandleStore:
         return result
 
     def read(self, start_ms: int | None = None, end_ms: int | None = None) -> pd.DataFrame:
+            # Cycle 2 research temporal access guard
+            # Handle unbounded reads by using effective bounds
+            effective_start = start_ms if start_ms is not None else 0
+            effective_end = end_ms if end_ms is not None else (1 << 63) - 1  # Max int64
+            validate_temporal_access(effective_start, effective_end)
+
             files = self._partition_files()
             if not files:
                 return empty_candle_frame()
@@ -140,20 +147,21 @@ class CandleStore:
         return int(last["open_time"].max())
 
     def summary(self) -> dict[str, object]:
-        df = self.read()
-        if df.empty:
-            return {"symbol": self.symbol, "interval": self.interval, "rows": 0}
-        from obsidian_rl.data.validation import validate_candles
+            # Use DEV_TRAIN bounds to pass temporal guard (summary is for development purposes)
+            df = self.read(start_ms=1577836800000, end_ms=1751327999999)
+            if df.empty:
+                return {"symbol": self.symbol, "interval": self.interval, "rows": 0}
+            from obsidian_rl.data.validation import validate_candles
 
-        rep = validate_candles(df, self.interval)
-        return {
-            "symbol": self.symbol,
-            "interval": self.interval,
-            "rows": len(df),
-            "start_utc": str(pd.to_datetime(df["open_time"].iloc[0], unit="ms", utc=True)),
-            "end_utc": str(pd.to_datetime(df["open_time"].iloc[-1], unit="ms", utc=True)),
-            "gaps": len(rep.gaps),
-            "missing_candles": rep.n_missing_candles,
-            "validation_errors": rep.errors,
-            "partitions": len(self._partition_files()),
-        }
+            rep = validate_candles(df, self.interval)
+            return {
+                "symbol": self.symbol,
+                "interval": self.interval,
+                "rows": len(df),
+                "start_utc": str(pd.to_datetime(df["open_time"].iloc[0], unit="ms", utc=True)),
+                "end_utc": str(pd.to_datetime(df["open_time"].iloc[-1], unit="ms", utc=True)),
+                "gaps": len(rep.gaps),
+                "missing_candles": rep.n_missing_candles,
+                "validation_errors": rep.errors,
+                "partitions": len(self._partition_files()),
+            }

@@ -60,11 +60,11 @@ Historical bars before `2020-01-01T00:00:00Z` may be used **ONLY** for causal in
 
 | Rule | Enforcement |
 |------|-------------|
-| Parameters/hypothesis frozen before first OUTER_VAL access | `CYCLE_02_EXPERIMENTAL_WINDOWS.md` must be committed before any OUTER_VAL download |
-| No tuning from OUTER_VAL results | `tools/task_scope_sentinel.py` checks task_scope for new parameter commits after OUTER_VAL access |
-| One predetermined candidate per family enters OUTER_VAL | Research log must name candidate before OUTER_VAL run |
-| Failed candidate cannot be retuned on OUTER_VAL under same hypothesis | `FAILED_CANDIDATE` status blocks re-entry without new hypothesis |
-| Negative results preserved | All OUTER_VAL runs logged with full metrics; no deletion |
+| Parameters/hypothesis frozen before first OUTER_VAL access | `CYCLE_02_EXPERIMENTAL_WINDOWS.md` committed before OUTER_VAL download (Batch 1: runtime gate blocks all OUTER_VAL access during DEV_TRAIN stage) |
+| No tuning from OUTER_VAL results | PENDING Batch 2 (candidate registry + research log + OUTER_VAL promotion gate) |
+| One predetermined candidate per family enters OUTER_VAL | PENDING Batch 2 |
+| Failed candidate cannot be retuned on OUTER_VAL under same hypothesis | PENDING Batch 2 (FAILED_CANDIDATE state) |
+| Negative results preserved | PENDING Batch 2 (audit log) |
 
 ---
 
@@ -72,9 +72,9 @@ Historical bars before `2020-01-01T00:00:00Z` may be used **ONLY** for causal in
 
 | Rule | Enforcement |
 |------|-------------|
-| Do not access until required OUTER_VAL gates pass | Runtime data access guard (`src/obsidian_rl/data/research_access.py`) blocks CONFIRMATION access if OUTER_VAL criteria unmet |
-| Single finalized composite only | Only the exact configuration that passed OUTER_VAL may enter CONFIRMATION |
-| No partial-window peeking | CONFIRMATION window accessed exactly once, in full, after all prior gates |
+| Do not access until required OUTER_VAL gates pass | Batch 1: runtime data access guard (`src/obsidian_rl/data/research_access.py`) hard-blocks CONFIRMATION during DEV_TRAIN stage. OUTER_VAL promotion gating PENDING Batch 2. |
+| Single finalized composite only | PENDING Batch 2 (CONFIRMATION one-time access counter + composite lock) |
+| No partial-window peeking | Batch 1: runtime guard blocks all CONFIRMATION access during DEV_TRAIN. |
 
 ---
 
@@ -82,9 +82,9 @@ Historical bars before `2020-01-01T00:00:00Z` may be used **ONLY** for causal in
 
 | Rule | Enforcement |
 |------|-------------|
-| No script/tool/person may load, query, plot, or evaluate FINAL_HOLDOUT during Cycle 02 | Runtime data access guard (`src/obsidian_rl/data/research_access.py`) blocks any `store.read` / query overlapping `[2026-07-01T00:00:00Z, 2027-01-01T00:00:00Z)` |
-| Do not inspect currently accrued portion | Even as real time progresses into this window, no evaluation permitted |
-| Do not use during Phase 11 paper trading | Phase 11 operates on live market time; FINAL_HOLDOUT remains the cross-cycle reserved benchmark |
+| No script/tool/person may load, query, plot, or evaluate FINAL_HOLDOUT during Cycle 02 | Batch 1: runtime data access guard (`src/obsidian_rl/data/research_access.py`) hard-blocks any `store.read` / query / fetch / backtest overlapping `[2026-07-01T00:00:00Z, 2027-01-01T00:00:00Z)` unconditionally at all stages. |
+| Do not inspect currently accrued portion | Batch 1: hard-blocked even as real time progresses. |
+| Do not use during Phase 11 paper trading | Batch 1: hard-blocked; Phase 11 operates on live market time after 2027-01-01T00:00:00Z. |
 
 ---
 
@@ -105,7 +105,8 @@ Phase 11 paper trading eligibility requires:
 - `docs/cycle_02/research/CYCLE_02_RESEARCH_REGISTER.md` — Four-tier policy
 - `docs/cycle_02/reports/STRATEGY_RESEARCH_PLAN.md` — Strategy research plan (updated to reference this document)
 - `docs/cycle_02/reports/PHASE_04D_CRYPTO_TREND_ROBUSTNESS.md` — Phase 4D invalidation record
-- `tools/task_scope_sentinel.py` — Window enforcement
+- `src/obsidian_rl/data/research_access.py` — Batch 1 runtime temporal/product access guard
+- `tools/task_scope_sentinel.py` — **FILE-CHANGE enforcement only** (git path scope), NOT research lifecycle state enforcement
 
 ---
 

@@ -15,7 +15,8 @@
     "tests/data/test_ingestion.py",
     "tests/evaluation/test_trend_backtest.py",
     "tests/evaluation/test_manifest_provenance.py",
-    "tests/test_binance_client.py"
+    "tests/test_binance_client.py",
+    "tests/test_candle_store.py"
   ],
   "baseline_paths": [
     ".agent_runtime/task_scope.json",

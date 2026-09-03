@@ -18,7 +18,8 @@ def test_write_read_roundtrip(tmp_path: Path) -> None:
     df = make_candles(50)
     result = store.write(df, source="test")
     assert result.rows_new == 50
-    out = store.read()
+    # Use explicit DEV_TRAIN bounds to pass temporal guard
+    out = store.read(start_ms=1609459200000, end_ms=1751327999999)
     pd.testing.assert_frame_equal(out, df.reset_index(drop=True), check_exact=False)
 
 
@@ -28,7 +29,7 @@ def test_idempotent_rewrite(tmp_path: Path) -> None:
     store.write(df, source="a")
     result = store.write(df, source="b")
     assert result.rows_new == 0
-    assert len(store.read()) == 50
+    assert len(store.read(start_ms=1609459200000, end_ms=1751327999999)) == 50
 
 
 def test_incremental_merge_and_max_open_time(tmp_path: Path) -> None:
@@ -36,7 +37,7 @@ def test_incremental_merge_and_max_open_time(tmp_path: Path) -> None:
     df = make_candles(100)
     store.write(df.iloc[:60], source="part1")
     store.write(df.iloc[60:], source="part2")
-    out = store.read()
+    out = store.read(start_ms=1609459200000, end_ms=1751327999999)
     assert len(out) == 100
     assert store.max_open_time() == int(df["open_time"].iloc[-1])
 
@@ -69,7 +70,7 @@ def test_exact_duplicate_rows_ok_on_new_partition(tmp_path: Path) -> None:
     dup = pd.concat([df, df.iloc[[4]]], ignore_index=True)  # identical row => dedupe, no raise
     result = store.write(dup, source="new-partition-dup")
     assert result.rows_new == 10
-    assert len(store.read()) == 10
+    assert len(store.read(start_ms=1609459200000, end_ms=1751327999999)) == 10
 
 
 def test_cross_month_partitioning(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ from obsidian_rl.data.contracts import (
 )
 from obsidian_rl.data.fingerprint import verify_contract_hash
 from obsidian_rl.data.migrations import run_migrations
+from obsidian_rl.data.research_access import validate_temporal_access
 
 
 class StorageError(Exception):
@@ -327,6 +328,9 @@ class SQLiteStorage:
             isinstance(observed_before_ms, bool) or not isinstance(observed_before_ms, int)
         ):
             raise TypeError("observed_before_ms must be integer ms UTC")
+
+        # Cycle 2 research temporal access guard
+        validate_temporal_access(start_timestamp_utc, end_timestamp_utc)
 
         ac_str = asset_class.value if isinstance(asset_class, AssetClass) else str(asset_class)
         tf_str = timeframe.value if isinstance(timeframe, Timeframe) else str(timeframe)
