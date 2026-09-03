@@ -88,8 +88,9 @@ def test_read_range_filter(tmp_path: Path) -> None:
     df = make_candles(50)
     store.write(df, source="test")
     mid = int(df["open_time"].iloc[25])
+    # Half-open [start, end): 5 intervals = 5 candles
     out = store.read(start_ms=mid, end_ms=mid + 5 * MS15)
-    assert len(out) == 6
+    assert len(out) == 5
     assert int(out["open_time"].iloc[0]) == mid
 
 
