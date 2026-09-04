@@ -82,7 +82,8 @@ TrendConfig(
 | **Scoring Start (eval_start_ms)** | 2020-03-26T04:00:00Z | 1585195200000 |
 | **Scoring End (exclusive)** | 2025-07-01T00:00:00Z | 1751328000000 |
 | **Warm-up Complete** | 2020-03-26T00:00:00Z | 1585180800000 (721st bar) |
-| **First Scored Bar** | [2020-03-26T04:00, 2020-03-26T08:00) | First scored return |
+| **First Signal Bar** | 2020-03-26T00:00:00Z | 721st completed warm-up bar |
+| **First Execution** | 2020-03-26T04:00:00Z | Signal from 00:00 bar executes at 04:00 open |
 
 **Half-open scoring window**: [1585195200000, 1751328000000)
 
@@ -95,7 +96,7 @@ TrendConfig(
 | **Execution** | NEXT_BAR_OPEN (causal) |
 | **Signal on bar T** | Executes at bar T+1 open |
 | **Funding** | Applied at exact funding timestamps from stored rates |
-| **Liquidation** | Per Binance perpetual rules (simulated) |
+| **Liquidation** | Terminal episode close only — no exchange liquidation/margin-call model. max_abs_exposure = 1.0. Any open terminal position closed at LAST_BAR_CLOSE. |
 | **Costs applied** | Per trade: fee + half_spread + slippage |
 
 ---

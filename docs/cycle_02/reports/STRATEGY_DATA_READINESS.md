@@ -87,8 +87,9 @@
 
 **Earliest valid eval_start_ms (721 warm-up complete)**: **2020-03-26T04:00:00Z** (1585195200000)
 - This is the first timestamp where 721 full 4h bars of native perpetual history exist
-- First scored bar: [2020-03-26T04:00:00Z, 2020-03-26T08:00:00Z)
-- First signal computed using 721 warm-up bars; execution at next bar open (2020-03-26T08:00:00Z)
+- First signal bar: 2020-03-26T00:00:00Z (721st completed warm-up bar)
+- First execution: 2020-03-26T04:00:00Z (signal from 00:00 bar executes at next bar open)
+- First scored bar interval: [2020-03-26T04:00:00Z, 2020-03-26T08:00:00Z)
 - Any scoring/evaluation with `eval_start_ms < 1585195200000` is **not causally valid** for 721-bar indicators
 
 **Implication**: Any evaluation/backtest with `eval_start_ms = 1577836800000` (2020-01-01) and indicators requiring 721-bar warm-up is **not causally valid**. The earliest causally valid `eval_start_ms` is **1585195200000 (2020-03-26T04:00:00Z)**.
