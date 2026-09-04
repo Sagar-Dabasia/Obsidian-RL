@@ -8,6 +8,121 @@ import pytest
 from obsidian_rl.data.contracts import AssetClass, MarketBar, QuoteStatus, Timeframe, VolumeType
 from obsidian_rl.data.historical_dataset import verify_and_digest_continuous_bars
 from obsidian_rl.data.storage import SQLiteStorage
+from obsidian_rl.data.manifest import load_and_validate_manifest
+
+
+def test_manifest_duplicate_exact_match_rejected(tmp_path) -> None:
+    """Duplicate exact component entries must be rejected."""
+    manifest = {
+        "components": [
+            {
+                "asset_class": "CRYPTO",
+                "venue": "BINANCE_SPOT",
+                "symbol": "BTCUSDT",
+                "timeframe": "4h",
+                "start_timestamp_utc": 1000,
+                "end_timestamp_utc": 2000,
+                "row_count": 10,
+                "digest": "0" * 64,
+            },
+            {
+                "asset_class": "CRYPTO",
+                "venue": "BINANCE_SPOT",
+                "symbol": "BTCUSDT",
+                "timeframe": "4h",
+                "start_timestamp_utc": 1000,
+                "end_timestamp_utc": 2000,
+                "row_count": 10,
+                "digest": "0" * 64,
+            },
+        ]
+    }
+    p = tmp_path / "man.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+
+    with pytest.raises(ValueError, match="Manifest component missing or ambiguous"):
+        load_and_validate_manifest(
+            str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0" * 64, 1000, 2000
+        )
+
+
+def test_manifest_wrong_identity_rejected(tmp_path) -> None:
+    """Component with wrong symbol/venue must be rejected."""
+    manifest = {
+        "components": [
+            {
+                "asset_class": "CRYPTO",
+                "venue": "BINANCE_SPOT",
+                "symbol": "ETHUSDT",  # Wrong symbol
+                "timeframe": "4h",
+                "start_timestamp_utc": 1000,
+                "end_timestamp_utc": 2000,
+                "row_count": 10,
+                "digest": "0" * 64,
+            }
+        ]
+    }
+    p = tmp_path / "man.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+
+    with pytest.raises(ValueError, match="Manifest component missing or ambiguous"):
+        load_and_validate_manifest(
+            str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0" * 64, 1000, 2000
+        )
+
+
+def test_manifest_malformed_values_rejected(tmp_path) -> None:
+    """Non-integer timestamps must be rejected."""
+    manifest = {
+        "components": [
+            {
+                "asset_class": "CRYPTO",
+                "venue": "BINANCE_SPOT",
+                "symbol": "BTCUSDT",
+                "timeframe": "4h",
+                "start_timestamp_utc": "1000",  # string instead of int
+                "end_timestamp_utc": 2000,
+                "row_count": 10,
+                "digest": "0" * 64,
+            }
+        ]
+    }
+    p = tmp_path / "man.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+
+    with pytest.raises(ValueError, match="Manifest component boundaries must be integers"):
+        load_and_validate_manifest(
+            str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 1000, 2000, 10, "0" * 64, 1000, 2000
+        )
+
+
+def test_runtime_bounds_count_and_digest_rejected(tmp_path) -> None:
+    """Invalid bounds, row count, or digest must be rejected."""
+    manifest = {
+        "components": [
+            {
+                "asset_class": "CRYPTO",
+                "venue": "BINANCE_SPOT",
+                "symbol": "BTCUSDT",
+                "timeframe": "4h",
+                "start_timestamp_utc": 2000,
+                "end_timestamp_utc": 1000,  # start >= end
+                "row_count": 10,
+                "digest": "0" * 64,
+            }
+        ]
+    }
+    p = tmp_path / "man.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
+
+    with pytest.raises(ValueError, match="start >= end"):
+        load_and_validate_manifest(
+            str(p), "CRYPTO", "BINANCE_SPOT", "BTCUSDT", "4h", 2000, 1000, 10, "0" * 64, 2000, 1000
+        )
 
 
 def test_builder_and_runner_digest_match() -> None:
@@ -255,7 +370,23 @@ def test_runner_manifest_validation(tmp_path):
         )
 
     with SQLiteStorage(str(db_path)) as store:
-        store.insert_market_bars(extra_bars + bars)
+            store.insert_market_bars(extra_bars + bars)
+            # Insert funding rates for PERPETUAL model
+            from obsidian_rl.data.contracts import FundingRate
+            funding_rates = tuple(
+                FundingRate(
+                    asset_class=AssetClass.CRYPTO,
+                    venue="BINANCE_FUTURES",
+                    symbol="BTCUSDT",
+                    timestamp_utc=ts + i * 8 * 3600 * 1000,  # 8h funding intervals
+                    observed_at_utc=ts + i * 8 * 3600 * 1000,
+                    rate=0.0001,
+                    data_source="TEST",
+                    schema_version="SCHEMA_V2",
+                )
+                for i in range(375)  # ~750 4h bars = 375 8h funding intervals
+            )
+            store.insert_funding_rates(funding_rates)
 
     eval_start = ts + 725 * 4 * 3600 * 1000
     digest = verify_and_digest_continuous_bars(

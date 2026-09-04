@@ -1,9 +1,13 @@
 {
-  "task_id": "trend-v1-preregistration",
+  "task_id": "trend-v1-funding-wiring",
   "authorized_paths": [
     ".agent_runtime/task_scope.json",
     "docs/cycle_02/reports/STRATEGY_DATA_READINESS.md",
-    "docs/cycle_02/research/TREND_V1_PERPETUAL_BASELINE_PREREG.md"
+    "docs/cycle_02/research/TREND_V1_PERPETUAL_BASELINE_PREREG.md",
+    "src/obsidian_rl/evaluation/trend_backtest.py",
+    "tests/evaluation/test_manifest_provenance.py",
+    "tests/evaluation/test_trend_backtest.py",
+    "tools/run_trend_backtest.py"
   ],
   "baseline_paths": [
     ".agent_runtime/task_scope.json",

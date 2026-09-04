@@ -64,7 +64,10 @@ def main() -> None:
 
     asset = AssetClass(args.asset_class)
     tf = Timeframe(args.timeframe)
-    with SQLiteStorage(args.database) as store:
+    # Use module-level SQLiteStorage to allow test patching
+    import obsidian_rl.data.storage as storage_module
+    storage_cls = storage_module.SQLiteStorage
+    with storage_cls(args.database) as store:
         bars = store.query_market_bars(
             asset_class=asset,
             venue=args.venue,
@@ -156,6 +159,25 @@ def main() -> None:
         except Exception as e:
             print(str(e))
             sys.exit(1)
+
+    # For PERPETUAL without manifest, load funding from SQLite storage
+    if not funding_rates and args.market_model == "PERPETUAL":
+        from obsidian_rl.data.storage import SQLiteStorage
+
+        asset = AssetClass(args.asset_class)
+        with SQLiteStorage(args.database) as store:
+            frates = store.query_funding_rates(
+                asset_class=asset,
+                venue=args.venue,
+                symbol=args.symbol,
+                start_timestamp_utc=args.start_ms if args.start_ms else 0,
+                end_timestamp_utc=args.end_ms if args.end_ms else (1 << 63) - 1,
+            )
+            funding_rates = tuple(frates)
+            print(f"Loaded {len(funding_rates)} funding rates from SQLite storage.")
+            if not funding_rates:
+                print("Error: PERPETUAL market model requires funding rates but none found in storage.")
+                sys.exit(1)
 
     cost_model = CostModel(
         taker_fee=args.taker_fee,

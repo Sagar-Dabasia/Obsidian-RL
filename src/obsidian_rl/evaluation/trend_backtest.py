@@ -14,7 +14,7 @@ from obsidian_rl.portfolio.engine import (
     PortfolioConfig,
     PortfolioEngine,
 )
-from obsidian_rl.signals.trend import InsufficientHistoryError, TrendConfig, calculate_trend_signal
+from obsidian_rl.signals.trend import InsufficientHistoryError, TrendConfig, calculate_trend_signal, DataQualityError
 from obsidian_rl.data.research_access import validate_backtest_access, validate_product_consistency
 
 
@@ -46,6 +46,9 @@ class TrendBacktestResult:
     liq_ts: int | None
     liq_price: float | None
     backtest_identity: str
+    # Separate cost breakdowns
+    total_trading_costs: float = 0.0  # fee + spread + slippage
+    total_funding: float = 0.0        # net funding paid (positive = paid)
 
 
 @dataclass(frozen=True)
@@ -182,6 +185,10 @@ def _run_single_backtest(
     first_exec_ts = None
     first_exec_price = None
 
+    # Track separate cost components
+    total_trading_costs = 0.0
+    total_funding_paid = 0.0
+
     funding_idx = 0
 
     for i in range(len(bars)):
@@ -199,7 +206,8 @@ def _run_single_backtest(
             ):
                 fr = funding_rates[funding_idx]
                 if fr.timestamp_utc == bar.timestamp_utc:
-                    engine.apply_funding(bar.open, fr.rate)
+                    flow = engine.apply_funding(bar.open, fr.rate)
+                    total_funding_paid += -flow  # positive = paid
                 funding_idx += 1
 
             current_exp = engine.state.exposure(bar.open)
@@ -213,6 +221,7 @@ def _run_single_backtest(
                     if first_exec_ts is None:
                         first_exec_ts = bar.timestamp_utc
                         first_exec_price = exec_px
+                    total_trading_costs += res.total_cost
                     if delta > 0:
                         winning_trades += 1
                     elif delta < 0:
@@ -244,8 +253,16 @@ def _run_single_backtest(
                 if first_decision_ts is None and target_exposure != 0.0:
                     first_decision_ts = bar.timestamp_utc
                     first_submitted_target = target_exposure
-            except InsufficientHistoryError:
-                target_exposure = 0.0
+            except (InsufficientHistoryError, ValueError, DataQualityError) as e:
+                # InsufficientHistoryError -> fallback to FLAT
+                # DataQualityError/ValueError -> propagate as ValueError
+                if isinstance(e, InsufficientHistoryError):
+                    target_exposure = 0.0
+                else:
+                    if isinstance(e, DataQualityError):
+                        raise ValueError(str(e))
+                    else:
+                        raise
 
     liq_res = engine.liquidate(bars[-1].close)
     engine.mark_to_market(bars[-1].close)
@@ -302,6 +319,8 @@ def _run_single_backtest(
         liq_ts=liq_ts,
         liq_price=liq_price,
         backtest_identity=backtest_identity,
+        total_trading_costs=total_trading_costs,
+        total_funding=total_funding_paid,
     )
 
 
