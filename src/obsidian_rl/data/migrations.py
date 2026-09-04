@@ -96,6 +96,26 @@ CREATE TABLE IF NOT EXISTS dataset_manifests (
 );
 """
 
+CREATE_FUNDING_RATES_TABLE = """
+CREATE TABLE IF NOT EXISTS funding_rates (
+    asset_class TEXT NOT NULL,
+    venue TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timestamp_utc INTEGER NOT NULL,
+    observed_at_utc INTEGER NOT NULL,
+    rate REAL NOT NULL,
+    data_source TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    row_hash TEXT PRIMARY KEY NOT NULL,
+    UNIQUE (asset_class, venue, symbol, timestamp_utc, data_source)
+);
+"""
+
+CREATE_FUNDING_RATES_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_funding_rates_query
+ON funding_rates (asset_class, venue, symbol, timestamp_utc, observed_at_utc);
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Initialize database schema idempotently and configure pragmas."""
@@ -107,3 +127,5 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         conn.execute(CREATE_EVENT_NEWS_ITEMS_INDEX)
         conn.execute(CREATE_INGESTION_RUNS_TABLE)
         conn.execute(CREATE_DATASET_MANIFESTS_TABLE)
+        conn.execute(CREATE_FUNDING_RATES_TABLE)
+        conn.execute(CREATE_FUNDING_RATES_INDEX)

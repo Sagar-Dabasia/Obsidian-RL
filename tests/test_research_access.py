@@ -930,5 +930,258 @@ class TestPhase11HoldoutConflict:
         assert "permanently sealed" in str(exc_info.value)
 
 
+class TestFundingStorage:
+    """Tests for funding rate storage and retrieval."""
+
+    def test_funding_rates_migration_creates_table(self, tmp_path: Path):
+        """funding_rates table is created by migrations."""
+        from obsidian_rl.data.storage import SQLiteStorage
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            cursor = store.conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='funding_rates'")
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] == "funding_rates"
+
+            # Check index exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_funding_rates_query'")
+            idx = cursor.fetchone()
+            assert idx is not None
+
+    def test_insert_funding_rates_idempotent(self, tmp_path: Path):
+        """Identical funding rates insert is idempotent."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass, FundingRate
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            rate = FundingRate(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_FUTURES",
+                symbol="BTCUSDT",
+                timestamp_utc=1577836800000,
+                observed_at_utc=1577836800000,
+                rate=0.0001,
+                data_source="BINANCE_FUTURES_REST",
+                schema_version="SCHEMA_V2",
+            )
+
+            # First insert
+            count1 = store.insert_funding_rates([rate])
+            assert count1 == 1
+
+            # Second identical insert - should be idempotent
+            count2 = store.insert_funding_rates([rate])
+            assert count2 == 0
+
+            # Verify only one stored
+            rates = store.query_funding_rates(AssetClass.CRYPTO, "BINANCE_FUTURES", "BTCUSDT", 1577836800000, 1577836800000 + 86400000)
+            assert len(rates) == 1
+
+    def test_insert_funding_rates_conflict_rejected(self, tmp_path: Path):
+        """Conflicting funding rate (same identity, different hash) is rejected."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass, FundingRate
+        from obsidian_rl.data.fingerprint import compute_funding_rate_hash
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            rate1 = FundingRate(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_FUTURES",
+                symbol="BTCUSDT",
+                timestamp_utc=1577836800000,
+                observed_at_utc=1577836800000,
+                rate=0.0001,
+                data_source="BINANCE_FUTURES_REST",
+                schema_version="SCHEMA_V2",
+            )
+
+            # Create a conflicting rate with same identity but different rate
+            rate2 = FundingRate(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_FUTURES",
+                symbol="BTCUSDT",
+                timestamp_utc=1577836800000,
+                observed_at_utc=1577836800000,
+                rate=0.0002,  # Different rate -> different hash
+                data_source="BINANCE_FUTURES_REST",
+                schema_version="SCHEMA_V2",
+            )
+
+            store.insert_funding_rates([rate1])
+
+            from obsidian_rl.data.storage import DuplicateConflictError
+            with pytest.raises(DuplicateConflictError):
+                store.insert_funding_rates([rate2])
+
+    def test_funding_identity_symbol_timestamp_source(self, tmp_path: Path):
+        """Funding rate identity is (symbol, timestamp_utc, data_source)."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass, FundingRate
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            # Same symbol, same timestamp, different source -> allowed
+            rate1 = FundingRate(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_FUTURES",
+                symbol="BTCUSDT",
+                timestamp_utc=1577836800000,
+                observed_at_utc=1577836800000,
+                rate=0.0001,
+                data_source="SOURCE_A",
+                schema_version="SCHEMA_V2",
+            )
+            rate2 = FundingRate(
+                asset_class=AssetClass.CRYPTO,
+                venue="BINANCE_FUTURES",
+                symbol="BTCUSDT",
+                timestamp_utc=1577836800000,
+                observed_at_utc=1577836800000,
+                rate=0.0002,
+                data_source="SOURCE_B",
+                schema_version="SCHEMA_V2",
+            )
+
+            count1 = store.insert_funding_rates([rate1])
+            count2 = store.insert_funding_rates([rate2])
+            assert count1 == 1
+            assert count2 == 1  # Different source = different identity
+
+            rates = store.query_funding_rates(AssetClass.CRYPTO, "BINANCE_FUTURES", "BTCUSDT", 1577836800000, 1577836800000 + 86400000)
+            assert len(rates) == 2
+
+    def test_query_funding_rates_chronological_bounds(self, tmp_path: Path):
+        """query_funding_rates respects [start, end) bounds chronologically."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass, FundingRate
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            # Insert rates at different timestamps
+            rates = [
+                FundingRate(
+                    asset_class=AssetClass.CRYPTO,
+                    venue="BINANCE_FUTURES",
+                    symbol="BTCUSDT",
+                    timestamp_utc=1577836800000 + i * 8 * 3600 * 1000,
+                    observed_at_utc=1577836800000 + i * 8 * 3600 * 1000,
+                    rate=0.0001 + i * 0.00001,
+                    data_source="BINANCE_FUTURES_REST",
+                    schema_version="SCHEMA_V2",
+                )
+                for i in range(10)
+            ]
+            store.insert_funding_rates(rates)
+
+            # Query middle range
+            result = store.query_funding_rates(
+                AssetClass.CRYPTO, "BINANCE_FUTURES", "BTCUSDT",
+                1577836800000 + 3 * 8 * 3600 * 1000,
+                1577836800000 + 7 * 8 * 3600 * 1000
+            )
+            assert len(result) == 4  # indices 3,4,5,6
+            assert result[0].timestamp_utc == 1577836800000 + 3 * 8 * 3600 * 1000
+            assert result[-1].timestamp_utc == 1577836800000 + 6 * 8 * 3600 * 1000
+
+            # Check chronological order
+            for i in range(1, len(result)):
+                assert result[i].timestamp_utc > result[i-1].timestamp_utc
+
+    def test_query_funding_rates_observed_before_filter(self, tmp_path: Path):
+        """observed_before_ms filter works correctly."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass, FundingRate
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            now = 1700000000000
+            rates = [
+                FundingRate(
+                    asset_class=AssetClass.CRYPTO,
+                    venue="BINANCE_FUTURES",
+                    symbol="BTCUSDT",
+                    timestamp_utc=1577836800000 + i * 8 * 3600 * 1000,
+                    observed_at_utc=now - (9-i) * 8 * 3600 * 1000,  # observed at different times
+                    rate=0.0001,
+                    data_source="BINANCE_FUTURES_REST",
+                    schema_version="SCHEMA_V2",
+                )
+                for i in range(10)
+            ]
+            store.insert_funding_rates(rates)
+
+            # Filter to only those observed before mid-point
+            mid_observed = now - 5 * 8 * 3600 * 1000
+            result = store.query_funding_rates(
+                AssetClass.CRYPTO, "BINANCE_FUTURES", "BTCUSDT",
+                1577836800000, 1577836800000 + 10 * 8 * 3600 * 1000,
+                observed_before_ms=mid_observed
+            )
+            # Only first 5 should be returned (observed_at_utc <= mid_observed)
+            assert len(result) == 5
+
+    def test_funding_read_outer_val_blocked(self, tmp_path: Path):
+        """query_funding_rates blocks OUTER_VAL access."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass
+        from obsidian_rl.data.research_access import (
+            OUTER_VAL_START_MS, OUTER_VAL_END_MS,
+            ResearchAccessError
+        )
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            with pytest.raises(ResearchAccessError) as exc_info:
+                store.query_funding_rates(
+                    AssetClass.CRYPTO, "BINANCE_FUTURES", "BTCUSDT",
+                    OUTER_VAL_START_MS, OUTER_VAL_END_MS
+                )
+            assert "OUTER_VAL" in str(exc_info.value)
+
+    def test_funding_read_confirmation_blocked(self, tmp_path: Path):
+        """query_funding_rates blocks CONFIRMATION access."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass
+        from obsidian_rl.data.research_access import (
+            CONFIRMATION_START_MS, CONFIRMATION_END_MS,
+            ResearchAccessError
+        )
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            with pytest.raises(ResearchAccessError) as exc_info:
+                store.query_funding_rates(
+                    AssetClass.CRYPTO, "BINANCE_FUTURES", "BTCUSDT",
+                    CONFIRMATION_START_MS, CONFIRMATION_END_MS
+                )
+            assert "CONFIRMATION" in str(exc_info.value)
+
+    def test_funding_read_final_holdout_blocked(self, tmp_path: Path):
+        """query_funding_rates blocks FINAL_HOLDOUT access unconditionally."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass
+        from obsidian_rl.data.research_access import (
+            FINAL_HOLDOUT_START_MS, FINAL_HOLDOUT_END_MS,
+            ResearchAccessError
+        )
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            with pytest.raises(ResearchAccessError) as exc_info:
+                store.query_funding_rates(
+                    AssetClass.CRYPTO, "BINANCE_FUTURES", "BTCUSDT",
+                    FINAL_HOLDOUT_START_MS, FINAL_HOLDOUT_END_MS
+                )
+            assert "FINAL_HOLDOUT" in str(exc_info.value)
+            assert "permanently sealed" in str(exc_info.value)
+
+    def test_funding_unbounded_read_blocked(self, tmp_path: Path):
+        """Unbounded funding read is blocked."""
+        from obsidian_rl.data.storage import SQLiteStorage
+        from obsidian_rl.data.contracts import AssetClass
+
+        with SQLiteStorage(tmp_path / "test.sqlite") as store:
+            with pytest.raises(TypeError):
+                store.query_funding_rates(
+                    AssetClass.CRYPTO, "BINANCE_FUTURES", "BTCUSDT",
+                    None, None
+                )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

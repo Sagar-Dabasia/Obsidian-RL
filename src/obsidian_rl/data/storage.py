@@ -14,6 +14,7 @@ from obsidian_rl.data.contracts import (
     AssetClass,
     EventNewsItem,
     EventType,
+    FundingRate,
     MarketBar,
     QuoteStatus,
     RevisionStatus,
@@ -593,3 +594,143 @@ class SQLiteStorage:
             error_message=row["error_message"],
             schema_version=row["schema_version"],
         )
+
+    def insert_funding_rates(self, rates: Sequence[FundingRate]) -> int:
+        """Insert funding rates transactionally with idempotent duplicate skip."""
+        if not rates:
+            return 0
+
+        inserted_count = 0
+        with self.conn:
+            cursor = self.conn.cursor()
+            for rate in rates:
+                if rate.schema_version != SCHEMA_VERSION_V2:
+                    raise UnsupportedSchemaError(
+                        f"FundingRate schema version {rate.schema_version!r} not supported"
+                    )
+                try:
+                    verify_contract_hash(rate)
+                except RuntimeError as exc:
+                    raise InvalidHashError(
+                        f"FundingRate row_hash verification failed: {exc}"
+                    ) from exc
+
+                # Check identity match
+                cursor.execute(
+                    """
+                    SELECT row_hash FROM funding_rates
+                    WHERE asset_class = ? AND venue = ? AND symbol = ?
+                      AND timestamp_utc = ? AND data_source = ?
+                    """,
+                    (
+                        rate.asset_class.value,
+                        rate.venue,
+                        rate.symbol,
+                        rate.timestamp_utc,
+                        rate.data_source,
+                    ),
+                )
+                identity_row = cursor.fetchone()
+                if identity_row is not None:
+                    if identity_row["row_hash"] == rate.row_hash:
+                        continue
+                    else:
+                        raise DuplicateConflictError(
+                            f"Conflict detected for FundingRate identity ({rate.symbol}, "
+                            f"{rate.timestamp_utc}): stored hash "
+                            f"{identity_row['row_hash']} != new hash {rate.row_hash}"
+                        )
+
+                # Check hash conflict with different identity
+                cursor.execute(
+                    "SELECT timestamp_utc FROM funding_rates WHERE row_hash = ?", (rate.row_hash,)
+                )
+                hash_row = cursor.fetchone()
+                if hash_row is not None:
+                    raise DuplicateConflictError(
+                        f"Conflict detected: row_hash {rate.row_hash} already exists in storage"
+                    )
+
+                cursor.execute(
+                    """
+                    INSERT INTO funding_rates (
+                        asset_class, venue, symbol, timestamp_utc, observed_at_utc,
+                        rate, data_source, schema_version, row_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        rate.asset_class.value,
+                        rate.venue,
+                        rate.symbol,
+                        rate.timestamp_utc,
+                        rate.observed_at_utc,
+                        rate.rate,
+                        rate.data_source,
+                        rate.schema_version,
+                        rate.row_hash,
+                    ),
+                )
+                inserted_count += 1
+
+        return inserted_count
+
+    def query_funding_rates(
+        self,
+        asset_class: AssetClass | str,
+        venue: str,
+        symbol: str,
+        start_timestamp_utc: int,
+        end_timestamp_utc: int,
+        observed_before_ms: int | None = None,
+    ) -> list[FundingRate]:
+        """Query funding rates with point-in-time filtering and chronological ordering."""
+        if isinstance(start_timestamp_utc, bool) or not isinstance(start_timestamp_utc, int):
+            raise TypeError("start_timestamp_utc must be integer ms UTC")
+        if isinstance(end_timestamp_utc, bool) or not isinstance(end_timestamp_utc, int):
+            raise TypeError("end_timestamp_utc must be integer ms UTC")
+        if observed_before_ms is not None and (
+            isinstance(observed_before_ms, bool) or not isinstance(observed_before_ms, int)
+        ):
+            raise TypeError("observed_before_ms must be integer ms UTC")
+
+        # Cycle 2 research temporal access guard
+        validate_temporal_access(start_timestamp_utc, end_timestamp_utc)
+
+        ac_str = asset_class.value if isinstance(asset_class, AssetClass) else str(asset_class)
+
+        query = """
+            SELECT asset_class, venue, symbol, timestamp_utc, observed_at_utc,
+                   rate, data_source, schema_version, row_hash
+            FROM funding_rates
+            WHERE asset_class = ? AND venue = ? AND symbol = ?
+              AND timestamp_utc >= ? AND timestamp_utc < ?
+        """
+        params: list[Any] = [ac_str, venue, symbol, start_timestamp_utc, end_timestamp_utc]
+
+        if observed_before_ms is not None:
+            query += " AND observed_at_utc <= ?"
+            params.append(observed_before_ms)
+
+        query += " ORDER BY timestamp_utc ASC"
+
+        cursor = self.conn.cursor()
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        results: list[FundingRate] = []
+        for row in rows:
+            results.append(
+                FundingRate(
+                    asset_class=AssetClass(row["asset_class"]),
+                    venue=row["venue"],
+                    symbol=row["symbol"],
+                    timestamp_utc=row["timestamp_utc"],
+                    observed_at_utc=row["observed_at_utc"],
+                    rate=row["rate"],
+                    data_source=row["data_source"],
+                    schema_version=row["schema_version"],
+                    row_hash=row["row_hash"],
+                )
+            )
+
+        return results
