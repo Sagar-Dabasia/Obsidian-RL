@@ -1,8 +1,8 @@
-# Strategy Research Workstream 1 — DEV_TRAIN Data Readiness Audit (Post-Backfill)
+# Strategy Research Workstream 1 — DEV_TRAIN Data Readiness Audit (Post-Backfill + Warm-up Correction + Preregistration Alignment)
 
 **Branch**: `research/cycle-02-trend-pilot-02`
-**HEAD**: `48d0526463a7dc20e9c6c5d005a9cf748f3e3695`
-**Date**: 2026-09-03
+**HEAD**: `9edfa0ed1f382d8110633c3208e413d1d8bc972f`
+**Date**: 2026-09-04
 **Context**: Post-backfill verification of DEV_TRAIN datasets through guarded APIs. OUTER_VAL, CONFIRMATION, FINAL_HOLDOUT remain inaccessible.
 
 ---
@@ -11,18 +11,18 @@
 
 | Market | Ready | Venue/Product | Interval | DEV_TRAIN Coverage | Gaps | Warm-up | Product Match |
 |--------|-------|---------------|----------|-------------------|------|---------|---------------|
-| **BTCUSDT** | ✅ **READY** | BINANCE_FUTURES (4h SQLite), BINANCE_FUTURES (15m Parquet) | 4h/15m | 2020-01-01 → 2025-06-30 (complete) | None | Sufficient (61+ months) | PERPETUAL + funding ✅ |
-| **ETHUSDT** | ✅ **READY** | BINANCE_FUTURES (4h SQLite) | 4h | 2020-01-01 → 2025-06-30 (complete) | None | Sufficient (60+ months) | PERPETUAL + funding ✅ |
+| **BTCUSDT** | ⚠️ **CONDITIONAL** | BINANCE_FUTURES (4h SQLite) | 4h | 2020-01-01 → 2025-06-30 (complete) | None | 209 pre-2020 bars (<721) | PERPETUAL + funding ✅ |
+| **ETHUSDT** | ⚠️ **CONDITIONAL** | BINANCE_FUTURES (4h SQLite) | 4h | 2020-01-01 → 2025-06-30 (complete) | None | 209 pre-2020 bars (<721) | PERPETUAL + funding ✅ |
 | **EUR_USD** | ⚠️ **PARTIAL** | OANDA_PRACTICE (4h SQLite) | 4h | 2019-01-01 → 2023-12-31 (ends early) | Missing 2024-01-01 → 2025-06-30 | Sufficient (60 months) | FOREX_MARGIN — no funding |
 | **GBP_USD** | ⚠️ **PARTIAL** | OANDA_PRACTICE (4h SQLite) | 4h | 2019-01-01 → 2023-12-31 (ends early) | Missing 2024-01-01 → 2025-06-30 | Sufficient (60 months) | FOREX_MARGIN — no funding |
 
-**Overall**: **BTCUSDT and ETHUSDT perpetual (4h) now both have full DEV_TRAIN coverage with funding data.** EUR_USD and GBP_USD remain partial (forex, missing 2024-2025).
+**Overall**: **BTCUSDT and ETHUSDT perpetual (4h) have full DEV_TRAIN coverage with funding data, BUT causal warm-up for scoring starting 2020-01-01 is NOT available** (only 209 pre-2020 native perpetual 4h bars exist). Earliest valid causal scoring start with 721-bar warm-up = **2020-03-26T04:00:00Z** (eval_start_ms = 1585195200000). EUR_USD and GBP_USD remain partial (forex, missing 2024-2025).
 
 ---
 
-## 2. Detailed Findings by Market (Post-Backfill)
+## 2. Detailed Findings by Market (Post-Backfill + Warm-up Correction)
 
-### 2.1 BTCUSDT — BINANCE_FUTURES (4h SQLite) — **READY**
+### 2.1 BTCUSDT — BINANCE_FUTURES (4h SQLite) — **CONDITIONAL**
 
 | Metric | Value |
 |--------|-------|
@@ -30,19 +30,23 @@
 | **Product Model** | PERPETUAL (requires funding) |
 | **Interval** | 4h |
 | **Storage** | SQLite (`data/trend_pilot_01.sqlite`) |
-| **Earliest** | 2020-01-01T00:00:00Z (1577836800000) |
+| **Earliest (full DEV_TRAIN)** | 2020-01-01T00:00:00Z (1577836800000) |
+| **Earliest native perpetual 4h** | 2019-11-27T00:00:00Z (1574827200000) |
+| **Pre-2020 native bars** | 209 (from 2019-11-27 to 2019-12-31) |
 | **Latest** | 2025-06-30T20:00:00Z (1751313600000) |
-| **Total Rows** | 12,048 |
+| **Total Rows (full DEV_TRAIN)** | 12,048 |
 | **Months** | 66 (2020-01 → 2025-06) |
 | **Missing Bars** | 0 (verified continuous) |
 | **Duplicates** | 0 |
 | **Monotonic** | Yes |
-| **Warm-up** | 61+ months available before 2025-07-01 (exceeds 721-bar minimum) |
+| **Pre-2020 warm-up bars** | 209 (< 721 minimum) |
+| **721st usable 4h signal bar** | 2020-03-26T00:00:00Z (1585180800000) |
+| **Earliest valid eval_start_ms (721 warm-up)** | 2020-03-26T04:00:00Z (1585195200000) |
 | **Funding Data** | ✅ **STORED** — 6,024 rates, 2020-01-01 → 2025-06-30, zero gaps |
 
-**Quality**: Excellent. Continuous 4h coverage from DEV_TRAIN start to DEV_TRAIN end. Native 4h provider data. Funding rates stored alongside klines.
+**Quality**: Excellent continuous 4h coverage from 2020-01-01 to 2025-06-30. Native 4h provider data. Funding rates stored alongside klines. **However, only 209 native perpetual 4h bars exist before 2020-01-01 (from 2019-11-27), which is insufficient for the 721-bar (120-day) causal warm-up required for scoring starting 2020-01-01.**
 
-### 2.2 ETHUSDT — BINANCE_FUTURES (4h SQLite) — **READY**
+### 2.2 ETHUSDT — BINANCE_FUTURES (4h SQLite) — **CONDITIONAL**
 
 | Metric | Value |
 |--------|-------|
@@ -50,47 +54,48 @@
 | **Product Model** | PERPETUAL (requires funding) |
 | **Interval** | 4h |
 | **Storage** | SQLite (`data/trend_pilot_01.sqlite`) |
-| **Earliest** | 2020-01-01T00:00:00Z (1577836800000) |
+| **Earliest (full DEV_TRAIN)** | 2020-01-01T00:00:00Z (1577836800000) |
+| **Earliest native perpetual 4h** | 2019-11-27T00:00:00Z (1574827200000) |
+| **Pre-2020 native bars** | 209 (from 2019-11-27 to 2019-12-31) |
 | **Latest** | 2025-06-30T20:00:00Z (1751313600000) |
-| **Total Rows** | 12,048 |
+| **Total Rows (full DEV_TRAIN)** | 12,048 |
 | **Months** | 66 (2020-01 → 2025-06) |
 | **Missing Bars** | 0 (verified continuous) |
 | **Duplicates** | 0 |
 | **Monotonic** | Yes |
-| **Warm-up** | 61+ months available before 2025-07-01 (exceeds 721-bar minimum) |
+| **Pre-2020 warm-up bars** | 209 (< 721 minimum) |
+| **721st usable 4h signal bar** | 2020-03-26T00:00:00Z (1585180800000) |
+| **Earliest valid eval_start_ms (721 warm-up)** | 2020-03-26T04:00:00Z (1585195200000) |
 | **Funding Data** | ✅ **STORED** — 6,024 rates, 2020-01-01 → 2025-06-30, zero gaps |
 
-**Quality**: Excellent. Continuous 4h coverage from DEV_TRAIN start to DEV_TRAIN end. Native 4h provider data. Funding rates stored alongside klines.
-
-### 2.3 EUR_USD — OANDA_PRACTICE (4h SQLite) — PARTIAL (unchanged)
-
-| Metric | Value |
-|--------|-------|
-| **Venue** | OANDA_PRACTICE (Forex) |
-| **Product Model** | FOREX_MARGIN |
-| **Interval** | 4h |
-| **Storage** | SQLite (`trend_pilot_01`, `trend_pilot_03`) |
-| **Earliest** | 2019-01-01T00:00:00Z |
-| **Latest** | 2023-12-30T20:00:00Z |
-| **Total Rows** | 7,783 |
-| **Gap** | Ends 2023-12-31 — missing 2024-01-01 → 2025-06-30 |
-
-### 2.4 GBP_USD — OANDA_PRACTICE (4h SQLite) — PARTIAL (unchanged)
-
-| Metric | Value |
-|--------|-------|
-| **Venue** | OANDA_PRACTICE (Forex) |
-| **Product Model** | FOREX_MARGIN |
-| **Interval** | 4h |
-| **Storage** | SQLite (`trend_pilot_01`, `trend_pilot_03`) |
-| **Earliest** | 2019-01-01T00:00:00Z |
-| **Latest** | 2023-12-30T20:00:00Z |
-| **Total Rows** | 7,787 |
-| **Gap** | Ends 2023-12-31 — missing 2024-01-01 → 2025-06-30 |
+**Quality**: Excellent continuous 4h coverage from 2020-01-01 to 2025-06-30. Native 4h provider data. Funding rates stored alongside klines. **However, only 209 native perpetual 4h bars exist before 2020-01-01 (from 2019-11-27), which is insufficient for the 721-bar (120-day) causal warm-up required for scoring starting 2020-01-01.**
 
 ---
 
-## 3. Product/Model Compatibility Matrix
+## 3. Warm-Up Sufficiency (Corrected + Preregistration Aligned)
+
+**Critical Correction**: Previous audit claimed "61+ months available before 2025-07-01" — this measured warm-up availability relative to DEV_TRAIN end, not scoring start. The correct measure for causal indicator initialization is bars available **before the scoring start timestamp**.
+
+| Market | Pre-scoring native 4h bars | Required (721) | Status |
+|--------|---------------------------|----------------|--------|
+| BTCUSDT | 209 (2019-11-27 → 2020-01-01) | 721 | **INSUFFICIENT** |
+| ETHUSDT | 209 (2019-11-27 → 2020-01-01) | 721 | **INSUFFICIENT** |
+
+**Native perpetual 4h history starts**: **2019-11-27T00:00:00Z** (1574827200000)
+
+**721st usable 4h signal bar**: **2020-03-26T00:00:00Z** (1585180800000)
+
+**Earliest valid eval_start_ms (721 warm-up complete)**: **2020-03-26T04:00:00Z** (1585195200000)
+- This is the first timestamp where 721 full 4h bars of native perpetual history exist
+- First scored bar: [2020-03-26T04:00:00Z, 2020-03-26T08:00:00Z)
+- First signal computed using 721 warm-up bars; execution at next bar open (2020-03-26T08:00:00Z)
+- Any scoring/evaluation with `eval_start_ms < 1585195200000` is **not causally valid** for 721-bar indicators
+
+**Implication**: Any evaluation/backtest with `eval_start_ms = 1577836800000` (2020-01-01) and indicators requiring 721-bar warm-up is **not causally valid**. The earliest causally valid `eval_start_ms` is **1585195200000 (2020-03-26T04:00:00Z)**.
+
+---
+
+## 4. Product/Model Compatibility Matrix
 
 | Market | Venue | Required Model | Allowed Exposure | Funding Required |
 |--------|-------|----------------|------------------|------------------|
@@ -103,24 +108,18 @@
 
 ---
 
-## 4. Data Gaps Summary (Post-Backfill)
+## 5. Data Gaps Summary (Post-Backfill + Warm-up Correction)
 
 | Market | Venue | Missing Period | Impact |
 |--------|-------|----------------|--------|
-| BTCUSDT | BINANCE_FUTURES | **None** | Full coverage ✅ |
-| ETHUSDT | BINANCE_FUTURES | **None** | Full coverage ✅ |
+| BTCUSDT | BINANCE_FUTURES | Pre-2019-11-27 (for 721 warm-up) | No 721-bar warm-up for 2020-01-01 scoring |
+| ETHUSDT | BINANCE_FUTURES | Pre-2019-11-27 (for 721 warm-up) | No 721-bar warm-up for 2020-01-01 scoring |
 | EUR_USD | OANDA_PRACTICE | 2024-01-01 → 2025-06-30 | Two years missing |
 | GBP_USD | OANDA_PRACTICE | 2024-01-01 → 2025-06-30 | Two years missing |
 
 ---
 
-## 5. Warm-Up Sufficiency
-
-All crypto markets with data starting 2020-01-01 provide 66 months of data before DEV_TRAIN end. This exceeds the 721-bar (120-day) minimum for 4h timeframe and provides ample warm-up for any indicator.
-
----
-
-## 6. Funding Data Status (Post-Backfill)
+## 6. Funding Data Status
 
 | Market | Venue | Funding in Storage | Coverage |
 |--------|-------|-------------------|----------|
@@ -128,26 +127,46 @@ All crypto markets with data starting 2020-01-01 provide 66 months of data befor
 | ETHUSDT | BINANCE_FUTURES | ✅ **YES** | 6,024 rates, 2020-01-01 → 2025-06-30, zero gaps |
 | EUR_USD/GBP_USD | OANDA_PRACTICE | N/A (Forex carry) | N/A |
 
-**Funding is now complete for both BTCUSDT and ETHUSDT perpetual evaluation.**
+**Funding is complete for both BTCUSDT and ETHUSDT perpetual evaluation.**
 
 ---
 
-## 7. Reconciliation with Phase 4 Negative Evidence
+## 7. Phase 4D Negative Evidence — Classification Corrected
 
-Phase 4C/04D reports (BTCUSDT/ETHUSDT perpetual trend pilots) showed:
-- BTCUSDT perpetual: Net return 367%, Sharpe 0.84, Max DD 55.86% — failed 15% DD gate
-- ETHUSDT perpetual: Net return 396%, Sharpe 0.64, Max DD 64.27% — failed 15% DD gate
-- EUR_USD/GBP_USD forex: Low returns, failed to beat baseline
+**Phase 4D (Crypto Trend Robustness) results are classified as: INVALID / NO STRATEGY CONCLUSION**
 
-**Implication**: Trend-following on these markets at 4h/15m intervals with default parameters failed Phase 4 DD thresholds. Strategy Research must either:
-1. Improve risk management (trailing stops, position sizing)
-2. Test different parameter regimes
-3. Accept higher DD with stronger statistical validity
-4. Pivot to different signal families
+| Issue | Impact |
+|-------|--------|
+| **Product mismatch** | Phase 4D used BINANCE_SPOT data evaluated as PERPETUAL + BIDIRECTIONAL — this is a product/model mismatch explicitly forbidden by Cycle 2 rules |
+| **Wrong exposure policy** | SPOT + BIDIRECTIONAL is explicitly rejected by the system (SPOT only supports LONG_FLAT) |
+| **No funding** | Perpetual evaluation requires funding rates; Phase 4D used none |
+| **Wrong instrument** | Spot klines ≠ perpetual klines (different funding, liquidation, margin mechanics) |
+
+**Classification**: **INVALID / NO STRATEGY CONCLUSION**
+
+**Usage restriction**: Phase 4D returns/DD/Sharpe metrics **must not** be used for:
+- Parameter selection or optimization
+- Risk model calibration
+- Strategy family selection
+- Any evidence supporting TrendEngine V1+ design choices
+
+**Permitted use**: Historical record only — documented as a product-mismatch invalidation case that motivated the Cycle 2 product guard. May be cited as "prior invalid attempt" in audit trail.
 
 ---
 
-## 8. Access Control Verification
+## 8. Reconciliation with Phase 4 Negative Evidence (Corrected)
+
+| Phase | Result | Validity | Usage |
+|-------|--------|----------|-------|
+| 4C (Trend Pilot 01) | BTC: 367% return, 55.86% DD | **UNRELATED** — Spot data, different interval (4h), different product | Historical record only |
+| 4D (Crypto Trend Robustness) | BTC: 367% return, 55.86% DD | **INVALID** — Spot data run as Perpetual+BIDIRECTIONAL | INVALID — must not inform strategy |
+| 4E (Statistical Validity) | Various | Valid for statistical methodology only | Statistical methodology reference only |
+
+**Phase 4D invalidation is the primary reason Cycle 2 enforces the product guard (BINANCE_FUTURES → PERPETUAL, BINANCE_SPOT → SPOT)**.
+
+---
+
+## 9. Access Control Verification
 
 - ✅ All backfill/validation performed via guarded APIs (`ingest_historical_range()`, `BinanceFuturesProvider.fetch_funding_rates()`, `SQLiteStorage.query_funding_rates()`)
 - ✅ OUTER_VAL (2025-07-01 → 2026-03-01) **not accessed**
@@ -158,25 +177,43 @@ Phase 4C/04D reports (BTCUSDT/ETHUSDT perpetual trend pilots) showed:
 
 ---
 
-## 9. Verdict
+## 10. Verdict (Corrected + Preregistration Aligned)
 
-**DATA_READINESS_VERDICT: READY for BTCUSDT + ETHUSDT Perpetual (4h)**
+**DATA_READINESS_VERDICT: CONDITIONAL for BTCUSDT + ETHUSDT Perpetual (4h)**
 
-- **BTCUSDT BINANCE_FUTURES (4h)**: ✅ **READY** — Full DEV_TRAIN coverage, continuous, product-consistent, funding stored
-- **ETHUSDT BINANCE_FUTURES (4h)**: ✅ **READY** — Full DEV_TRAIN coverage, continuous, product-consistent, funding stored
-- **BTCUSDT BINANCE_FUTURES (15m Parquet)**: ✅ **READY** — Alternative higher-resolution dataset
-- **EUR_USD / GBP_USD (OANDA)**: ⚠️ **PARTIAL** — Missing 2024-2025 data (forex, requires separate backfill)
+- **BTCUSDT BINANCE_FUTURES (4h)**: ⚠️ **CONDITIONAL** — Full DEV_TRAIN coverage, continuous, product-consistent, funding stored. **BUT**: No 721-bar causal warm-up for 2020-01-01 scoring. Earliest causally valid `eval_start_ms` = 1585195200000 (2020-03-26T04:00:00Z).
+- **ETHUSDT BINANCE_FUTURES (4h)**: ⚠️ **CONDITIONAL** — Same as BTCUSDT.
+- **BTCUSDT BINANCE_FUTURES (15m Parquet)**: ⚠️ **CONDITIONAL** — Same warm-up limitation.
+- **EUR_USD / GBP_USD (OANDA)**: ⚠️ **PARTIAL** — Missing 2024-2025 data (forex, requires separate backfill).
 
-**Recommendation**: Proceed with TrendEngine V1+ candidates on **BTCUSDT and ETHUSDT BINANCE_FUTURES (4h)** as primary markets. Both have complete DEV_TRAIN coverage with native 4h data and full funding history. Product-model guards are satisfied.
+**Recommendation**:
+- For TrendEngine V1+ candidates requiring 721-bar warm-up: Use `eval_start_ms >= 1585195200000` (2020-03-26T04:00:00Z).
+- For candidates not requiring 721-bar warm-up: Full DEV_TRAIN from 2020-01-01 is available.
+- Phase 4D results are INVALID and must not inform any parameter/risk/strategy decisions.
+- Product-model guards are satisfied for BINANCE_FUTURES perpetual evaluation.
 
 ---
 
-## 10. Blocker for Strategy Research
+## 11. Preregistered First Valid TrendEngine V1+ Baseline
 
-**None for BTCUSDT + ETHUSDT 4h Perpetual** — ready for candidate evaluation on DEV_TRAIN.
+Per `docs/cycle_02/research/TREND_V1_PERPETUAL_BASELINE_PREREG.md`, the first valid experiment is preregistered with:
+- **eval_start_ms**: 1585195200000 (2020-03-26T04:00:00Z)
+- **Scoring window**: [2020-03-26T04:00:00Z, 2025-07-01T00:00:00Z)
+- **Warm-up**: [2019-11-27T00:00:00Z, 2020-03-26T04:00:00Z) — 721 native 4h bars
+- **TrendConfig**: 20/60/120 days EXACTLY (no grid search)
+- **Product**: BINANCE_FUTURES / PERPETUAL / BIDIRECTIONAL
+- **Funding**: Actual stored rates applied
+
+**Phase 4D remains INVALID / NO STRATEGY CONCLUSION — no parameter reuse permitted.**
+
+---
+
+## 12. Blocker for Strategy Research
+
+**Conditional for BTCUSDT + ETHUSDT 4h Perpetual** — Ready for candidate evaluation **with explicit warm-up boundary** (`eval_start_ms >= 1585195200000` for causal 721-bar warm-up).
 
 Other markets: EUR_USD/GBP_USD require data backfill before full DEV_TRAIN evaluation. This is an ingestion task, not a guard bypass.
 
 ---
 
-**END OF POST-BACKFILL AUDIT** — No market data downloaded outside DEV_TRAIN, no OUTER_VAL/CONFIRMATION/FINAL_HOLDOUT accessed, no strategy backtests run, no synthetic/fabricated data.
+**END OF CORRECTED AUDIT** — No market data downloaded outside DEV_TRAIN, no OUTER_VAL/CONFIRMATION/FINAL_HOLDOUT accessed, no strategy backtests run, no synthetic/fabricated data.
