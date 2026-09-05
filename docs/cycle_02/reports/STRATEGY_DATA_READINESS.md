@@ -200,7 +200,9 @@
 Per `docs/cycle_02/research/TREND_V1_PERPETUAL_BASELINE_PREREG.md`, the first valid experiment is preregistered with:
 - **eval_start_ms**: 1585209600000 (2020-03-26T08:00:00Z)
 - **Scoring window**: [2020-03-26T08:00:00Z, 2025-07-01T00:00:00Z)
-- **Warm-up**: [2019-11-27T04:00:00Z, 2020-03-26T04:00:00Z) — 721 native 4h bars
+- **Pre-signal History**: [2019-11-27T04:00:00Z, 2020-03-26T04:00:00Z) — 720 native 4h bar opens
+- **721st Signal-Formation Bar**: 2020-03-26T04:00:00Z
+- **Total Signal-Input Bars**: 721 (720 pre-signal + 1 signal-formation)
 - **TrendConfig**: 20/60/120 days EXACTLY (no grid search)
 - **Product**: BINANCE_FUTURES / PERPETUAL / BIDIRECTIONAL
 - **Funding**: Actual stored rates applied

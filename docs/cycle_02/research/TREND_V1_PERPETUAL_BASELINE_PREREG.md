@@ -37,9 +37,10 @@
 | Parameter | Value |
 |-----------|-------|
 | **Interval** | 4h (native BINANCE_FUTURES 4h klines) |
-| **Warm-up Period** | [2019-11-27T04:00:00Z, 2020-03-26T04:00:00Z) |
-| **Warm-up Bars** | 721 native 4h perpetual bars (2019-11-27T04:00 → 2020-03-26T04:00) |
-| **Scoring Start** | 2020-03-26T08:00:00Z (eval_start_ms = 1585209600000) |
+| **Pre-signal History** | [2019-11-27T04:00:00Z, 2020-03-26T04:00:00Z) — 720 native 4h bar opens |
+| **721st Signal-Formation Bar** | 2020-03-26T04:00:00Z (1585195200000) |
+| **Total Signal-Input Bars** | 721 (720 pre-signal + 1 signal-formation) |
+| **First Execution / Scoring Start** | 2020-03-26T08:00:00Z (eval_start_ms = 1585209600000) |
 | **Scoring Window** | [2020-03-26T08:00:00Z, 2025-07-01T00:00:00Z) |
 | **Scoring End Exclusive** | 2025-07-01T00:00:00Z (DEV_TRAIN end) |
 
@@ -81,9 +82,10 @@ TrendConfig(
 |----------|-----------------|--------------|
 | **Scoring Start (eval_start_ms)** | 2020-03-26T08:00:00Z | 1585209600000 |
 | **Scoring End (exclusive)** | 2025-07-01T00:00:00Z | 1751328000000 |
-| **Warm-up Complete** | 2020-03-26T04:00:00Z | 1585195200000 (721st bar) |
-| **First Signal Bar** | 2020-03-26T04:00:00Z | 721st completed warm-up bar |
-| **First Execution** | 2020-03-26T08:00:00Z | Signal from 04:00 bar executes at 08:00 open |
+| **Pre-signal History Complete** | 2020-03-26T04:00:00Z | 1585195200000 (720 bar opens) |
+| **721st Signal-Formation Bar** | 2020-03-26T04:00:00Z | 1585195200000 |
+| **Total Signal-Input Bars** | 721 (720 pre-signal + 1 signal-formation) |
+| **First Execution / Scoring Start** | 2020-03-26T08:00:00Z | Signal from 04:00 bar executes at 08:00 open |
 
 **Half-open scoring window**: [1585209600000, 1751328000000)
 
@@ -140,7 +142,9 @@ TrendConfig (20/60/120) is a priori, not derived from Phase 4D.
 ## 7. Data Access Governance
 |
 - ✅ DEV_TRAIN only [2020-01-01, 2025-07-01)
-- ✅ Warm-up [2019-11-27T04:00, 2020-03-26T04:00) — no scored returns
+- ✅ Pre-signal history [2019-11-27T04:00, 2020-03-26T04:00) — 720 bar opens, no scored returns
+- ✅ 721st signal-formation bar: 2020-03-26T04:00:00Z
+- ✅ First execution/scoring: 2020-03-26T08:00:00Z
 - ✅ OUTER_VAL [2025-07-01, 2026-03-01) — NOT accessed
 - ✅ CONFIRMATION [2026-03-01, 2026-07-01) — NOT accessed
 - ✅ FINAL_HOLDOUT [2026-07-01, 2027-01-01) — NOT accessed
@@ -163,16 +167,23 @@ When executed, the experiment is "valid" if:
 ---
 
 ## 9. Governance
-
+|
 | Gate | Status |
 |------|--------|
-|| **Data Readiness** | CONDITIONAL (eval_start_ms = 1585209600000) |
+| **Data Readiness** | CONDITIONAL (eval_start_ms = 1585209600000) |
 | **Product Guard** | SATISFIED (BINANCE_FUTURES → PERPETUAL) |
 | **Phase 4D Acknowledgment** | DOCUMENTED (INVALID) |
 | **Preregistration** | THIS DOCUMENT (frozen on commit) |
 | **Execution Gate** | PENDING (requires explicit authorization) |
 
-**This document is FROZEN on commit. Any modification = protocol violation.**
+**Amendment Record**:
+- Original prereg committed before any baseline execution.
+- Native SQLite verification (data/trend_pilot_01.sqlite) proved first bar = 2019-11-27T04:00:00Z.
+- Warm-up boundary corrected BEFORE any baseline result was observed.
+- No strategy/cost/parameter/product/end-window changes.
+- BACKTEST_RUN = NO.
+
+**Governance Rule**: Documented pre-execution factual corrections (data-boundary verification) are permitted. Post-result parameter changes are forbidden. Post-execution modifications = protocol violation.
 
 ---
 
