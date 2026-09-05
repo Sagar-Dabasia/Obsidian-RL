@@ -33,14 +33,14 @@
 ---
 
 ## 3. Timeframe & Warm-up
-
+|
 | Parameter | Value |
 |-----------|-------|
 | **Interval** | 4h (native BINANCE_FUTURES 4h klines) |
-| **Warm-up Period** | [2019-11-27T00:00:00Z, 2020-03-26T04:00:00Z) |
-| **Warm-up Bars** | 721 native 4h perpetual bars (2019-11-27 → 2020-03-26T00:00) |
-| **Scoring Start** | 2020-03-26T04:00:00Z (eval_start_ms = 1585195200000) |
-| **Scoring Window** | [2020-03-26T04:00:00Z, 2025-07-01T00:00:00Z) |
+| **Warm-up Period** | [2019-11-27T04:00:00Z, 2020-03-26T04:00:00Z) |
+| **Warm-up Bars** | 721 native 4h perpetual bars (2019-11-27T04:00 → 2020-03-26T04:00) |
+| **Scoring Start** | 2020-03-26T08:00:00Z (eval_start_ms = 1585209600000) |
+| **Scoring Window** | [2020-03-26T08:00:00Z, 2025-07-01T00:00:00Z) |
 | **Scoring End Exclusive** | 2025-07-01T00:00:00Z (DEV_TRAIN end) |
 
 **Causal Execution**: NEXT_BAR_OPEN — signal on bar T executes at bar T+1 open.
@@ -76,16 +76,16 @@ TrendConfig(
 ---
 
 ## 5. Scoring Window
-
+|
 | Boundary | Timestamp (UTC) | Milliseconds |
 |----------|-----------------|--------------|
-| **Scoring Start (eval_start_ms)** | 2020-03-26T04:00:00Z | 1585195200000 |
+| **Scoring Start (eval_start_ms)** | 2020-03-26T08:00:00Z | 1585209600000 |
 | **Scoring End (exclusive)** | 2025-07-01T00:00:00Z | 1751328000000 |
-| **Warm-up Complete** | 2020-03-26T00:00:00Z | 1585180800000 (721st bar) |
-| **First Signal Bar** | 2020-03-26T00:00:00Z | 721st completed warm-up bar |
-| **First Execution** | 2020-03-26T04:00:00Z | Signal from 00:00 bar executes at 04:00 open |
+| **Warm-up Complete** | 2020-03-26T04:00:00Z | 1585195200000 (721st bar) |
+| **First Signal Bar** | 2020-03-26T04:00:00Z | 721st completed warm-up bar |
+| **First Execution** | 2020-03-26T08:00:00Z | Signal from 04:00 bar executes at 08:00 open |
 
-**Half-open scoring window**: [1585195200000, 1751328000000)
+**Half-open scoring window**: [1585209600000, 1751328000000)
 
 ---
 
@@ -138,9 +138,9 @@ TrendConfig (20/60/120) is a priori, not derived from Phase 4D.
 ---
 
 ## 7. Data Access Governance
-
+|
 - ✅ DEV_TRAIN only [2020-01-01, 2025-07-01)
-- ✅ Warm-up [2019-11-27, 2020-03-26T04:00) — no scored returns
+- ✅ Warm-up [2019-11-27T04:00, 2020-03-26T04:00) — no scored returns
 - ✅ OUTER_VAL [2025-07-01, 2026-03-01) — NOT accessed
 - ✅ CONFIRMATION [2026-03-01, 2026-07-01) — NOT accessed
 - ✅ FINAL_HOLDOUT [2026-07-01, 2027-01-01) — NOT accessed
@@ -166,7 +166,7 @@ When executed, the experiment is "valid" if:
 
 | Gate | Status |
 |------|--------|
-| **Data Readiness** | CONDITIONAL (eval_start_ms = 1585195200000) |
+|| **Data Readiness** | CONDITIONAL (eval_start_ms = 1585209600000) |
 | **Product Guard** | SATISFIED (BINANCE_FUTURES → PERPETUAL) |
 | **Phase 4D Acknowledgment** | DOCUMENTED (INVALID) |
 | **Preregistration** | THIS DOCUMENT (frozen on commit) |

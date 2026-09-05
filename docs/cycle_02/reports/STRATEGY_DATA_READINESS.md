@@ -1,7 +1,7 @@
 # Strategy Research Workstream 1 — DEV_TRAIN Data Readiness Audit (Post-Backfill + Warm-up Correction + Preregistration Alignment)
 
 **Branch**: `research/cycle-02-trend-pilot-02`
-**HEAD**: `9edfa0ed1f382d8110633c3208e413d1d8bc972f`
+**HEAD**: `5534d4489168156c4348b7620d8a5adf0298e193`
 **Date**: 2026-09-04
 **Context**: Post-backfill verification of DEV_TRAIN datasets through guarded APIs. OUTER_VAL, CONFIRMATION, FINAL_HOLDOUT remain inaccessible.
 
@@ -16,7 +16,7 @@
 | **EUR_USD** | ⚠️ **PARTIAL** | OANDA_PRACTICE (4h SQLite) | 4h | 2019-01-01 → 2023-12-31 (ends early) | Missing 2024-01-01 → 2025-06-30 | Sufficient (60 months) | FOREX_MARGIN — no funding |
 | **GBP_USD** | ⚠️ **PARTIAL** | OANDA_PRACTICE (4h SQLite) | 4h | 2019-01-01 → 2023-12-31 (ends early) | Missing 2024-01-01 → 2025-06-30 | Sufficient (60 months) | FOREX_MARGIN — no funding |
 
-**Overall**: **BTCUSDT and ETHUSDT perpetual (4h) have full DEV_TRAIN coverage with funding data, BUT causal warm-up for scoring starting 2020-01-01 is NOT available** (only 209 pre-2020 native perpetual 4h bars exist). Earliest valid causal scoring start with 721-bar warm-up = **2020-03-26T04:00:00Z** (eval_start_ms = 1585195200000). EUR_USD and GBP_USD remain partial (forex, missing 2024-2025).
+**Overall**: **BTCUSDT and ETHUSDT perpetual (4h) have full DEV_TRAIN coverage with funding data, BUT causal warm-up for scoring starting 2020-01-01 is NOT available** (only 209 pre-2020 native perpetual 4h bars exist). Earliest valid causal scoring start with 721-bar warm-up = **2020-03-26T08:00:00Z** (eval_start_ms = 1585209600000). EUR_USD and GBP_USD remain partial (forex, missing 2024-2025).
 
 ---
 
@@ -31,7 +31,7 @@
 | **Interval** | 4h |
 | **Storage** | SQLite (`data/trend_pilot_01.sqlite`) |
 | **Earliest (full DEV_TRAIN)** | 2020-01-01T00:00:00Z (1577836800000) |
-| **Earliest native perpetual 4h** | 2019-11-27T00:00:00Z (1574827200000) |
+| **Earliest native perpetual 4h** | 2019-11-27T04:00:00Z (1574827200000) |
 | **Pre-2020 native bars** | 209 (from 2019-11-27 to 2019-12-31) |
 | **Latest** | 2025-06-30T20:00:00Z (1751313600000) |
 | **Total Rows (full DEV_TRAIN)** | 12,048 |
@@ -40,8 +40,8 @@
 | **Duplicates** | 0 |
 | **Monotonic** | Yes |
 | **Pre-2020 warm-up bars** | 209 (< 721 minimum) |
-| **721st usable 4h signal bar** | 2020-03-26T00:00:00Z (1585180800000) |
-| **Earliest valid eval_start_ms (721 warm-up)** | 2020-03-26T04:00:00Z (1585195200000) |
+| **721st usable 4h signal bar** | 2020-03-26T04:00:00Z (1585195200000) |
+| **Earliest valid eval_start_ms (721 warm-up)** | 2020-03-26T08:00:00Z (1585209600000) |
 | **Funding Data** | ✅ **STORED** — 6,024 rates, 2020-01-01 → 2025-06-30, zero gaps |
 
 **Quality**: Excellent continuous 4h coverage from 2020-01-01 to 2025-06-30. Native 4h provider data. Funding rates stored alongside klines. **However, only 209 native perpetual 4h bars exist before 2020-01-01 (from 2019-11-27), which is insufficient for the 721-bar (120-day) causal warm-up required for scoring starting 2020-01-01.**
@@ -55,7 +55,7 @@
 | **Interval** | 4h |
 | **Storage** | SQLite (`data/trend_pilot_01.sqlite`) |
 | **Earliest (full DEV_TRAIN)** | 2020-01-01T00:00:00Z (1577836800000) |
-| **Earliest native perpetual 4h** | 2019-11-27T00:00:00Z (1574827200000) |
+| **Earliest native perpetual 4h** | 2019-11-27T04:00:00Z (1574827200000) |
 | **Pre-2020 native bars** | 209 (from 2019-11-27 to 2019-12-31) |
 | **Latest** | 2025-06-30T20:00:00Z (1751313600000) |
 | **Total Rows (full DEV_TRAIN)** | 12,048 |
@@ -64,8 +64,8 @@
 | **Duplicates** | 0 |
 | **Monotonic** | Yes |
 | **Pre-2020 warm-up bars** | 209 (< 721 minimum) |
-| **721st usable 4h signal bar** | 2020-03-26T00:00:00Z (1585180800000) |
-| **Earliest valid eval_start_ms (721 warm-up)** | 2020-03-26T04:00:00Z (1585195200000) |
+| **721st usable 4h signal bar** | 2020-03-26T04:00:00Z (1585195200000) |
+| **Earliest valid eval_start_ms (721 warm-up)** | 2020-03-26T08:00:00Z (1585209600000) |
 | **Funding Data** | ✅ **STORED** — 6,024 rates, 2020-01-01 → 2025-06-30, zero gaps |
 
 **Quality**: Excellent continuous 4h coverage from 2020-01-01 to 2025-06-30. Native 4h provider data. Funding rates stored alongside klines. **However, only 209 native perpetual 4h bars exist before 2020-01-01 (from 2019-11-27), which is insufficient for the 721-bar (120-day) causal warm-up required for scoring starting 2020-01-01.**
@@ -81,18 +81,18 @@
 | BTCUSDT | 209 (2019-11-27 → 2020-01-01) | 721 | **INSUFFICIENT** |
 | ETHUSDT | 209 (2019-11-27 → 2020-01-01) | 721 | **INSUFFICIENT** |
 
-**Native perpetual 4h history starts**: **2019-11-27T00:00:00Z** (1574827200000)
+**Native perpetual 4h history starts**: **2019-11-27T04:00:00Z** (1574827200000)
 
-**721st usable 4h signal bar**: **2020-03-26T00:00:00Z** (1585180800000)
+**721st usable 4h signal bar**: **2020-03-26T04:00:00Z** (1585195200000)
 
-**Earliest valid eval_start_ms (721 warm-up complete)**: **2020-03-26T04:00:00Z** (1585195200000)
+**Earliest valid eval_start_ms (721 warm-up complete)**: **2020-03-26T08:00:00Z** (1585209600000)
 - This is the first timestamp where 721 full 4h bars of native perpetual history exist
-- First signal bar: 2020-03-26T00:00:00Z (721st completed warm-up bar)
-- First execution: 2020-03-26T04:00:00Z (signal from 00:00 bar executes at next bar open)
-- First scored bar interval: [2020-03-26T04:00:00Z, 2020-03-26T08:00:00Z)
-- Any scoring/evaluation with `eval_start_ms < 1585195200000` is **not causally valid** for 721-bar indicators
+- First signal bar: 2020-03-26T04:00:00Z (721st completed warm-up bar)
+- First execution: 2020-03-26T08:00:00Z (signal from 04:00 bar executes at next bar open)
+- First scored bar interval: [2020-03-26T08:00:00Z, 2020-03-26T12:00:00Z)
+- Any scoring/evaluation with `eval_start_ms < 1585209600000` is **not causally valid** for 721-bar indicators
 
-**Implication**: Any evaluation/backtest with `eval_start_ms = 1577836800000` (2020-01-01) and indicators requiring 721-bar warm-up is **not causally valid**. The earliest causally valid `eval_start_ms` is **1585195200000 (2020-03-26T04:00:00Z)**.
+**Implication**: Any evaluation/backtest with `eval_start_ms = 1577836800000` (2020-01-01) and indicators requiring 721-bar warm-up is **not causally valid**. The earliest causally valid `eval_start_ms` is **1585209600000 (2020-03-26T08:00:00Z)**.
 
 ---
 
@@ -182,13 +182,13 @@
 
 **DATA_READINESS_VERDICT: CONDITIONAL for BTCUSDT + ETHUSDT Perpetual (4h)**
 
-- **BTCUSDT BINANCE_FUTURES (4h)**: ⚠️ **CONDITIONAL** — Full DEV_TRAIN coverage, continuous, product-consistent, funding stored. **BUT**: No 721-bar causal warm-up for 2020-01-01 scoring. Earliest causally valid `eval_start_ms` = 1585195200000 (2020-03-26T04:00:00Z).
+- **BTCUSDT BINANCE_FUTURES (4h)**: ⚠️ **CONDITIONAL** — Full DEV_TRAIN coverage, continuous, product-consistent, funding stored. **BUT**: No 721-bar causal warm-up for 2020-01-01 scoring. Earliest causally valid `eval_start_ms` = 1585209600000 (2020-03-26T08:00:00Z).
 - **ETHUSDT BINANCE_FUTURES (4h)**: ⚠️ **CONDITIONAL** — Same as BTCUSDT.
 - **BTCUSDT BINANCE_FUTURES (15m Parquet)**: ⚠️ **CONDITIONAL** — Same warm-up limitation.
 - **EUR_USD / GBP_USD (OANDA)**: ⚠️ **PARTIAL** — Missing 2024-2025 data (forex, requires separate backfill).
 
 **Recommendation**:
-- For TrendEngine V1+ candidates requiring 721-bar warm-up: Use `eval_start_ms >= 1585195200000` (2020-03-26T04:00:00Z).
+- For TrendEngine V1+ candidates requiring 721-bar warm-up: Use `eval_start_ms >= 1585209600000` (2020-03-26T08:00:00Z).
 - For candidates not requiring 721-bar warm-up: Full DEV_TRAIN from 2020-01-01 is available.
 - Phase 4D results are INVALID and must not inform any parameter/risk/strategy decisions.
 - Product-model guards are satisfied for BINANCE_FUTURES perpetual evaluation.
@@ -196,11 +196,11 @@
 ---
 
 ## 11. Preregistered First Valid TrendEngine V1+ Baseline
-
+|
 Per `docs/cycle_02/research/TREND_V1_PERPETUAL_BASELINE_PREREG.md`, the first valid experiment is preregistered with:
-- **eval_start_ms**: 1585195200000 (2020-03-26T04:00:00Z)
-- **Scoring window**: [2020-03-26T04:00:00Z, 2025-07-01T00:00:00Z)
-- **Warm-up**: [2019-11-27T00:00:00Z, 2020-03-26T04:00:00Z) — 721 native 4h bars
+- **eval_start_ms**: 1585209600000 (2020-03-26T08:00:00Z)
+- **Scoring window**: [2020-03-26T08:00:00Z, 2025-07-01T00:00:00Z)
+- **Warm-up**: [2019-11-27T04:00:00Z, 2020-03-26T04:00:00Z) — 721 native 4h bars
 - **TrendConfig**: 20/60/120 days EXACTLY (no grid search)
 - **Product**: BINANCE_FUTURES / PERPETUAL / BIDIRECTIONAL
 - **Funding**: Actual stored rates applied
@@ -210,8 +210,8 @@ Per `docs/cycle_02/research/TREND_V1_PERPETUAL_BASELINE_PREREG.md`, the first va
 ---
 
 ## 12. Blocker for Strategy Research
-
-**Conditional for BTCUSDT + ETHUSDT 4h Perpetual** — Ready for candidate evaluation **with explicit warm-up boundary** (`eval_start_ms >= 1585195200000` for causal 721-bar warm-up).
+|
+**Conditional for BTCUSDT + ETHUSDT 4h Perpetual** — Ready for candidate evaluation **with explicit warm-up boundary** (`eval_start_ms >= 1585209600000` for causal 721-bar warm-up).
 
 Other markets: EUR_USD/GBP_USD require data backfill before full DEV_TRAIN evaluation. This is an ingestion task, not a guard bypass.
 
