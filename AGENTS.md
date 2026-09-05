@@ -28,3 +28,11 @@
 ## Version control
 - Do not commit or push unless explicitly requested.
 - Never rewrite Git history or run destructive Git reset commands.
+
+## Graphify Architecture Mapping
+- Graphify is an optional navigation aid.
+- Source code and Git history are the absolute authority.
+- Generated graph output is non-authoritative and local only.
+- Archived/legacy nodes are historical evidence only.
+- No active code may import quarantined legacy code.
+

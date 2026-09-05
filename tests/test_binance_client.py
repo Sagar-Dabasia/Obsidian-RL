@@ -8,6 +8,7 @@ from obsidian_rl.data.binance_client import MAX_LIMIT, BinanceFuturesRest, DataF
 from obsidian_rl.data.schema import interval_to_ms
 
 MS15 = interval_to_ms("15m")
+DEV_TRAIN_T0 = 1704067200000  # 2024-01-01T00:00:00Z - within DEV_TRAIN
 
 
 def make_raw_klines(start_ms: int, n: int) -> list[list[Any]]:
@@ -60,12 +61,13 @@ def test_single_page_fetch() -> None:
 
 
 def test_pagination_advances_cursor() -> None:
-    page1 = make_raw_klines(0, MAX_LIMIT)
-    page2 = make_raw_klines(MAX_LIMIT * MS15, 10)
+    page1 = make_raw_klines(DEV_TRAIN_T0, MAX_LIMIT)
+    page2 = make_raw_klines(DEV_TRAIN_T0 + MAX_LIMIT * MS15, 10)
     session = FakeSession([FakeResponse(200, page1), FakeResponse(200, page2)])
-    df = make_client(session).fetch_klines("BTCUSDT", "15m", 0)
+    df = make_client(session).fetch_klines("BTCUSDT", "15m", DEV_TRAIN_T0, DEV_TRAIN_T0 + (MAX_LIMIT + 10) * MS15)
     assert len(df) == MAX_LIMIT + 10
-    assert session.calls[1]["startTime"] == MAX_LIMIT * MS15
+    # The second page starts at DEV_TRAIN_T0 + MAX_LIMIT * MS15
+    assert session.calls[1]["startTime"] == DEV_TRAIN_T0 + MAX_LIMIT * MS15
 
 
 def test_rate_limit_retries_then_succeeds() -> None:

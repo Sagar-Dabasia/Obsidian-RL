@@ -1,0 +1,96 @@
+"""CLI tool to build the historical dataset for Trend Pilot 01."""
+
+import argparse
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+from obsidian_rl.data.contracts import AssetClass, Timeframe
+from obsidian_rl.data.historical_dataset import ingest_historical_range
+from obsidian_rl.data.outages import default_registry
+from obsidian_rl.data.storage import SQLiteStorage
+
+START_MS = 1546300800000  # 2019-01-01T00:00:00Z
+END_MS = 1704067200000  # 2024-01-01T00:00:00Z
+
+MARKETS = [
+    (AssetClass.CRYPTO, "BTCUSDT", Timeframe.H4),
+    (AssetClass.CRYPTO, "ETHUSDT", Timeframe.H4),
+    (AssetClass.FOREX, "EURUSD", Timeframe.H4),
+    (AssetClass.FOREX, "GBPUSD", Timeframe.H4),
+]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build Historical Dataset for Trend Pilot 01")
+    parser.add_argument("--database", default="data/trend_pilot_01.sqlite", help="SQLite DB path")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing manifest")
+    args = parser.parse_args()
+
+    manifests = []
+
+    with SQLiteStorage(args.database) as storage:
+        for asset_class, symbol, timeframe in MARKETS:
+            print(f"Ingesting {symbol}...")
+            try:
+                # Pilot 02 preregistration requires exactly 721 bars strictly before evaluation
+                min_warmup_bars = 721
+
+                venue = "BINANCE_SPOT" if asset_class == AssetClass.CRYPTO else "OANDA_PRACTICE"
+                manifest = ingest_historical_range(
+                    asset_class=asset_class,
+                    venue=venue,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    start_ms=START_MS,
+                    end_ms=END_MS,
+                    storage=storage,
+                    outage_registry=default_registry(),
+                    min_warmup_bars=min_warmup_bars,
+                )
+                manifests.append(manifest)
+                print(f"Done {symbol}. Rows: {manifest.row_count}")
+            except Exception as e:
+                print(f"Failed {symbol}: {e}")
+
+    if len(manifests) != 4:
+        raise ValueError("Not all markets ingested successfully.")
+
+    # Combine manifests
+    manifest_dir = Path("artifacts/cycle_02/manifests")
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+
+    combined = {
+        "dataset_id": "TREND_PILOT_02_COMBINED",
+        "created_at_utc": int(datetime.now(UTC).timestamp() * 1000),
+        "start_ms": START_MS,
+        "end_ms": END_MS,
+        "components": [
+            {
+                "symbol": m.symbol,
+                "asset_class": m.asset_class.value,
+                "venue": m.venue,
+                "timeframe": m.timeframe.value,
+                "start_timestamp_utc": m.start_timestamp_utc,
+                "end_timestamp_utc": m.end_timestamp_utc,
+                "row_count": m.row_count,
+                "digest": m.digest,
+            }
+            for m in manifests
+        ],
+    }
+
+    manifest_path = manifest_dir / "TREND_PILOT_02_COMBINED.json"
+    if manifest_path.exists() and not args.overwrite:
+        raise FileExistsError(
+            f"Manifest {manifest_path} already exists. Refusing to overwrite without "
+            "--overwrite flag."
+        )
+
+    with open(manifest_path, "w") as f:
+        json.dump(combined, f, indent=2)
+    print(f"Combined manifest written to {manifest_path}")
+
+
+if __name__ == "__main__":
+    main()

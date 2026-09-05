@@ -122,7 +122,7 @@ PORTFOLIO_BOUNDS: MappingProxyType[str, dict[str, Any]] = MappingProxyType(
             "norm_window": 96,
         },
         "recent_turnover": {
-            "description": "sum of notional traded over last 96 steps / net_equity; clipped to [0, 10]",
+            "description": "sum of notional traded over last 96 steps / net_equity; clipped",
             "clip_low": 0.0,
             "clip_high": 10.0,
             "norm_window": 96,

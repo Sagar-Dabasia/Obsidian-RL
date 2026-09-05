@@ -22,10 +22,10 @@ from obsidian_rl.features.schema import (
 __all__ = [
     "OBSERVATION_DIM",
     "PortfolioObs",
-    "validate_portfolio_obs",
     "build_observation",
     "schema_fingerprint",
     "schema_sha256",
+    "validate_portfolio_obs",
 ]
 
 
@@ -72,14 +72,10 @@ def validate_portfolio_obs(portfolio: PortfolioObs) -> None:
                 f"PortfolioObs.{field_name} must be numeric (not bool), got {type(value).__name__}"
             )
         if not math.isfinite(value):
-            raise ValueError(
-                f"PortfolioObs.{field_name} must be finite, got {value!r}"
-            )
+            raise ValueError(f"PortfolioObs.{field_name} must be finite, got {value!r}")
         lo, hi = bounds["clip_low"], bounds["clip_high"]
         if value < lo or value > hi:
-            raise ValueError(
-                f"PortfolioObs.{field_name}={value!r} out of bounds [{lo}, {hi}]"
-            )
+            raise ValueError(f"PortfolioObs.{field_name}={value!r} out of bounds [{lo}, {hi}]")
 
 
 def build_observation(market_row: np.ndarray, portfolio: PortfolioObs) -> np.ndarray:
@@ -96,13 +92,9 @@ def build_observation(market_row: np.ndarray, portfolio: PortfolioObs) -> np.nda
             f"market feature row has shape {market.shape}, expected ({len(MARKET_FEATURES)},)"
         )
     validate_portfolio_obs(portfolio)
-    obs = np.ascontiguousarray(
-        np.concatenate([market, portfolio.to_array()]), dtype=np.float32
-    )
+    obs = np.ascontiguousarray(np.concatenate([market, portfolio.to_array()]), dtype=np.float32)
     if obs.shape != (OBSERVATION_DIM,):
-        raise ValueError(
-            f"observation shape {obs.shape} != ({OBSERVATION_DIM},)"
-        )
+        raise ValueError(f"observation shape {obs.shape} != ({OBSERVATION_DIM},)")
     if not np.isfinite(obs).all():
         raise ValueError("observation contains non-finite values; refusing to emit")
     return obs

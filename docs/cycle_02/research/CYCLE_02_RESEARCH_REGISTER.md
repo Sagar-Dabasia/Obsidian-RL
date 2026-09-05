@@ -21,7 +21,7 @@ In accordance with Obsidian-RL research governance and validation rules (`AGENTS
 ---
 
 ## Continuation of the Obsidian-RL Repository
-The formal rejection of Cycle 01 hypotheses **does not** close or terminate the Obsidian-RL project. Rather, the empirical findings of Cycle 01 establish that high-turnover single-asset 15-minute cryptocurrency trading is dominated by execution fee drag and noise. 
+The formal rejection of Cycle 01 hypotheses **does not** close or terminate the Obsidian-RL project. Rather, the empirical findings of Cycle 01 establish that high-turnover single-asset 15-minute cryptocurrency trading is dominated by execution fee drag and noise.
 
 Obsidian-RL now advances to **Research Cycle 02**, deploying an institutional-grade, multi-engine architecture designed from the ground up to overcome the limitations discovered in Cycle 01.
 
@@ -66,8 +66,66 @@ To preserve absolute scientific integrity and prevent data dredging across cross
 ---
 
 ## Research Cycle 02 Governance Checklist
-- [ ] Canonical Cross-Asset Contracts (`MarketBar`, `EventNewsItem`) finalized and tested (`Phase 1`).
+- [x] Canonical Cross-Asset Contracts (`MarketBar`, `EventNewsItem`) finalized and tested (`Phase 1`).
 - [ ] Experimental window boundaries (`DEV_TRAIN`, `OUTER_VAL`, `CONFIRMATION`, `FINAL_HOLDOUT`) formally frozen before data download (`Phase 3`).
-- [ ] Cycle 01 hypotheses verified as retired and excluded from active strategy loops.
+  - **Remediation Note**: Phase 4C/4D occurred before formal Cycle 2 window freeze. This is a confirmed sequencing/governance defect. Current windows are frozen prospectively for future Strategy Research. No retroactive compliance claim.
+- [x] Cycle 01 hypotheses verified as retired and excluded from active strategy loops.
 - [ ] Multi-engine composite evaluated under strict walk-forward isolation (`Phase 8`).
-- [ ] Zero access to `FINAL_HOLDOUT` verified across all audit logs.
+- [x] Zero access to `FINAL_HOLDOUT` verified across all audit logs.
+
+---
+
+## Phase 4C Final Status
+**Classification**: `EXPERIMENT INVALID — UNVERIFIED FOREX DATA GAPS`
+Phase 4C is officially closed and cannot be rerun using the current unverifiable Forex data constraints. The experiment was blocked by missing OANDA market data which lacked valid cryptographic proofs of API absence.
+
+## Phase 4D Final Status
+**Status**: `INVALID — SPOT/PERPETUAL MARKET-MODEL MISMATCH — NO STRATEGY CONCLUSION`
+* Constraints: Erratum logged. Any future perpetual experiment must be a NEW preregistered experiment.
+* Diagnostic Report: [PHASE_04D_CRYPTO_TREND_ROBUSTNESS.md](../reports/PHASE_04D_CRYPTO_TREND_ROBUSTNESS.md)
+* Erratum Report: [PHASE_04D_POST_PUSH_EVALUATION_ERRATUM.md](../reports/PHASE_04D_POST_PUSH_EVALUATION_ERRATUM.md)
+
+Confirmation and final holdout data remained completely untouched.
+The next task must require a genuinely new hypothesis before modifying or rerunning the strategy.
+
+## Cycle 02 Roadmap & Planned Scope
+
+* 4D INVALID closeout
+* → 4E Statistical Validity Gate
+* → 4F Execution/Accounting Parity Audit
+* → remaining Cycle 2 engines/composite
+* → possible genuinely-new RL re-entry
+* → controlled paper trading
+
+### 4E Status: INFRASTRUCTURE COMPLETE
+* PSR and DSR implemented.
+* Trial accounting governance established.
+* PBO / CPCV deferred (not mathematically supported by current evidence).
+* See: [PHASE_04E_STATISTICAL_VALIDITY.md](PHASE_04E_STATISTICAL_VALIDITY.md)
+
+### 4F planned scope:
+* NautilusTrader as execution/accounting reference
+* compare timing/fills/costs/order-state/accounting
+* never replace centralized Obsidian state/accounting
+* `hftbacktest` deferred
+
+### Future reference only:
+* FinRL-X
+* TradeMaster
+* TorchTrade
+
+**RL remains retired unless a genuinely new hypothesis passes a re-entry gate.**
+Possible later candidates:
+* SB3-Contrib RecurrentPPO
+* d3rlpy
+* Minari conventions
+
+**Optuna:**
+* train/inner-eval only
+* never outer/confirmation/final holdout
+
+**Deferred:**
+* DVC
+* CCXT
+* Soup
+* public-apis

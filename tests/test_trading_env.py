@@ -54,7 +54,7 @@ def test_hand_calculated_trajectory_flat_then_long() -> None:
         portfolio_config=PortfolioConfig(initial_cash=10_000.0),
     )
     env.reset(seed=0)
-    obs, r, term, trunc, info = env.step(FLAT)
+    _obs, r, _term, _trunc, info = env.step(FLAT)
     assert r == 0.0 and info["net_equity"] == pytest.approx(10_000.0)
 
     t = WARMUP_ROWS + 1  # env is now at this row; execution at open[t+1]
@@ -63,7 +63,7 @@ def test_hand_calculated_trajectory_flat_then_long() -> None:
     qty = 10_000.0 / exec_px
     costs = 10_000.0 * 0.002
     expected_equity = 10_000.0 - costs + qty * (next_close - exec_px)
-    obs, r, term, trunc, info = env.step(FULL_LONG)
+    _obs, r, _term, _trunc, info = env.step(FULL_LONG)
     assert info["net_equity"] == pytest.approx(expected_equity, rel=1e-9)
     assert r == pytest.approx(math.log(expected_equity / 10_000.0), rel=1e-6)
     assert info["execution"]["total_cost"] == pytest.approx(costs)
@@ -73,7 +73,7 @@ def test_reward_components_sum_to_reward() -> None:
     env = make_env(reward_config=RewardConfig(0.05, 0.01, 0.02))
     env.reset(seed=1)
     for action in (FULL_LONG, HALF_SHORT, FLAT, FULL_LONG):
-        obs, r, term, trunc, info = env.step(action)
+        _obs, r, term, trunc, info = env.step(action)
         assert r == pytest.approx(sum(info["reward_components"].values()), abs=1e-12)
         if term or trunc:
             break
@@ -92,7 +92,7 @@ def test_turnover_penalty_active() -> None:
     env_no.reset(seed=0)
     env_yes.reset(seed=0)
     _, r_no, _, _, info_no = env_no.step(FULL_LONG)
-    _, r_yes, _, _, info_yes = env_yes.step(FULL_LONG)
+    _, r_yes, _, _, _info_yes = env_yes.step(FULL_LONG)
     notional = info_no["execution"]["traded_notional"]
     assert r_yes == pytest.approx(r_no - 0.1 * notional / 10_000.0, rel=1e-9)
 
@@ -101,7 +101,7 @@ def test_truncation_at_episode_budget() -> None:
     env = make_env(episode_length=3)
     env.reset(seed=0)
     results = [env.step(FLAT) for _ in range(3)]
-    *_, (obs, r, term, trunc, info) = results
+    *_, (_obs, _r, term, trunc, _info) = results
     assert trunc is True and term is False
 
 
@@ -111,7 +111,7 @@ def test_truncation_at_end_of_data() -> None:
     steps = 0
     trunc = False
     while not trunc and steps < 100:
-        _, _, term, trunc, _ = env.step(FLAT)
+        _, _, _term, trunc, _ = env.step(FLAT)
         steps += 1
     assert trunc and steps == 4  # decisions at rows W..W+3, executing into W+1..W+4
 
@@ -120,7 +120,7 @@ def test_terminal_liquidation_flattens_position() -> None:
     env = make_env(episode_length=2)
     env.reset(seed=0)
     env.step(FULL_LONG)
-    _, _, term, trunc, info = env.step(FULL_LONG)
+    _, _, _term, trunc, _info = env.step(FULL_LONG)
     assert trunc
     assert env._engine is not None
     assert env._engine.state.qty == 0.0  # liquidated
@@ -172,8 +172,15 @@ def test_reward_config_validation_rejects_invalid_turnover_penalty_bps() -> None
 
 def test_turnover_regularization_zero_penalty_behavior_identical() -> None:
     candles = make_candles(WARMUP_ROWS + 30)
-    env_zero = TradingEnv(candles, reward_config=RewardConfig(turnover_penalty_bps=0.0), episode_length=15, random_start=False)
-    env_default = TradingEnv(candles, reward_config=RewardConfig(), episode_length=15, random_start=False)
+    env_zero = TradingEnv(
+        candles,
+        reward_config=RewardConfig(turnover_penalty_bps=0.0),
+        episode_length=15,
+        random_start=False,
+    )
+    env_default = TradingEnv(
+        candles, reward_config=RewardConfig(), episode_length=15, random_start=False
+    )
     obs_z, info_z = env_zero.reset(seed=42)
     obs_d, info_d = env_default.reset(seed=42)
     np.testing.assert_array_equal(obs_z, obs_d)
@@ -201,23 +208,30 @@ def test_turnover_regularization_hand_calculated_target_changes() -> None:
     )
     env.reset(seed=0)
 
-    # Step 1: flat (0.0) -> FULL_LONG (1.0). Target change = |1.0 - 0.0| = 1.0. Penalty = 0.001 * 1.0 = 0.001.
+    # Step 1: flat (0.0) -> FULL_LONG (1.0). Target change = |1.0 - 0.0| = 1.0.
+    # Penalty = 0.001 * 1.0 = 0.001.
     _, r1, _, _, info1 = env.step(FULL_LONG)
     expected_pen1 = (tp_bps / 10000.0) * 1.0
     assert info1["penalty"] == pytest.approx(expected_pen1)
     assert info1["raw_reward"] - info1["penalty"] == pytest.approx(r1)
     assert info1["final_reward"] == pytest.approx(r1)
-    assert info1["reward_components"]["turnover_regularization_penalty"] == pytest.approx(-expected_pen1)
+    assert info1["reward_components"]["turnover_regularization_penalty"] == pytest.approx(
+        -expected_pen1
+    )
 
-    # Step 2: no target change (FULL_LONG -> FULL_LONG). Target change = |1.0 - 1.0| = 0.0. Penalty = 0.0.
+    # Step 2: no target change (FULL_LONG -> FULL_LONG). Target change = |1.0 - 1.0| = 0.0.
+    # Penalty = 0.0.
     _, r2, _, _, info2 = env.step(FULL_LONG)
     assert info2["penalty"] == pytest.approx(0.0)
     assert info2["reward_components"]["turnover_regularization_penalty"] == pytest.approx(0.0)
     assert r2 == pytest.approx(info2["raw_reward"])
 
-    # Step 3: long-to-short (FULL_LONG 1.0 -> FULL_SHORT -1.0, index 0). Target change = |-1.0 - 1.0| = 2.0.
+    # Step 3: long-to-short (FULL_LONG 1.0 -> FULL_SHORT -1.0, index 0). Target change =
+    # |-1.0 - 1.0| = 2.0.
     _, r3, _, _, info3 = env.step(0)
     expected_pen3 = (tp_bps / 10000.0) * 2.0
     assert info3["penalty"] == pytest.approx(expected_pen3)
     assert info3["raw_reward"] - info3["penalty"] == pytest.approx(r3)
-    assert info3["reward_components"]["turnover_regularization_penalty"] == pytest.approx(-expected_pen3)
+    assert info3["reward_components"]["turnover_regularization_penalty"] == pytest.approx(
+        -expected_pen3
+    )
