@@ -24,7 +24,9 @@ def _print_result(name: str, res: TrendBacktestResult) -> None:
     print(f"Sharpe (Ann.): {res.annualized_sharpe:.2f}")
     print(f"Hit Rate: {res.hit_rate:.2%}")
     print(f"Trades: {res.trade_count}")
-    print(f"Total Costs: {res.total_costs:.2f}")
+    print(f"Total Trading Costs: {res.total_trading_costs:.2f}")
+    print(f"Total Funding: {res.total_funding:.2f}")
+    print(f"Total Costs (all-in): {res.total_costs:.2f}")
     print(f"Exposure: {res.exposure_percentage:.2%}")
     print()
 
@@ -172,6 +174,7 @@ def main() -> None:
                 symbol=args.symbol,
                 start_timestamp_utc=args.start_ms if args.start_ms else 0,
                 end_timestamp_utc=args.end_ms if args.end_ms else (1 << 63) - 1,
+                observed_before_ms=args.observed_before_ms,
             )
             funding_rates = tuple(frates)
             print(f"Loaded {len(funding_rates)} funding rates from SQLite storage.")

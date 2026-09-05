@@ -380,26 +380,13 @@ def test_audit_invariants(monkeypatch) -> None:
 
 
 def test_cli_boundaries(monkeypatch) -> None:
-    import argparse
     import unittest.mock
 
     import tools.run_trend_backtest as cli
 
-    # We patch argparse to intercept the parsed args right before load
-    orig_parse_args = argparse.ArgumentParser.parse_args
-    parsed_args_capture = []
-
-    def mock_parse_args(*args, **kwargs):
-        import sys
-
-        sys.argv.extend(["--market-model", "PERPETUAL", "--exposure-policy", "BIDIRECTIONAL"])
-        res = orig_parse_args(*args, **kwargs)
-        parsed_args_capture.append(res)
-        return res
-    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", mock_parse_args)
-
     class MockStorage:
         last_query: ClassVar[dict] = {}
+        last_funding_query: ClassVar[dict] = {}
 
         def __init__(self, path):
             pass
@@ -415,8 +402,8 @@ def test_cli_boundaries(monkeypatch) -> None:
             return tuple(make_custom_bar(i) for i in range(10))
 
         def query_funding_rates(self, **kwargs):
-            # Return empty tuple to trigger "no funding rates found" error path
-            # or return mock funding rates
+            # Verify observed_before_ms is passed through
+            MockStorage.last_funding_query = kwargs
             from obsidian_rl.data.contracts import AssetClass, FundingRate
             return tuple([
                 FundingRate(
@@ -431,6 +418,7 @@ def test_cli_boundaries(monkeypatch) -> None:
                 )
             ])
 
+    # Patch the module that CLI imports SQLiteStorage from
     monkeypatch.setattr("obsidian_rl.data.storage.SQLiteStorage", MockStorage)
 
     mock_run = unittest.mock.MagicMock()
@@ -462,18 +450,28 @@ def test_cli_boundaries(monkeypatch) -> None:
         "5000",
         "--eval-start-ms",
         "2000",
+        "--observed-before-ms",
+        "3000",
         "--taker-fee",
         "0.0",
         "--half-spread",
         "0.0",
         "--slippage",
         "0.0",
+        "--market-model",
+        "PERPETUAL",
+        "--exposure-policy",
+        "BIDIRECTIONAL",
     ]
     monkeypatch.setattr("sys.argv", test_args)
     cli.main()
 
     # 10. CLI keeps --start-ms as data-load start and --eval-start-ms as scoring start.
     assert MockStorage.last_query["start_timestamp_utc"] == 1000
+    # Funding query should receive observed_before_ms
+    assert MockStorage.last_funding_query.get("observed_before_ms") == 3000
+    assert MockStorage.last_funding_query["start_timestamp_utc"] == 1000
+    assert MockStorage.last_funding_query["end_timestamp_utc"] == 5000
     mock_run.assert_called_once()
     assert mock_run.call_args[1]["eval_start_ms"] == 2000
 
@@ -797,13 +795,84 @@ def test_spot_does_not_require_funding() -> None:
     assert report.strategy.total_funding == 0.0
 
 
-def test_perpetual_missing_funding_fails_closed() -> None:
-    """PERPETUAL with empty funding_rates passed explicitly should fail at engine level.
+def test_perpetual_missing_funding_fails_closed(monkeypatch) -> None:
+    """PERPETUAL with empty funding_rates passed explicitly to CLI must fail closed.
 
     Note: The core run_trend_backtest() doesn't enforce funding presence;
     that validation happens in the CLI (tools/run_trend_backtest.py).
-    This test documents current behavior - no error is raised here.
+    This test verifies the CLI fail-closed behavior.
     """
+    import argparse
+    import unittest.mock
+    import tools.run_trend_backtest as cli
+
+    # Test CLI with PERPETUAL and no funding in storage
+    class MockStorageEmptyFunding:
+        last_query: ClassVar[dict] = {}
+        last_funding_query: ClassVar[dict] = {}
+
+        def __init__(self, path):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def query_market_bars(self, **kwargs):
+            MockStorageEmptyFunding.last_query = kwargs
+            return tuple(make_custom_bar(i) for i in range(10))
+
+        def query_funding_rates(self, **kwargs):
+            MockStorageEmptyFunding.last_funding_query = kwargs
+            return tuple()  # Empty funding
+
+    monkeypatch.setattr("obsidian_rl.data.storage.SQLiteStorage", MockStorageEmptyFunding)
+
+    test_args = [
+        "tools/run_trend_backtest.py",
+        "--database",
+        "test.sqlite",
+        "--asset-class",
+        "CRYPTO",
+        "--venue",
+        "BINANCE_FUTURES",
+        "--symbol",
+        "BTCUSDT",
+        "--timeframe",
+        "4h",
+        "--start-ms",
+        "1000",
+        "--end-ms",
+        "5000",
+        "--eval-start-ms",
+        "2000",
+        "--observed-before-ms",
+        "3000",
+        "--taker-fee",
+        "0.0",
+        "--half-spread",
+        "0.0",
+        "--slippage",
+        "0.0",
+        "--market-model",
+        "PERPETUAL",
+        "--exposure-policy",
+        "BIDIRECTIONAL",
+    ]
+    monkeypatch.setattr("sys.argv", test_args)
+
+    # CLI should exit with SystemExit
+    import pytest
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+    # Verify error message
+    assert exc_info.value.code == 1
+
+
+def test_perpetual_missing_funding_backtest_no_error() -> None:
+    """Core run_trend_backtest does not raise on empty funding; returns zero funding."""
     bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(800))
     config = TrendConfig()
     cost = CostModel()
@@ -886,12 +955,19 @@ def test_total_trading_costs_excludes_funding() -> None:
     assert report.strategy.total_trading_costs <= report.strategy.total_costs + 0.01
 
 
-def test_funding_not_double_applied() -> None:
-    """Funding should be applied exactly once per funding event."""
+def test_funding_not_double_applied(monkeypatch) -> None:
+    """Funding should be applied exactly once per eligible funding event per engine.
+
+    This test uses a spy on PortfolioEngine.apply_funding to verify:
+    - Each engine (strategy, flat, long) applies each funding event exactly once
+    - Total calls = 3 engines * 400 events = 1200
+    - Duplicate application would cause call count to exceed this
+    """
     bars = tuple(make_bar(i * 14_400_000, close=100.0 + i) for i in range(800))
     config = TrendConfig()
     cost_model = CostModel(taker_fee=0.001, half_spread=0.0, slippage=0.0)
     from obsidian_rl.data.contracts import FundingRate, AssetClass
+    # Create funding events every 8h (2 bars) starting from bar 0
     funding_rates = tuple(
         FundingRate(
             asset_class=AssetClass.CRYPTO,
@@ -905,6 +981,31 @@ def test_funding_not_double_applied() -> None:
         )
         for i in range(400)
     )
+
+    # Spy on apply_funding to count calls per engine
+    from obsidian_rl.portfolio.engine import PortfolioEngine
+
+    original_apply_funding = PortfolioEngine.apply_funding
+    call_counts = {"strategy": 0, "flat": 0, "long": 0}
+    current_mode = {"value": "strategy"}
+
+    def spy_apply_funding(self, price: float, funding_rate: float, symbol: str | None = None) -> float:
+        call_counts[current_mode["value"]] += 1
+        return original_apply_funding(self, price, funding_rate, symbol)
+
+    monkeypatch.setattr(PortfolioEngine, "apply_funding", spy_apply_funding)
+
+    # We need to track which mode is running
+    import obsidian_rl.evaluation.trend_backtest as tb
+    original_run_single = tb._run_single_backtest
+
+    def tracked_run_single(*args, **kwargs):
+        mode = kwargs.get("mode") or (args[3] if len(args) > 3 else "unknown")
+        current_mode["value"] = mode
+        return original_run_single(*args, **kwargs)
+
+    monkeypatch.setattr(tb, "_run_single_backtest", tracked_run_single)
+
     report = run_trend_backtest(
         bars,
         config,
@@ -914,9 +1015,17 @@ def test_funding_not_double_applied() -> None:
         exposure_policy=ExposurePolicy.BIDIRECTIONAL,
         funding_rates=funding_rates,
     )
-    # With funding events, total_funding should be non-zero
-    assert report.strategy.total_funding != 0.0
-    # The identity should be deterministic (same funding -> same identity)
+
+    # Each of 3 engines should apply 400 funding events = 1200 total
+    expected_per_engine = 400
+    assert call_counts["strategy"] == expected_per_engine, f"Strategy: expected {expected_per_engine}, got {call_counts['strategy']}"
+    assert call_counts["flat"] == expected_per_engine, f"Flat: expected {expected_per_engine}, got {call_counts['flat']}"
+    assert call_counts["long"] == expected_per_engine, f"Long: expected {expected_per_engine}, got {call_counts['long']}"
+
+    # Verify total_funding is non-zero and consistent
+    assert report.strategy.total_funding > 0
+
+    # Determinism: repeated run produces identical funding
     report2 = run_trend_backtest(
         bars,
         config,
@@ -926,8 +1035,8 @@ def test_funding_not_double_applied() -> None:
         exposure_policy=ExposurePolicy.BIDIRECTIONAL,
         funding_rates=funding_rates,
     )
-    assert report.strategy.backtest_identity == report2.strategy.backtest_identity
     assert report.strategy.total_funding == report2.strategy.total_funding
+    assert report.strategy.backtest_identity == report2.strategy.backtest_identity
 
 
 if __name__ == "__main__":

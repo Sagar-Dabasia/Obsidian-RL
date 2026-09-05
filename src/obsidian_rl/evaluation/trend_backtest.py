@@ -47,7 +47,7 @@ class TrendBacktestResult:
     liq_price: float | None
     backtest_identity: str
     # Separate cost breakdowns
-    total_trading_costs: float = 0.0  # fee + spread + slippage
+    total_trading_costs: float = 0.0  # fee + spread + slippage (includes terminal liquidation)
     total_funding: float = 0.0        # net funding paid (positive = paid)
 
 
@@ -269,6 +269,9 @@ def _run_single_backtest(
 
     liq_ts = bars[-1].timestamp_utc if liq_res.delta_qty != 0.0 else None
     liq_price = bars[-1].close if liq_res.delta_qty != 0.0 else None
+
+    # Include terminal liquidation cost in total_trading_costs (it's a trading cost, not funding)
+    total_trading_costs += liq_res.total_cost
 
     s = engine.state
     net_return = s.net_equity(bars[-1].close) / 10000.0 - 1.0
