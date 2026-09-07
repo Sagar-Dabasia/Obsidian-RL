@@ -179,6 +179,8 @@ def _run_single_backtest(
     target_exposure = 0.0
     if mode == "long":
         target_exposure = 1.0
+    # For true buy-and-hold LONG: track whether initial entry has been made
+    long_entered = False
 
     first_decision_ts = None
     first_submitted_target = None
@@ -211,21 +213,44 @@ def _run_single_backtest(
                 funding_idx += 1
 
             current_exp = engine.state.exposure(bar.open)
-            if target_exposure != current_exp:
-                exec_px = _get_exec_price(asset_class, bar, current_exp, target_exposure)
-                old_realized = engine.state.realized_pnl
-                res = engine.rebalance(target_exposure, exec_px)
-                new_realized = engine.state.realized_pnl
-                delta = new_realized - old_realized
-                if res.delta_qty != 0.0:
-                    if first_exec_ts is None:
-                        first_exec_ts = bar.timestamp_utc
-                        first_exec_price = exec_px
-                    total_trading_costs += res.total_cost
-                    if delta > 0:
-                        winning_trades += 1
-                    elif delta < 0:
-                        losing_trades += 1
+
+            # Rebalancing logic for ALL modes (original structure)
+            if mode == "long":
+                # True buy-and-hold: enter once, then never rebalance
+                if not long_entered:
+                    if target_exposure != current_exp:
+                        exec_px = _get_exec_price(asset_class, bar, current_exp, target_exposure)
+                        old_realized = engine.state.realized_pnl
+                        res = engine.rebalance(target_exposure, exec_px)
+                        new_realized = engine.state.realized_pnl
+                        delta = new_realized - old_realized
+                        if res.delta_qty != 0.0:
+                            if first_exec_ts is None:
+                                first_exec_ts = bar.timestamp_utc
+                                first_exec_price = exec_px
+                            total_trading_costs += res.total_cost
+                            if delta > 0:
+                                winning_trades += 1
+                            elif delta < 0:
+                                losing_trades += 1
+                            long_entered = True
+            else:
+                # Strategy and Flat modes: normal rebalancing logic
+                if target_exposure != current_exp:
+                    exec_px = _get_exec_price(asset_class, bar, current_exp, target_exposure)
+                    old_realized = engine.state.realized_pnl
+                    res = engine.rebalance(target_exposure, exec_px)
+                    new_realized = engine.state.realized_pnl
+                    delta = new_realized - old_realized
+                    if res.delta_qty != 0.0:
+                        if first_exec_ts is None:
+                            first_exec_ts = bar.timestamp_utc
+                            first_exec_price = exec_px
+                        total_trading_costs += res.total_cost
+                        if delta > 0:
+                            winning_trades += 1
+                        elif delta < 0:
+                            losing_trades += 1
 
             engine.mark_to_market(bar.close)
 
