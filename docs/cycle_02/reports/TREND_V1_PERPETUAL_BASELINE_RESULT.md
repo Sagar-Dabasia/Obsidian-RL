@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-This document permanently preserves the results of the first valid Cycle 2 perpetual TrendEngine baseline experiment. All results are genuine negative strategy evidence: the Trend strategy produces positive net returns but **materially underperforms true buy-and-hold** on net return, Sharpe ratio, and funding efficiency. No promotion is justified.
+This document permanently preserves the results of the first valid Cycle 2 perpetual TrendEngine baseline experiment. All results are genuine negative strategy evidence: the Trend strategy produces positive net returns but **materially underperforms true buy-and-hold** on net return and Sharpe ratio. No promotion is justified.
 
 ---
 
@@ -175,9 +175,9 @@ This document permanently preserves the results of the first valid Cycle 2 perpe
 
 **Key Findings:**
 - Trend produces **positive net returns** (genuine, not a defect)
-- Trend **materially reduces drawdown** vs buy-and-hold (~30% absolute reduction)
-- Trend **substantially underperforms** buy-and-hold on net return (~700-900 bps gap) and Sharpe
-- Funding drag on buy-and-hold is massive (26k-64k) due to fixed-quantity perpetual exposure growth
+- Trend **materially reduces drawdown** vs buy-and-hold (BTC: 30.17 percentage points; ETH: 20.62 percentage points)
+- Trend **substantially underperforms** buy-and-hold on net return (BTC: 947.67 percentage points gap; ETH: 902.21 percentage points gap) and Sharpe
+- True LONG paid materially more total funding (BTC: 26,679.94 vs 8,241.45; ETH: 64,262.02 vs 10,902.67) because it maintained sustained long exposure throughout
 - Trend trades frequently (1,600-1,700 trades) vs buy-and-hold (2 trades)
 
 **Promotion Justified**: **NO** — This baseline establishes a valid perpetual experiment but does NOT demonstrate alpha. The Trend strategy underperforms passive buy-and-hold on risk-adjusted returns. This is genuine negative evidence for the next research hypothesis.
