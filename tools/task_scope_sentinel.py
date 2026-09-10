@@ -12,11 +12,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 
-def run_git_command(args):
+def run_git_command(args, cwd=None, **kwargs):
     """Run a git command and return (stdout, stderr, returncode). Fails on non-zero exit."""
-    result = subprocess.run(["git"] + args, capture_output=True, text=True, cwd=Path.cwd())
+    target_cwd = Path(cwd) if cwd else Path.cwd()
+    result = subprocess.run(["git"] + args, capture_output=True, text=True, cwd=target_cwd)
     if result.returncode != 0:
         raise RuntimeError(f"Git command failed: git {' '.join(args)} (exit {result.returncode}): {result.stderr.strip()}")
     return result.stdout.strip(), result.stderr.strip(), result.returncode
@@ -31,7 +33,7 @@ def compute_file_hash(filepath):
         return None
 
 
-def get_git_status():
+def get_git_status(cwd: Path = None):
     """Get current git status including staged, unstaged, and untracked files.
 
     Returns list of (status, path) tuples where status is:
@@ -41,34 +43,53 @@ def get_git_status():
     - 'R' = renamed (handled as delete old + add new)
     - '??' = untracked
     """
+    if cwd is None:
+        cwd = Path.cwd()
     # First verify we're in a git repo
-    run_git_command(["rev-parse", "--git-dir"])
+    run_git_command(["rev-parse", "--git-dir"], cwd=cwd)
 
     changes = []
 
     # Get both staged and unstaged tracked changes from HEAD
     # --no-renames treats renames as delete + add for path-based detection
-    stdout, _, _ = run_git_command(["diff", "--name-only", "--no-renames", "HEAD"])
+    stdout, _, _ = run_git_command(["diff", "--name-only", "--no-renames", "HEAD"], cwd=cwd)
     if stdout:
         for line in stdout.splitlines():
             path = line.strip()
             if path:
+                # Filter out common cache/build artifacts
+                if any(part in IGNORE_PATHS for part in Path(path).parts):
+                    continue
                 changes.append(("M", path))
 
     # Get untracked files (excluding .gitignored)
-    stdout, _, _ = run_git_command(["ls-files", "--others", "--exclude-standard"])
+    stdout, _, _ = run_git_command(["ls-files", "--others", "--exclude-standard"], cwd=cwd)
     if stdout:
         for line in stdout.splitlines():
             path = line.strip()
             if path:
+                # Filter out common cache/build artifacts
+                if any(part in IGNORE_PATHS for part in Path(path).parts):
+                    continue
                 changes.append(("??", path))
 
     return changes
 
 
-def load_task_contract():
+# Common cache/build paths to ignore in git status
+IGNORE_PATHS = {
+    "__pycache__", ".pyc", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", ".coverage", "htmlcov", ".venv", "venv",
+    "build", "dist", "*.egg-info", ".tox", ".nox",
+    ".git", ".idea", ".vscode", "__pycache__"
+}
+
+
+def load_task_contract(cwd: Path = None) -> Optional[Dict]:
     """Load the task scope contract from .agent_runtime/task_scope.json."""
-    contract_path = Path(".agent_runtime/task_scope.json")
+    if cwd is None:
+        cwd = Path.cwd()
+    contract_path = cwd / ".agent_runtime" / "task_scope.json"
     if not contract_path.exists():
         return None
     try:
@@ -78,18 +99,22 @@ def load_task_contract():
         return None
 
 
-def save_task_contract(contract):
+def save_task_contract(contract, cwd: Path = None):
     """Save the task scope contract to .agent_runtime/task_scope.json."""
-    contract_path = Path(".agent_runtime/task_scope.json")
+    if cwd is None:
+        cwd = Path.cwd()
+    contract_path = cwd / ".agent_runtime" / "task_scope.json"
     contract_path.parent.mkdir(parents=True, exist_ok=True)
     with open(contract_path, "w") as f:
         json.dump(contract, f, indent=2)
 
 
-def initialize_task_scope(task_id, authorized_paths):
+def initialize_task_scope(task_id, authorized_paths, cwd: Path = None):
     """Initialize a new task scope contract with current baseline."""
+    if cwd is None:
+        cwd = Path.cwd()
     try:
-        baseline = get_git_status()
+        baseline = get_git_status(cwd=cwd)
     except RuntimeError as e:
         print(f"ERROR: Git command failed: {e}", file=sys.stderr)
         return None
@@ -99,7 +124,7 @@ def initialize_task_scope(task_id, authorized_paths):
     baseline_fingerprints = {}
     for _, path in baseline:
         if not path.startswith(".agent_runtime/"):
-            filepath = Path(path)
+            filepath = cwd / path
             if filepath.exists() and filepath.is_file():
                 fp = compute_file_hash(filepath)
                 if fp:
@@ -111,19 +136,21 @@ def initialize_task_scope(task_id, authorized_paths):
         "baseline_paths": sorted(baseline_paths),
         "baseline_fingerprints": baseline_fingerprints
     }
-    save_task_contract(contract)
+    save_task_contract(contract, cwd=cwd)
     return contract
 
 
-def check_task_scope():
+def check_task_scope(cwd: Path = None):
     """Check current git state against task contract."""
-    contract = load_task_contract()
+    if cwd is None:
+        cwd = Path.cwd()
+    contract = load_task_contract(cwd=cwd)
     if not contract:
         print("ERROR: No task scope contract found. Run 'python -m tools.task_scope_sentinel init <task_id> <authorized_paths...>' first.", file=sys.stderr)
         return 1, ["No task scope contract initialized"]
 
     try:
-        current = get_git_status()
+        current = get_git_status(cwd=cwd)
     except RuntimeError as e:
         print(f"ERROR: Git command failed: {e}", file=sys.stderr)
         return 1, [f"Git command failure: {e}"]
@@ -152,31 +179,31 @@ def check_task_scope():
             unauthorized.append(path)
 
     # Also check for mutations in baseline files (files that existed at baseline but now changed)
-        # This catches modifications to baseline files that don't add new paths
-        for baseline_path, baseline_fp in baseline_fingerprints.items():
-            if baseline_path.startswith(".agent_runtime/"):
-                continue
-            if baseline_path in current_paths:
-                # File still exists in current - check if fingerprint changed
-                current_fp = compute_file_hash(Path(baseline_path))
-                if current_fp and current_fp != baseline_fp:
-                    # File mutated - check if authorized
-                    is_authorized = False
-                    for auth in authorized:
-                        if baseline_path == auth or baseline_path.startswith(auth.rstrip("/") + "/"):
-                            is_authorized = True
-                            break
-                    if not is_authorized:
-                        unauthorized.append(f"{baseline_path} (mutated)")
-            else:
-                # File existed at baseline but is now missing (deleted) - check if authorized
+    # This catches modifications to baseline files that don't add new paths
+    for baseline_path, baseline_fp in baseline_fingerprints.items():
+        if baseline_path.startswith(".agent_runtime/"):
+            continue
+        if baseline_path in current_paths:
+            # File still exists in current - check if fingerprint changed
+            current_fp = compute_file_hash(cwd / baseline_path)
+            if current_fp and current_fp != baseline_fp:
+                # File mutated - check if authorized
                 is_authorized = False
                 for auth in authorized:
                     if baseline_path == auth or baseline_path.startswith(auth.rstrip("/") + "/"):
                         is_authorized = True
                         break
                 if not is_authorized:
-                    unauthorized.append(f"{baseline_path} (deleted)")
+                    unauthorized.append(f"{baseline_path} (mutated)")
+        else:
+            # File existed at baseline but is now missing (deleted) - check if authorized
+            is_authorized = False
+            for auth in authorized:
+                if baseline_path == auth or baseline_path.startswith(auth.rstrip("/") + "/"):
+                    is_authorized = True
+                    break
+            if not is_authorized:
+                unauthorized.append(f"{baseline_path} (deleted)")
 
     if unauthorized:
         print("TASK SCOPE VIOLATION: Unauthorized paths detected:", file=sys.stderr)

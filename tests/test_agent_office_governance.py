@@ -743,10 +743,10 @@ class TestAgentOfficeGovernance:
                     import tools.task_scope_sentinel as sentinel_module
                     original_run_git = sentinel_module.run_git_command
 
-                    def failing_run_git_command(args):
-                        if args[0] == "diff":
-                            raise RuntimeError("Git command failed: git diff (exit 1): fatal: bad object HEAD")
-                        return original_run_git(args)
+                    def failing_run_git_command(args, **kwargs):
+                                            if args[0] == "diff":
+                                                raise RuntimeError("Git command failed: git diff (exit 1): fatal: bad object HEAD")
+                                            return original_run_git(args, **kwargs)
 
                     sentinel_module.run_git_command = failing_run_git_command
 
@@ -795,10 +795,10 @@ class TestAgentOfficeGovernance:
                     import tools.task_scope_sentinel as sentinel_module
                     original_run_git = sentinel_module.run_git_command
 
-                    def failing_run_git_command(args):
-                        if args[0] == "ls-files":
-                            raise RuntimeError("Git command failed: git ls-files (exit 1): fatal: not a git repository")
-                        return original_run_git(args)
+                    def failing_run_git_command(args, **kwargs):
+                                            if args[0] == "ls-files":
+                                                raise RuntimeError("Git command failed: git ls-files (exit 1): fatal: not a git repository")
+                                            return original_run_git(args, **kwargs)
 
                     sentinel_module.run_git_command = failing_run_git_command
 
