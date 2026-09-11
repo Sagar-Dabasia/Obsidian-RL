@@ -62,7 +62,7 @@ C. Affected-path / Graphify impact inspection where useful
 D. Broader/full suite ONLY when appropriate per task
 E. `git diff --check`
 F. Scope sentinel
-G. Patch gate: `python -m tools.patch_gate check` (MUST PASS or REVIEW_REQUIRED with explicit acknowledgment)
+G. Patch gate: `python -m tools.patch_gate check` (MUST PASS or REVIEW_REQUIRED with explicit USER acknowledgment — Hermes cannot self-acknowledge REVIEW_REQUIRED)
 H. Exact final diff review
 
 ### 6. ADJUDICATE

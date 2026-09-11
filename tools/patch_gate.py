@@ -11,6 +11,7 @@ FAIL CLOSED on malformed/missing scope, checker crash, ambiguous base.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -108,10 +109,8 @@ def check_test_weakening(contract: Dict, cwd: Path = None) -> Tuple[str, List[st
         try:
             # Get staged diff for this test file
             stdout_staged, _, _ = run_git_command(["diff", "--staged", "HEAD", "--", tf], cwd=cwd)
-            # Get unstaged diff for this test file  
+            # Get unstaged diff for this test file
             stdout_unstaged, _, _ = run_git_command(["diff", "HEAD", "--", tf], cwd=cwd)
-            
-            # Combine both diffs for analysis
             combined_stdout = stdout_staged + "\n" + stdout_unstaged
             if not combined_stdout.strip():
                 continue
@@ -144,8 +143,12 @@ def check_test_weakening(contract: Dict, cwd: Path = None) -> Tuple[str, List[st
             if removed_assertions > added_assertions and removed_assertions > 0:
                 reasons.append(f"{tf}: net {removed_assertions - added_assertions} assertion(s) removed")
 
-        except Exception:
-            pass  # Best effort
+        except RuntimeError as e:
+            # Git command failure - FAIL CLOSED
+            return "FAIL", [f"check_test_weakening: git diff failed for {tf}: {e}"]
+        except Exception as e:
+            # Any internal failure - FAIL CLOSED
+            return "FAIL", [f"check_test_weakening: checker crash on {tf}: {e}"]
 
     if reasons:
         return "REVIEW_REQUIRED", [f"Test modifications detected (cannot mechanically verify strength): {reasons}"]
@@ -188,23 +191,49 @@ def check_dependency_changes(cwd: Path = None) -> Tuple[str, List[str]]:
 
 
 def check_archived_imports(cwd: Path = None) -> Tuple[str, List[str]]:
-    """Check if archived/quarantined code is newly imported."""
+    """Check if archived/quarantined code is newly imported into active source.
+
+    Scans active Python files (src/, tests/, tools/) for NEW imports from
+    quarantined legacy/ or archive/ directories. Existence of archived code
+    alone is not a violation — only active imports from it are.
+    """
     if cwd is None:
         cwd = Path.cwd()
     reasons = []
     diff_files = get_git_diff_files(cwd=cwd)
 
+    # Patterns that indicate importing from legacy/archive
+    # Matches: from legacy.xxx import ..., import legacy.xxx, from archive.xxx import ...
+    legacy_import_pattern = re.compile(r'^\s*(?:from|import)\s+(legacy|archive)\.')
+
     for f in diff_files:
-        if f.startswith("legacy/") or f.startswith("archive/"):
-            # Check if it's a new import (added, not just modified)
-            stdout, _, _ = run_git_command(["diff", "HEAD", "--", f], cwd=cwd)
-            for line in stdout.splitlines():
+        # Only check active Python source files, not the archived files themselves
+        if not (f.startswith("src/") or f.startswith("tests/") or f.startswith("tools/")):
+            continue
+        if not f.endswith(".py"):
+            continue
+
+        try:
+            # Get the diff for this file (staged + unstaged)
+            stdout_staged, _, _ = run_git_command(["diff", "--staged", "HEAD", "--", f], cwd=cwd)
+            stdout_unstaged, _, _ = run_git_command(["diff", "HEAD", "--", f], cwd=cwd)
+            combined_stdout = stdout_staged + "\n" + stdout_unstaged
+
+            # Check only ADDED lines for new imports from legacy/archive
+            for line in combined_stdout.splitlines():
                 if line.startswith("+") and not line.startswith("+++"):
-                    if "import" in line or "from " in line:
-                        reasons.append(f"Possible archived code import in {f}: {line.strip()[:100]}")
+                    stripped = line[1:].strip()
+                    if legacy_import_pattern.search(stripped):
+                        reasons.append(f"Active code imports quarantined legacy/archive in {f}: {stripped[:120]}")
+        except RuntimeError as e:
+            # Git diff failure - FAIL CLOSED
+            return "FAIL", [f"check_archived_imports: git diff failed for {f}: {e}"]
+        except Exception as e:
+            # Any other internal failure - FAIL CLOSED
+            return "FAIL", [f"check_archived_imports: checker crash on {f}: {e}"]
 
     if reasons:
-        return "REVIEW_REQUIRED", reasons
+        return "FAIL", reasons
 
     return "PASS", []
 

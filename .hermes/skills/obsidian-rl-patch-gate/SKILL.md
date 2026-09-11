@@ -44,6 +44,8 @@ Task: <task_id>
 
 **FAIL CLOSED**: Missing/malformed task scope, checker crash, ambiguous base, or unsupported state → never silently PASS.
 
+**REVIEW_REQUIRED IS NOT SELF-OVERRIDABLE**: Hermes/agent CANNOT acknowledge or override REVIEW_REQUIRED. Continuing requires explicit USER approval in a later message. No CLI flag or internal mechanism can bypass this.
+
 ## Integration with Repair Workflow
 
 The `obsidian-rl-repair-workflow` validation step MUST invoke patch gate before final acceptance:
