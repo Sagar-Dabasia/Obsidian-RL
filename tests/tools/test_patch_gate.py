@@ -344,18 +344,78 @@ def test_gate_legacy_exists_but_not_imported_pass():
 
 def test_gate_test_weakening_checker_crash_fails():
     """Test that checker crash in test_weakening fails closed."""
-    # This test verifies the gate fails if check_test_weakening has an internal error
-    # We can't easily force an internal error without modifying the gate,
-    # but the patch_gate.py code already has FAIL CLOSED on Exception
-    print("✓ test_gate_test_weakening_checker_crash_fails: FAIL CLOSED on checker crash (code structure verified)")
+    repo = setup_test_repo()
+    try:
+        # Initialize task scope
+        run_cmd("python tools/task_scope_sentinel.py init test-task tests/test_engine.py", cwd=repo)
+
+        # Modify test to trigger test_weakening check
+        (repo / "tests" / "test_engine.py").write_text("def test_engine():\n    pass  # removed assert\n")
+        run_cmd("git add tests/test_engine.py", cwd=repo)
+
+        # Create a broken patch_gate.py that crashes in check_test_weakening
+        # by making run_git_command raise an exception for test file diffs
+        broken_gate = repo / "tools" / "patch_gate.py"
+        original = broken_gate.read_text()
+        # Inject a failure in run_git_command when diff is called for test files
+        # We'll patch the import to use a broken version
+        broken = original.replace(
+            "from tools.task_scope_sentinel import (",
+            """from tools.task_scope_sentinel import (
+    run_git_command as _orig_run_git_command,"""
+        ).replace(
+            "            stdout_staged, _, _ = run_git_command([\"diff\", \"--staged\", \"HEAD\", \"--\", tf], cwd=cwd)",
+            """            def failing_run_git_command(args, cwd=None):
+                if args[0] == "diff" and any(tf in str(a) for a in args):
+                    raise RuntimeError("Injected checker crash")
+                return _orig_run_git_command(args, cwd=cwd)
+            run_git_command = failing_run_git_command
+            stdout_staged, _, _ = run_git_command(["diff", "--staged", "HEAD", "--", tf], cwd=cwd)"""
+        )
+        broken_gate.write_text(broken)
+
+        exit_code, stdout, stderr = run_cmd("python tools/patch_gate.py check", cwd=repo)
+        assert exit_code == 1, f"Expected FAIL (1), got {exit_code}: {stdout} {stderr}"
+        assert "checker crash" in stdout.lower() or "checker crash" in stderr.lower()
+        print("✓ test_gate_test_weakening_checker_crash_fails: FAIL CLOSED on injected checker crash")
+    finally:
+        robust_rmtree(repo)
 
 
 def test_gate_review_required_no_self_override():
     """Test REVIEW_REQUIRED cannot be self-overridden by gate."""
-    # The gate exits with code 2 for REVIEW_REQUIRED and has no --force flag
-    # This is verified by the existing tests expecting exit_code == 2
-    # and the skill documentation stating no self-override
-    print("✓ test_gate_review_required_no_self_override: REVIEW_REQUIRED has no self-override path (verified)")
+    repo = setup_test_repo()
+    try:
+        # Initialize task scope
+        run_cmd("python tools/task_scope_sentinel.py init test-task tests/test_engine.py", cwd=repo)
+
+        # Create REVIEW_REQUIRED scenario (removed assertion)
+        (repo / "tests" / "test_engine.py").write_text("def test_engine():\n    pass  # removed assert\n")
+        run_cmd("git add tests/test_engine.py", cwd=repo)
+
+        # Verify normal gate returns REVIEW_REQUIRED (exit 2)
+        exit_code, stdout, stderr = run_cmd("python tools/patch_gate.py check", cwd=repo)
+        assert exit_code == 2, f"Expected REVIEW_REQUIRED (2), got {exit_code}: {stdout}"
+        assert "REVIEW_REQUIRED" in stdout
+
+        # Attempt to override with --force (should not exist/be supported)
+        exit_code, stdout, stderr = run_cmd("python tools/patch_gate.py check --force", cwd=repo)
+        # --force is not a recognized argument, should error or ignore and still return REVIEW_REQUIRED
+        assert exit_code in (1, 2), f"Expected FAIL or REVIEW_REQUIRED, got {exit_code}: {stdout} {stderr}"
+        if exit_code == 2:
+            assert "REVIEW_REQUIRED" in stdout
+
+        # Attempt with --override (should not exist)
+        exit_code, stdout, stderr = run_cmd("python tools/patch_gate.py check --override", cwd=repo)
+        assert exit_code in (1, 2), f"Expected FAIL or REVIEW_REQUIRED, got {exit_code}: {stdout} {stderr}"
+
+        # Verify no --force/--override flag exists in help
+        exit_code, stdout, stderr = run_cmd("python tools/patch_gate.py --help", cwd=repo)
+        assert "--force" not in stdout and "--override" not in stdout
+
+        print("✓ test_gate_review_required_no_self_override: REVIEW_REQUIRED has no self-override path (verified by CLI)")
+    finally:
+        robust_rmtree(repo)
 
 
 def run_all_tests():
