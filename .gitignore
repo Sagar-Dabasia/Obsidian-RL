@@ -45,3 +45,10 @@ htmlcov/
 Thumbs.db
 .vscode/
 .idea/
+
+# Graphify, context exports and diagnostic tools
+graphify-out/
+_context_export/
+
+# Agent runtime (temporary evidence ledger, session recovery)
+.agent_runtime/

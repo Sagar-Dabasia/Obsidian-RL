@@ -27,7 +27,6 @@ def test_insane_parameters_rejected() -> None:
 
 
 def test_nonfinite_and_bool_parameters_rejected() -> None:
-    import math
     for name in ("taker_fee", "half_spread", "slippage"):
         with pytest.raises(ValueError):
             CostModel(**{name: True})

@@ -21,13 +21,11 @@ from obsidian_rl.config import get_settings
 from obsidian_rl.data.store import CandleStore
 from obsidian_rl.evaluation.walkforward import (
     EvalRow,
-    FoldSpec,
     evaluate_strategies_on_slice,
     make_folds,
     slice_candles,
 )
 from obsidian_rl.gate.alpha_gate import (
-    AlphaGate,
     load_gate,
     save_gate,
     train_gate,
@@ -63,12 +61,7 @@ def check_strategy_eligibility(rows: list[dict[str, Any]]) -> dict[str, Any]:
     mean_dd = float(np.mean(dds)) if dds else 1.0
     mean_sharpe = float(np.mean(sharpes)) if sharpes else -99.0
 
-    all_finite = bool(
-        all(
-            math.isfinite(x)
-            for x in base_rets + c2x_rets + d1_rets + dds + sharpes
-        )
-    )
+    all_finite = bool(all(math.isfinite(x) for x in base_rets + c2x_rets + d1_rets + dds + sharpes))
 
     c1 = pos_folds >= 3
     c2 = worst_fold > -0.05
@@ -139,7 +132,8 @@ def run_alpha_gate_pilot(
                 None,
             ),
         ]
-        for b in default_baselines():
+        for _b in default_baselines():
+            b: Any = _b
             strategies.append((b.strategy_id, b, None))
 
         rows = evaluate_strategies_on_slice(

@@ -1,0 +1,18 @@
+{
+  "dataset_id": "PHASE_4D_BTCUSDT",
+  "created_at_utc": 1784918903692,
+  "start_ms": 1546300800000,
+  "end_ms": 1704067200000,
+  "components": [
+    {
+      "symbol": "BTCUSDT",
+      "asset_class": "CRYPTO",
+      "venue": "BINANCE_SPOT",
+      "timeframe": "4h",
+      "start_timestamp_utc": 1565856000000,
+      "end_timestamp_utc": 1704067200000,
+      "row_count": 9597,
+      "digest": "0a70bdb71bcafeb5837485037c663a775b625263d8df2b1c8000e807c87b3bd3"
+    }
+  ]
+}

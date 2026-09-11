@@ -2,6 +2,7 @@
 deterministic inference, GPU detection. All tiny and CPU-only."""
 
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -36,13 +37,12 @@ SMOKE_CFG = TrainConfig(
 )
 
 
-from typing import Iterator
-
-
 @pytest.fixture(scope="module", autouse=True)
 def _mock_clean_git_state_module() -> Iterator[None]:
     from unittest.mock import patch
-    from obsidian_rl.training.registry import GitSourceState, get_git_source_state as real_get_git_source_state
+
+    from obsidian_rl.training.registry import GitSourceState
+    from obsidian_rl.training.registry import get_git_source_state as real_get_git_source_state
 
     clean_state = GitSourceState(commit="a" * 40, is_clean=True, dirty_paths=[])
 
@@ -273,6 +273,7 @@ def test_load_record_strict_metadata_checks(trained_model_dir: Path, tmp_path: P
 
 def test_git_source_root_resolution_in_temp_repos(tmp_path: Path) -> None:
     import subprocess
+
     from obsidian_rl.training.registry import (
         _resolve_repo_root,
         current_git_commit,
@@ -312,6 +313,7 @@ def test_immutable_model_directory_and_registration_protection(
     trained_model_dir: Path, tmp_path: Path
 ) -> None:
     import shutil
+
     from obsidian_rl.training.registry import register_model
 
     models_dir = tmp_path / "protected_models"
@@ -345,7 +347,8 @@ def test_immutable_model_directory_and_registration_protection(
     )
     tiny_cfg = replace(SMOKE_CFG, total_timesteps=32, eval_freq=10_000)
 
-    # 1. training with an existing explicit model ID is rejected, existing files unchanged, no new files created
+    # 1. training with an existing explicit model ID is rejected, existing files unchanged,
+    # no new files created
     with pytest.raises(FileExistsError, match="already exists"):
         train_ppo(train_candles, eval_candles, tiny_cfg, models_dir, model_id=existing_id)
 
@@ -357,7 +360,7 @@ def test_immutable_model_directory_and_registration_protection(
 
     # 2. direct duplicate register_model is rejected
     meta = json.loads(orig_meta_bytes.decode("utf-8"))
-    with pytest.raises(FileExistsError, match="already registered|already exists"):
+    with pytest.raises(FileExistsError, match=r"already registered|already exists"):
         register_model(
             models_dir,
             existing_id,
@@ -379,7 +382,7 @@ def test_immutable_model_directory_and_registration_protection(
     assert list((models_dir / empty_id).iterdir()) == []
 
     # 4. resume_from requires a different output model ID (cannot reuse same ID or same directory)
-    with pytest.raises(FileExistsError, match="new model_id|overwrite"):
+    with pytest.raises(FileExistsError, match=r"new model_id|overwrite"):
         train_ppo(
             train_candles,
             eval_candles,
@@ -401,7 +404,9 @@ def test_turnover_penalty_bps_metadata_and_model_ids(tmp_path: Path) -> None:
     from obsidian_rl.env.trading_env import RewardConfig
 
     train_candles = make_candles(160, seed=31)
-    eval_candles = make_candles(120, seed=32, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000)
+    eval_candles = make_candles(
+        120, seed=32, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000
+    )
     cfg_zero = replace(SMOKE_CFG, reward=RewardConfig(turnover_penalty_bps=0.0))
     cfg_pen = replace(SMOKE_CFG, reward=RewardConfig(turnover_penalty_bps=12.5))
 
@@ -418,13 +423,22 @@ def test_turnover_penalty_bps_metadata_and_model_ids(tmp_path: Path) -> None:
     assert "-tp12.5-" in res_pen.record.model_id
 
 
-def test_turnover_penalty_bps_resume_compatibility_rejection(trained_model_dir: Path, tmp_path: Path) -> None:
+def test_turnover_penalty_bps_resume_compatibility_rejection(
+    trained_model_dir: Path, tmp_path: Path
+) -> None:
     from obsidian_rl.env.trading_env import RewardConfig
 
     train_candles = make_candles(160, seed=41)
-    eval_candles = make_candles(120, seed=42, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000)
+    eval_candles = make_candles(
+        120, seed=42, start_ms=int(train_candles["open_time"].iloc[-1]) + 900_000
+    )
     # trained_model_dir has turnover_penalty_bps = 0.0 (from SMOKE_CFG)
-    incompat_cfg = replace(SMOKE_CFG, total_timesteps=32, eval_freq=10_000, reward=RewardConfig(turnover_penalty_bps=20.0))
+    incompat_cfg = replace(
+        SMOKE_CFG,
+        total_timesteps=32,
+        eval_freq=10_000,
+        reward=RewardConfig(turnover_penalty_bps=20.0),
+    )
 
     models_dir = tmp_path / "resume_models"
     with pytest.raises(ModelCompatibilityError, match="turnover_penalty_bps mismatch"):
@@ -442,17 +456,26 @@ def test_cli_parser_turnover_penalty_bps() -> None:
     from obsidian_rl.cli import build_parser
 
     parser = build_parser()
-    args_train = parser.parse_args([
-        "train",
-        "--train-start", "2023-01-01",
-        "--train-end", "2023-02-01",
-        "--eval-start", "2023-02-01",
-        "--turnover-penalty-bps", "15.5",
-    ])
+    args_train = parser.parse_args(
+        [
+            "train",
+            "--train-start",
+            "2023-01-01",
+            "--train-end",
+            "2023-02-01",
+            "--eval-start",
+            "2023-02-01",
+            "--turnover-penalty-bps",
+            "15.5",
+        ]
+    )
     assert args_train.turnover_penalty_bps == 15.5
 
-    args_wf = parser.parse_args([
-        "walk-forward",
-        "--turnover-penalty-bps", "25.0",
-    ])
+    args_wf = parser.parse_args(
+        [
+            "walk-forward",
+            "--turnover-penalty-bps",
+            "25.0",
+        ]
+    )
     assert args_wf.turnover_penalty_bps == 25.0

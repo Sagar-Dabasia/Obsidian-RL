@@ -430,7 +430,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-start", default="2020-01-01")
     p.add_argument("--holdout-start", default="2025-07-01", help="folds never touch this period")
     p.add_argument("--train-days", type=int, default=720)
-    p.add_argument("--inner-eval-days", type=int, default=60, help="inner selection/evaluation window in days")
+    p.add_argument(
+        "--inner-eval-days", type=int, default=60, help="inner selection/evaluation window in days"
+    )
     p.add_argument("--val-days", type=int, default=180)
     p.add_argument("--step-days", type=int, default=270)
     p.add_argument("--seeds", default="42,43,44")

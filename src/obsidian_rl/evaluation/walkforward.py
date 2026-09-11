@@ -1,12 +1,12 @@
 """Walk-forward evaluation: chronological folds, purge gaps, multi-seed PPO, fixed holdout.
 
 Rules enforced here:
-- nested chronological folds: training period -> purge gap -> inner selection/evaluation -> purge gap -> untouched outer validation;
-- outer-validation candles must never be passed to `train_ppo`, `EvalCallback`, fitting, or selection;
+- nested chronological folds: training -> purge -> inner eval -> purge -> outer val;
+- outer-validation candles must never be passed to `train_ppo` or selection;
 - folds never touch data at/after `holdout_start_ms` (the untouched final test period);
-- a purge gap of `purge_candles` separates each fold's training end from inner eval start, and inner eval end from outer validation start;
-- every strategy (baselines and each PPO seed) is evaluated on identical outer validation slices with identical costs and timing;
-- the holdout is run once, explicitly, for one selected configuration (`run_holdout`), never inside fold iteration.
+- a purge gap of `purge_candles` separates each fold\'s sections;
+- every strategy is evaluated on identical outer validation slices;
+- the holdout is run once, explicitly, for one selected configuration.
 """
 
 import hashlib
@@ -113,7 +113,7 @@ class FoldSpec:
         return self.inner_eval.end_ms
 
     def populate_and_validate(self, candles: pd.DataFrame) -> "FoldSpec":
-        """Slice `candles`, compute exact row counts and sha256 digests, and verify all invariants."""
+        """Slice `candles`, compute exact row counts and sha256 digests."""
         tr_df = slice_candles(candles, self.train.start_ms, self.train.end_ms)
         p1_df = slice_candles(candles, self.purge_1.start_ms, self.purge_1.end_ms)
         ie_df = slice_candles(candles, self.inner_eval.start_ms, self.inner_eval.end_ms)
@@ -130,7 +130,7 @@ class FoldSpec:
             raise ValueError(f"empty slice detected in fold {self.fold_id}")
         if len(p1_df) != self.purge_candles or len(p2_df) != self.purge_candles:
             raise ValueError(
-                f"purge gap size mismatch in fold {self.fold_id}: expected {self.purge_candles} candles"
+                f"purge gap mismatch in fold {self.fold_id}: expected {self.purge_candles} candles"
             )
 
         from obsidian_rl.evaluation.holdout import get_holdout_start_ms
@@ -260,7 +260,7 @@ def make_folds(
         )
 
     ms = interval_to_ms(interval)
-    purge_ms = purge_candles * ms
+    purge_candles * ms
     folds: list[FoldSpec] = []
     fold_id = 0
     train_start = data_start_ms
@@ -370,9 +370,7 @@ def evaluate_strategies_on_slice(
     """Evaluate (label, strategy, seed) tuples under identical conditions + scenarios."""
     if val_candles.empty or len(val_candles) <= WARMUP_ROWS:
         raise ValueError("validation candles must have more rows than WARMUP_ROWS")
-    bh_return = float(
-        val_candles["close"].iloc[-1] / val_candles["close"].iloc[WARMUP_ROWS] - 1.0
-    )
+    bh_return = float(val_candles["close"].iloc[-1] / val_candles["close"].iloc[WARMUP_ROWS] - 1.0)
     scenarios = _scenarios(cost_model) if sensitivity else [("base", cost_model, 0)]
     rows: list[EvalRow] = []
     for label, strategy, seed in strategies:

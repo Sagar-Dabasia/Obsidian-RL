@@ -349,3 +349,637 @@ def test_runner_exception_recorded_then_reraised(
     ).fetchall()
     assert len(events) == 1
     assert runner.ledger.get_closure(runner.run_id) is None
+
+
+# =============================================================================
+# RT004 Regression: funding restart recovery with decision -> funding -> close -> reopen
+# =============================================================================
+
+
+def test_restart_recovery_decision_funding_close_reopen(tmp_path: Path) -> None:
+    """RT004: Verify exact persistence/reopen path for funding after decision."""
+    from obsidian_rl.portfolio.costs import CostModel
+    from obsidian_rl.strategies.baselines import AlwaysFlat
+
+    db_path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(db_path)
+
+    run = ledger.start_run("rt004-test", "live-paper", 10_000.0, CostModel())
+    run_id = run.run_id
+
+    # Step 1: Create PaperTrader to get engine
+    trader = PaperTrader(AlwaysFlat(), ledger, run_id, cost_model=CostModel())
+    eng = trader.engine
+
+    # Step 1: Record a portfolio decision with nonzero position
+    # Manually build state to avoid warm-up complexity
+    result = eng.rebalance(1.0, 100.0)  # long 100% at price 100 -> qty = 100
+    ledger.record_decision(
+        run_id,
+        candle_open_ms=900_000,
+        candle_close_ms=1_799_999,
+        decision_ts_ms=1_800_000,
+        data_source="test",
+        result=result,
+        state=eng.state,
+        mark_price=100.0,
+    )
+
+    # Step 2: Apply funding event AFTER the decision (funding_time_ms > dec_ms) via trader
+    # This applies to BOTH engine and ledger, simulating real workflow
+    funding_time_ms = 1_800_500  # strictly after decision close_ms (1_799_999)
+    rate = 0.001
+    mark_price = 100.0
+    trader.apply_funding_event(funding_time_ms, rate, mark_price)
+
+    # Capture expected state AFTER funding applied to engine
+    expected_cash = eng.state.cash
+    expected_funding_paid = eng.state.funding_paid
+    expected_qty = eng.state.qty
+    expected_avg_entry = eng.state.avg_entry_price
+    expected_equity_at_100 = eng.state.net_equity(100.0)
+
+    # Step 3: Close the ledger (simulate process exit)
+    ledger.close()
+
+    # Step 4: NEW Ledger instance against same DB
+    reopened = Ledger(db_path)
+
+    # Step 5: Call restore_state
+    restored = reopened.restore_state(run_id)
+
+    # Step 6: Assert exact match
+    assert restored is not None, "restore_state should return a state"
+    assert restored.cash == pytest.approx(expected_cash), (
+        f"cash mismatch: {restored.cash} vs {expected_cash}"
+    )
+    assert restored.funding_paid == pytest.approx(expected_funding_paid), (
+        f"funding_paid mismatch: {restored.funding_paid} vs {expected_funding_paid}"
+    )
+    assert restored.qty == pytest.approx(expected_qty), (
+        f"qty mismatch: {restored.qty} vs {expected_qty}"
+    )
+    assert restored.avg_entry_price == pytest.approx(expected_avg_entry), (
+        f"avg_entry_price mismatch: {restored.avg_entry_price} vs {expected_avg_entry}"
+    )
+    assert restored.net_equity(100.0) == pytest.approx(expected_equity_at_100), (
+        f"equity mismatch: {restored.net_equity(100.0)} vs {expected_equity_at_100}"
+    )
+    assert restored.turnover == pytest.approx(eng.state.turnover)
+    assert restored.trade_count == eng.state.trade_count
+    assert restored.peak_equity == pytest.approx(eng.state.peak_equity)
+
+
+# =============================================================================
+# RT004 Multi-asset Persistence Regression Tests
+# =============================================================================
+
+
+def test_decision_restart_multi_asset_exact_equality(tmp_path: Path) -> None:
+    """RT004: BTCUSDT + ETHUSDT populated, persist -> close Ledger -> NEW Ledger -> restore_state, exact per-symbol equality."""  # noqa: E501
+    from obsidian_rl.portfolio.costs import CostModel
+    from obsidian_rl.strategies.baselines import AlwaysFlat
+
+    db_path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(db_path)
+
+    run = ledger.start_run("rt004-multi-asset-decision", "live-paper", 10_000.0, CostModel())
+    run_id = run.run_id
+
+    # Create PaperTrader to get engine
+    trader = PaperTrader(AlwaysFlat(), ledger, run_id, cost_model=CostModel())
+    eng = trader.engine
+
+    # Manually set up multi-asset positions (BTCUSDT + ETHUSDT)
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Rebalance BTCUSDT
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+
+    # Rebalance ETHUSDT
+    eng.rebalance(0.3, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    # Record a decision with multi-asset state
+    result = eng.rebalance(0.0, 100.0, symbol="BTCUSDT", marks=marks)  # no-op decision
+    ledger.record_decision(
+        run_id,
+        candle_open_ms=1_000_000,
+        candle_close_ms=1_059_999,
+        decision_ts_ms=1_060_000,
+        data_source="test",
+        result=result,
+        state=eng.state,
+        mark_price=100.0,
+    )
+
+    # Capture expected multi-asset state
+    expected_cash = eng.state.cash
+    expected_funding = eng.state.funding_paid
+    expected_realized = eng.state.realized_pnl
+    expected_fees = eng.state.fees_paid
+    expected_spread = eng.state.spread_paid
+    expected_slippage = eng.state.slippage_paid
+    expected_turnover = eng.state.turnover
+    expected_trade_count = eng.state.trade_count
+    expected_peak = eng.state.peak_equity
+    expected_dd = eng.state.path_maximum_drawdown_pct
+    expected_btc = {
+        "qty": eng.state.positions["BTCUSDT"].qty,
+        "avg": eng.state.positions["BTCUSDT"].avg_entry_price,
+        "realized": eng.state.positions["BTCUSDT"].realized_pnl,
+        "fees": eng.state.positions["BTCUSDT"].fees_paid,
+        "spread": eng.state.positions["BTCUSDT"].spread_paid,
+        "slippage": eng.state.positions["BTCUSDT"].slippage_paid,
+        "funding": eng.state.positions["BTCUSDT"].funding_paid,
+        "turnover": eng.state.positions["BTCUSDT"].turnover,
+        "trades": eng.state.positions["BTCUSDT"].trade_count,
+    }
+    expected_eth = {
+        "qty": eng.state.positions["ETHUSDT"].qty,
+        "avg": eng.state.positions["ETHUSDT"].avg_entry_price,
+        "realized": eng.state.positions["ETHUSDT"].realized_pnl,
+        "fees": eng.state.positions["ETHUSDT"].fees_paid,
+        "spread": eng.state.positions["ETHUSDT"].spread_paid,
+        "slippage": eng.state.positions["ETHUSDT"].slippage_paid,
+        "funding": eng.state.positions["ETHUSDT"].funding_paid,
+        "turnover": eng.state.positions["ETHUSDT"].turnover,
+        "trades": eng.state.positions["ETHUSDT"].trade_count,
+    }
+
+    # Close and reopen ledger
+    ledger.close()
+    reopened = Ledger(db_path)
+
+    # Restore state
+    restored = reopened.restore_state(run_id)
+    assert restored is not None
+
+    # Assert portfolio-level exact equality
+    assert restored.cash == pytest.approx(expected_cash)
+    assert restored.funding_paid == pytest.approx(expected_funding)
+    assert restored.realized_pnl == pytest.approx(expected_realized)
+    assert restored.fees_paid == pytest.approx(expected_fees)
+    assert restored.spread_paid == pytest.approx(expected_spread)
+    assert restored.slippage_paid == pytest.approx(expected_slippage)
+    assert restored.turnover == pytest.approx(expected_turnover)
+    assert restored.trade_count == expected_trade_count
+    assert restored.peak_equity == pytest.approx(expected_peak)
+    assert restored.path_maximum_drawdown_pct == pytest.approx(expected_dd)
+
+    # Assert per-symbol exact equality for BTCUSDT
+    assert "BTCUSDT" in restored.positions
+    btc = restored.positions["BTCUSDT"]
+    assert btc.qty == pytest.approx(expected_btc["qty"])
+    assert btc.avg_entry_price == pytest.approx(expected_btc["avg"])
+    assert btc.realized_pnl == pytest.approx(expected_btc["realized"])
+    assert btc.fees_paid == pytest.approx(expected_btc["fees"])
+    assert btc.spread_paid == pytest.approx(expected_btc["spread"])
+    assert btc.slippage_paid == pytest.approx(expected_btc["slippage"])
+    assert btc.funding_paid == pytest.approx(expected_btc["funding"])
+    assert btc.turnover == pytest.approx(expected_btc["turnover"])
+    assert btc.trade_count == expected_btc["trades"]
+
+    # Assert per-symbol exact equality for ETHUSDT
+    assert "ETHUSDT" in restored.positions
+    eth = restored.positions["ETHUSDT"]
+    assert eth.qty == pytest.approx(expected_eth["qty"])
+    assert eth.avg_entry_price == pytest.approx(expected_eth["avg"])
+    assert eth.realized_pnl == pytest.approx(expected_eth["realized"])
+    assert eth.fees_paid == pytest.approx(expected_eth["fees"])
+    assert eth.spread_paid == pytest.approx(expected_eth["spread"])
+    assert eth.slippage_paid == pytest.approx(expected_eth["slippage"])
+    assert eth.funding_paid == pytest.approx(expected_eth["funding"])
+    assert eth.turnover == pytest.approx(expected_eth["turnover"])
+    assert eth.trade_count == expected_eth["trades"]
+
+    # Ensure no DEFAULT ghost position
+    assert "DEFAULT" not in restored.positions
+
+
+def test_closure_restart_multi_asset_exact_equality(tmp_path: Path) -> None:
+    """RT004: multi-asset state persisted in closure, close/reopen/restore exact equality."""
+    from obsidian_rl.portfolio.costs import CostModel
+    from obsidian_rl.strategies.baselines import AlwaysFlat
+
+    db_path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(db_path)
+
+    run = ledger.start_run("rt004-multi-asset-closure", "live-paper", 10_000.0, CostModel())
+    run_id = run.run_id
+
+    trader = PaperTrader(AlwaysFlat(), ledger, run_id, cost_model=CostModel())
+    eng = trader.engine
+
+    marks = {"BTCUSDT": 100.0, "ETHUSDT": 2000.0}
+
+    # Build multi-asset positions
+    eng.rebalance(0.5, 100.0, symbol="BTCUSDT", marks=marks)
+    eng.rebalance(0.3, 2000.0, symbol="ETHUSDT", marks=marks)
+
+    # Record terminal closure
+    result = eng.rebalance(0.0, 100.0, symbol="BTCUSDT", marks=marks)
+    ledger.record_closure(
+        run_id,
+        terminal_ts_ms=2_000_000,
+        mark_price=100.0,
+        result=result,
+        state=eng.state,
+        closure_reason="close_session",
+    )
+    ledger.end_run(run_id)
+
+    # Capture expected state AFTER closure (post-liquidation)
+    expected_cash = eng.state.cash
+    expected_funding = eng.state.funding_paid
+    expected_realized = eng.state.realized_pnl
+    expected_fees = eng.state.fees_paid
+    expected_spread = eng.state.spread_paid
+    expected_slippage = eng.state.slippage_paid
+    expected_turnover = eng.state.turnover
+    expected_trade_count = eng.state.trade_count
+    expected_peak = eng.state.peak_equity
+    expected_dd = eng.state.path_maximum_drawdown_pct
+    expected_btc = {
+        "qty": eng.state.positions["BTCUSDT"].qty,
+        "avg": eng.state.positions["BTCUSDT"].avg_entry_price,
+        "realized": eng.state.positions["BTCUSDT"].realized_pnl,
+        "fees": eng.state.positions["BTCUSDT"].fees_paid,
+        "spread": eng.state.positions["BTCUSDT"].spread_paid,
+        "slippage": eng.state.positions["BTCUSDT"].slippage_paid,
+        "funding": eng.state.positions["BTCUSDT"].funding_paid,
+        "turnover": eng.state.positions["BTCUSDT"].turnover,
+        "trades": eng.state.positions["BTCUSDT"].trade_count,
+    }
+    expected_eth = {
+        "qty": eng.state.positions["ETHUSDT"].qty,
+        "avg": eng.state.positions["ETHUSDT"].avg_entry_price,
+        "realized": eng.state.positions["ETHUSDT"].realized_pnl,
+        "fees": eng.state.positions["ETHUSDT"].fees_paid,
+        "spread": eng.state.positions["ETHUSDT"].spread_paid,
+        "slippage": eng.state.positions["ETHUSDT"].slippage_paid,
+        "funding": eng.state.positions["ETHUSDT"].funding_paid,
+        "turnover": eng.state.positions["ETHUSDT"].turnover,
+        "trades": eng.state.positions["ETHUSDT"].trade_count,
+    }
+
+    # Close and reopen
+    ledger.close()
+    reopened = Ledger(db_path)
+
+    # Restore from closure
+    restored = reopened.restore_state(run_id)
+    assert restored is not None
+
+    # Assert portfolio-level exact equality
+    assert restored.cash == pytest.approx(expected_cash)
+    assert restored.funding_paid == pytest.approx(expected_funding)
+    assert restored.realized_pnl == pytest.approx(expected_realized)
+    assert restored.fees_paid == pytest.approx(expected_fees)
+    assert restored.spread_paid == pytest.approx(expected_spread)
+    assert restored.slippage_paid == pytest.approx(expected_slippage)
+    assert restored.turnover == pytest.approx(expected_turnover)
+    assert restored.trade_count == expected_trade_count
+    assert restored.peak_equity == pytest.approx(expected_peak)
+    assert restored.path_maximum_drawdown_pct == pytest.approx(expected_dd)
+
+    # Assert per-symbol exact equality for BTCUSDT
+    assert "BTCUSDT" in restored.positions
+    btc = restored.positions["BTCUSDT"]
+    assert btc.qty == pytest.approx(expected_btc["qty"])
+    assert btc.avg_entry_price == pytest.approx(expected_btc["avg"])
+    assert btc.realized_pnl == pytest.approx(expected_btc["realized"])
+    assert btc.fees_paid == pytest.approx(expected_btc["fees"])
+    assert btc.spread_paid == pytest.approx(expected_btc["spread"])
+    assert btc.slippage_paid == pytest.approx(expected_btc["slippage"])
+    assert btc.funding_paid == pytest.approx(expected_btc["funding"])
+    assert btc.turnover == pytest.approx(expected_btc["turnover"])
+    assert btc.trade_count == expected_btc["trades"]
+
+    # Assert per-symbol exact equality for ETHUSDT
+    assert "ETHUSDT" in restored.positions
+    eth = restored.positions["ETHUSDT"]
+    assert eth.qty == pytest.approx(expected_eth["qty"])
+    assert eth.avg_entry_price == pytest.approx(expected_eth["avg"])
+    assert eth.realized_pnl == pytest.approx(expected_eth["realized"])
+    assert eth.fees_paid == pytest.approx(expected_eth["fees"])
+    assert eth.spread_paid == pytest.approx(expected_eth["spread"])
+    assert eth.slippage_paid == pytest.approx(expected_eth["slippage"])
+    assert eth.funding_paid == pytest.approx(expected_eth["funding"])
+    assert eth.turnover == pytest.approx(expected_eth["turnover"])
+    assert eth.trade_count == expected_eth["trades"]
+
+    # Ensure no DEFAULT ghost position
+    assert "DEFAULT" not in restored.positions
+
+
+def test_legacy_schema_no_multi_asset_restores_correctly(tmp_path: Path) -> None:
+    """RT004: old schema/no multi-asset snapshot still restores correctly."""
+    from obsidian_rl.portfolio.costs import CostModel
+
+    db_path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(db_path)
+
+    run = ledger.start_run("rt004-legacy", "live-paper", 10_000.0, CostModel())
+    run_id = run.run_id
+
+    # Manually insert a decision WITHOUT positions_json column (simulate old DB)
+    # Note: current schema has positions_json column, so we must include it as NULL
+    ledger._conn.execute(
+        "INSERT INTO decisions (run_id, idempotency_key, candle_open_ms, candle_close_ms,"
+        " decision_ts_ms, data_source, proposed_target, approved_target, executed_target,"
+        " delta_qty, exec_price, traded_notional, fee, spread_cost, slippage_cost, funding,"
+        " realized_pnl_delta, rejection_reason, position_qty, avg_entry_price, cash,"
+        " unrealized_pnl, net_equity, gross_equity, realized_pnl_total, fees_total,"
+        " spread_total, slippage_total, funding_total, turnover_total, trade_count,"
+        " peak_equity, path_maximum_drawdown_pct, positions_json, created_at_ms)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_id,
+            f"{run_id}:500000",
+            500_000,
+            559_999,
+            560_000,
+            "test",
+            1.0,
+            1.0,
+            1.0,
+            100.0,
+            100.0,
+            10_000.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            0.0,
+            None,
+            100.0,
+            100.0,
+            9992.0,
+            0.0,
+            9992.0,
+            9997.0,
+            0.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            10_000.0,
+            1,
+            10_000.0,
+            0.0,
+            None,  # positions_json = NULL for legacy compatibility
+            1_000_000,
+        ),
+    )
+    ledger._conn.commit()
+
+    # Restore should work and produce correct single-asset state
+    restored = ledger.restore_state(run_id)
+    assert restored is not None
+    assert restored.cash == pytest.approx(9992.0)
+    assert restored.qty == pytest.approx(100.0)
+    assert restored.avg_entry_price == pytest.approx(100.0)
+    assert restored.realized_pnl == pytest.approx(0.0)
+    assert restored.fees_paid == pytest.approx(5.0)
+    assert restored.spread_paid == pytest.approx(1.0)
+    assert restored.slippage_paid == pytest.approx(2.0)
+    assert restored.funding_paid == pytest.approx(0.0)
+    assert restored.turnover == pytest.approx(10_000.0)
+    assert restored.trade_count == 1
+    assert restored.peak_equity == pytest.approx(10_000.0)
+    assert restored.path_maximum_drawdown_pct == pytest.approx(0.0)
+
+    # But DEFAULT may exist as legacy single-asset - check it's not in positions dict
+    # since we excluded DEFAULT from serialization
+    assert "DEFAULT" not in restored.positions
+
+
+def test_malformed_nonfinite_snapshot_fails_closed(tmp_path: Path) -> None:
+    """RT004: malformed/non-finite snapshot fails closed."""
+    from obsidian_rl.portfolio.costs import CostModel
+
+    db_path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(db_path)
+
+    run = ledger.start_run("rt004-malformed", "live-paper", 10_000.0, CostModel())
+    run_id = run.run_id
+
+    # Test 1: non-finite qty in positions_json
+    ledger._conn.execute(
+        "INSERT INTO decisions (run_id, idempotency_key, candle_open_ms, candle_close_ms,"
+        " decision_ts_ms, data_source, proposed_target, approved_target, executed_target,"
+        " delta_qty, exec_price, traded_notional, fee, spread_cost, slippage_cost, funding,"
+        " realized_pnl_delta, rejection_reason, position_qty, avg_entry_price, cash,"
+        " unrealized_pnl, net_equity, gross_equity, realized_pnl_total, fees_total,"
+        " spread_total, slippage_total, funding_total, turnover_total, trade_count,"
+        " peak_equity, path_maximum_drawdown_pct, positions_json, created_at_ms)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_id,
+            f"{run_id}:1000000",
+            1_000_000,
+            1_059_999,
+            1_060_000,
+            "test",
+            1.0,
+            1.0,
+            1.0,
+            100.0,
+            100.0,
+            10_000.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            0.0,
+            None,
+            100.0,
+            100.0,
+            9992.0,
+            0.0,
+            9992.0,
+            9997.0,
+            0.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            10_000.0,
+            1,
+            10_000.0,
+            0.0,
+            (
+                '{"BTCUSDT": {"qty": NaN, "avg_entry_price": 100.0, "realized_pnl": 0.0, "fees_paid": 0.0, "spread_paid": 0.0, "slippage_paid": 0.0, "funding_paid": 0.0, "turnover": 0.0, "trade_count": 0}}'  # noqa: E501
+            ),
+            1_000_000,
+        ),
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(ValueError, match="non-finite qty in positions_json for BTCUSDT"):
+        ledger.restore_state(run_id)
+
+    # Test 2: malformed JSON
+    ledger._conn.execute(
+        "INSERT INTO decisions (run_id, idempotency_key, candle_open_ms, candle_close_ms,"
+        " decision_ts_ms, data_source, proposed_target, approved_target, executed_target,"
+        " delta_qty, exec_price, traded_notional, fee, spread_cost, slippage_cost, funding,"
+        " realized_pnl_delta, rejection_reason, position_qty, avg_entry_price, cash,"
+        " unrealized_pnl, net_equity, gross_equity, realized_pnl_total, fees_total,"
+        " spread_total, slippage_total, funding_total, turnover_total, trade_count,"
+        " peak_equity, path_maximum_drawdown_pct, positions_json, created_at_ms)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_id,
+            f"{run_id}:2000000",
+            2_000_000,
+            2_059_999,
+            2_060_000,
+            "test",
+            1.0,
+            1.0,
+            1.0,
+            100.0,
+            100.0,
+            10_000.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            0.0,
+            None,
+            100.0,
+            100.0,
+            9992.0,
+            0.0,
+            9992.0,
+            9997.0,
+            0.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            10_000.0,
+            1,
+            10_000.0,
+            0.0,
+            "{invalid json}",
+            1_000_000,
+        ),
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(RuntimeError, match="malformed positions_json in decision"):
+        ledger.restore_state(run_id)
+
+    # Test 3: invalid trade_count
+    ledger._conn.execute(
+        "INSERT INTO decisions (run_id, idempotency_key, candle_open_ms, candle_close_ms,"
+        " decision_ts_ms, data_source, proposed_target, approved_target, executed_target,"
+        " delta_qty, exec_price, traded_notional, fee, spread_cost, slippage_cost, funding,"
+        " realized_pnl_delta, rejection_reason, position_qty, avg_entry_price, cash,"
+        " unrealized_pnl, net_equity, gross_equity, realized_pnl_total, fees_total,"
+        " spread_total, slippage_total, funding_total, turnover_total, trade_count,"
+        " peak_equity, path_maximum_drawdown_pct, positions_json, created_at_ms)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_id,
+            f"{run_id}:3000000",
+            3_000_000,
+            3_059_999,
+            3_060_000,
+            "test",
+            1.0,
+            1.0,
+            1.0,
+            100.0,
+            100.0,
+            10_000.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            0.0,
+            None,
+            100.0,
+            100.0,
+            9992.0,
+            0.0,
+            9992.0,
+            9997.0,
+            0.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            10_000.0,
+            1,
+            10_000.0,
+            0.0,
+            (
+                '{"BTCUSDT": {"qty": 1.0, "avg_entry_price": 100.0, "realized_pnl": 0.0, "fees_paid": 0.0, "spread_paid": 0.0, "slippage_paid": 0.0, "funding_paid": 0.0, "turnover": 0.0, "trade_count": -1}}'  # noqa: E501
+            ),
+            1_000_000,
+        ),
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(ValueError, match="invalid trade_count in positions_json for BTCUSDT"):
+        ledger.restore_state(run_id)
+
+    # Test 4: non-finite avg_entry_price
+    ledger._conn.execute(
+        "INSERT INTO decisions (run_id, idempotency_key, candle_open_ms, candle_close_ms,"
+        " decision_ts_ms, data_source, proposed_target, approved_target, executed_target,"
+        " delta_qty, exec_price, traded_notional, fee, spread_cost, slippage_cost, funding,"
+        " realized_pnl_delta, rejection_reason, position_qty, avg_entry_price, cash,"
+        " unrealized_pnl, net_equity, gross_equity, realized_pnl_total, fees_total,"
+        " spread_total, slippage_total, funding_total, turnover_total, trade_count,"
+        " peak_equity, path_maximum_drawdown_pct, positions_json, created_at_ms)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            run_id,
+            f"{run_id}:4000000",
+            4_000_000,
+            4_059_999,
+            4_060_000,
+            "test",
+            1.0,
+            1.0,
+            1.0,
+            100.0,
+            100.0,
+            10_000.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            0.0,
+            None,
+            100.0,
+            100.0,
+            9992.0,
+            0.0,
+            9992.0,
+            9997.0,
+            0.0,
+            5.0,
+            1.0,
+            2.0,
+            0.0,
+            10_000.0,
+            1,
+            10_000.0,
+            0.0,
+            (
+                '{"BTCUSDT": {"qty": 1.0, "avg_entry_price": Infinity, "realized_pnl": 0.0, "fees_paid": 0.0, "spread_paid": 0.0, "slippage_paid": 0.0, "funding_paid": 0.0, "turnover": 0.0, "trade_count": 0}}'  # noqa: E501
+            ),
+            1_000_000,
+        ),
+    )
+    ledger._conn.commit()
+
+    with pytest.raises(
+        ValueError, match="non-finite avg_entry_price in positions_json for BTCUSDT"
+    ):
+        ledger.restore_state(run_id)
