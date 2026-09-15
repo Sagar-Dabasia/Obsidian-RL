@@ -5,7 +5,8 @@ Root AGENTS.md invariants remain absolute; this file adds domain-specific constr
 ## Real Data Only
 - Never synthesize, interpolate, or fabricate market data.
 - Missing bars/gaps must be explicitly represented (Outage/NaN), never silently filled.
-- Source of truth: Binance/OANDA raw responses -> Parquet storage.
+- Canonical contracts: MarketBar, EventNewsItem, FundingRate (see contracts.py).
+- Storage: SQLiteStorage with deterministic hashing and idempotent insert.
 
 ## Provenance & Chronology
 - Every dataset row must carry ingestion timestamp and source metadata.

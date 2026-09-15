@@ -13,15 +13,15 @@ Root AGENTS.md invariants remain absolute; this file adds domain-specific constr
 - Restart/recovery must reconstruct identical state from ledger + config.
 
 ## Fail-Closed Invariants
-- Negative cash → FAIL (not overdraft).
-- Position quantity sign mismatch with side → FAIL.
-- PnL ≠ realized + unrealized → FAIL.
+- Negative cash -> FAIL (not overdraft).
+- Position quantity sign mismatch with side -> FAIL.
+- PnL != realized + unrealized -> FAIL.
 - Fee/funding application must be deterministic and replayable.
 
 ## Paper Trading Only
 - No live/Testnet order submission from portfolio/ledger code paths.
 - No exchange API keys in this domain.
-- All execution simulated via CostModel.
+- All costs applied via CostModel; execution simulated by PortfolioEngine.
 
 ## No Legacy Imports
 - Do not import from legacy/ or archived Cycle-1 portfolio logic.

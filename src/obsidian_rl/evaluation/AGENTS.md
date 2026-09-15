@@ -17,9 +17,10 @@ Root AGENTS.md invariants remain absolute; this file adds domain-specific constr
 - No leakage from holdout into feature engineering or model selection.
 
 ## Full Cost Stack
-- Every backtest must include: spread, commission, slippage, funding, borrow cost.
-- CostModel parameters from config, not hardcoded.
-- Report gross + net PnL separately; net must include all costs.
+- Include all costs applicable to the frozen experiment/instrument contract.
+- Current crypto perpetual evaluation uses fee/spread/slippage/funding where applicable.
+- Never invent new cost semantics.
+- New cost components require explicit implementation + preregistration/evidence.
 
 ## Preserve Negative Evidence
 - Failed strategies, overfit detections, leakage findings -> keep in reports.
