@@ -14,6 +14,12 @@ from pathlib import Path
 import pandas as pd
 
 from obsidian_rl.data.schema import coerce_candle_frame, empty_candle_frame
+from obsidian_rl.data.research_access import (
+    validate_temporal_access,
+    DEV_TRAIN_START_MS,
+    DEV_TRAIN_END_MS,
+    ResearchAccessError,
+)
 
 _MS_PER_MONTH_KEY = "%Y/%m"
 
@@ -66,13 +72,61 @@ class CandleStore:
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
         self.meta_path.write_text(json.dumps(meta, indent=1), encoding="utf-8")
 
-    # -- API ----------------------------------------------------------------
+    def _parse_partition_bounds(self, path: Path) -> tuple[int, int] | None:
+        """Extract [start_ms, end_ms) bounds from partition file path.
+        Returns None if path doesn't match expected format."""
+        try:
+            # path format: .../klines/SYMBOL/interval/YYYY/MM.parquet
+            parts = path.parts
+            if len(parts) < 2:
+                return None
+            year_str = parts[-2]
+            month_str = parts[-1].replace(".parquet", "")
+            year = int(year_str)
+            month = int(month_str)
+            # Calculate month bounds
+            start_dt = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
+            if month == 12:
+                end_dt = pd.Timestamp(year=year + 1, month=1, day=1, tz="UTC")
+            else:
+                end_dt = pd.Timestamp(year=year, month=month + 1, day=1, tz="UTC")
+            start_ms = int(start_dt.timestamp() * 1000)
+            end_ms = int(end_dt.timestamp() * 1000)
+            return (start_ms, end_ms)
+        except (ValueError, IndexError):
+            return None
+
+    def _filter_authorized_partitions(
+            self, files: list[Path], start_ms: int, end_ms: int
+        ) -> list[Path]:
+            """Filter partition files to only those overlapping with authorized bounds.
+            Returns partitions that overlap with the requested range.
+            The final row-level filtering in read() handles exact bounds.
+            """
+            authorized = []
+            for f in files:
+                bounds = self._parse_partition_bounds(f)
+                if bounds is None:
+                    # Unknown format - skip conservatively
+                    continue
+                part_start, part_end = bounds
+                # Partition overlaps with requested range (half-open intervals)?
+                if part_start < end_ms and part_end > start_ms:
+                    authorized.append(f)
+            return authorized
+
+    # -- API ---------------------------------------------------------------
     def write(self, df: pd.DataFrame, *, source: str) -> WriteResult:
         """Merge candles into monthly partitions. Idempotent; conflicts raise."""
         df = coerce_candle_frame(df)
         if df.empty:
             return WriteResult(0, 0, [])
         df = df.sort_values("open_time").reset_index(drop=True)
+
+        # Validate write bounds before any partition access
+        data_start = int(df["open_time"].min())
+        data_end = int(df["open_time"].max()) + 1  # Half-open end
+        validate_temporal_access(data_start, data_end)
 
         month_key = pd.to_datetime(df["open_time"], unit="ms", utc=True).dt.strftime(
             _MS_PER_MONTH_KEY
@@ -121,26 +175,64 @@ class CandleStore:
         return result
 
     def read(self, start_ms: int | None = None, end_ms: int | None = None) -> pd.DataFrame:
+        # Cycle 2 research temporal access guard
+        # Handle unbounded reads by using effective bounds
+        effective_start = start_ms if start_ms is not None else 0
+        effective_end = end_ms if end_ms is not None else (1 << 63) - 1  # Max int64
+        validate_temporal_access(effective_start, effective_end)
+
         files = self._partition_files()
         if not files:
             return empty_candle_frame()
-        frames = [pd.read_parquet(f) for f in files]
+        # Filter to only partitions within the requested bounds
+        authorized_files = self._filter_authorized_partitions(files, effective_start, effective_end)
+        if not authorized_files:
+            return empty_candle_frame()
+        frames = [pd.read_parquet(f) for f in authorized_files]
         df = pd.concat(frames, ignore_index=True).sort_values("open_time").reset_index(drop=True)
         if start_ms is not None:
             df = df[df["open_time"] >= start_ms]
         if end_ms is not None:
-            df = df[df["open_time"] <= end_ms]
+            df = df[df["open_time"] < end_ms]  # Half-open: end exclusive
         return coerce_candle_frame(df)
 
-    def max_open_time(self) -> int | None:
+    def max_open_time(self, start_ms: int | None = None, end_ms: int | None = None) -> int | None:
+        """Return max open_time within the specified bounds (defaults to DEV_TRAIN).
+
+        Only reads partitions fully within the authorized range.
+        """
+        effective_start = start_ms if start_ms is not None else DEV_TRAIN_START_MS
+        effective_end = end_ms if end_ms is not None else DEV_TRAIN_END_MS
+        validate_temporal_access(effective_start, effective_end)
+
         files = self._partition_files()
         if not files:
             return None
-        last = pd.read_parquet(files[-1], columns=["open_time"])
-        return int(last["open_time"].max())
+        # Filter to only partitions within the authorized bounds
+        authorized_files = self._filter_authorized_partitions(files, effective_start, effective_end)
+        if not authorized_files:
+            return None
+        # Read only the latest authorized partition
+        last = pd.read_parquet(authorized_files[-1], columns=["open_time"])
+        max_time = int(last["open_time"].max())
+        # Ensure result is within the effective bounds
+        if max_time >= effective_end:
+            return effective_end - 1
+        return max_time
 
-    def summary(self) -> dict[str, object]:
-        df = self.read()
+    def summary(self, start_ms: int | None = None, end_ms: int | None = None) -> dict[str, object]:
+        """Summarize candles within the specified bounds (defaults to DEV_TRAIN).
+
+        Args:
+            start_ms: Start timestamp (default: DEV_TRAIN start)
+            end_ms: End timestamp (default: DEV_TRAIN end)
+
+        Returns:
+            Summary dict for the specified window.
+        """
+        effective_start = start_ms if start_ms is not None else DEV_TRAIN_START_MS
+        effective_end = end_ms if end_ms is not None else DEV_TRAIN_END_MS
+        df = self.read(start_ms=effective_start, end_ms=effective_end)
         if df.empty:
             return {"symbol": self.symbol, "interval": self.interval, "rows": 0}
         from obsidian_rl.data.validation import validate_candles

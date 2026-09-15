@@ -26,7 +26,7 @@ from gymnasium import spaces
 from obsidian_rl.evaluation.backtest import DEFAULT_TARGETS, PortfolioFeatureTracker
 from obsidian_rl.features.observation import build_observation
 from obsidian_rl.features.pipeline import WARMUP_ROWS, compute_market_features
-from obsidian_rl.features.schema import OBSERVATION_DIM, OBSERVATION_DTYPE
+from obsidian_rl.features.schema import OBSERVATION_DIM
 from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.portfolio.engine import PortfolioConfig, PortfolioEngine
 
@@ -52,7 +52,8 @@ class RewardConfig:
             self.turnover_penalty_bps, (int, float)
         ):
             raise ValueError(
-                f"turnover_penalty_bps={self.turnover_penalty_bps!r} must be int or float, not {type(self.turnover_penalty_bps).__name__}"
+                f"turnover_penalty_bps={self.turnover_penalty_bps!r} must be int or float, "
+                f"not {type(self.turnover_penalty_bps).__name__}"
             )
         if not math.isfinite(self.turnover_penalty_bps):
             raise ValueError(f"turnover_penalty_bps={self.turnover_penalty_bps!r} must be finite")
@@ -63,7 +64,7 @@ class RewardConfig:
 
 
 class TradingEnv(gym.Env):
-    metadata: dict[str, Any] = {"render_modes": []}
+    metadata = {"render_modes": []}  # noqa: RUF012
 
     def __init__(
         self,

@@ -13,6 +13,7 @@ import pandas as pd
 import requests
 
 from obsidian_rl.data.schema import interval_to_ms, klines_to_frame
+from obsidian_rl.data.research_access import validate_temporal_access
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ MAX_LIMIT = 1500
 
 class DataFetchError(RuntimeError):
     """Market data could not be retrieved. Callers must not fall back to synthetic data."""
+    pass
 
 
 class MarketDataSource(Protocol):
@@ -93,6 +95,10 @@ class BinanceFuturesRest:
         self, symbol: str, interval: str, start_ms: int, end_ms: int | None = None
     ) -> pd.DataFrame:
         """Fetch [start_ms, end_ms] inclusive, paginating past the 1500-candle limit."""
+        # Cycle 2 research temporal access guard
+        effective_end = end_ms if end_ms is not None else (1 << 63) - 1
+        validate_temporal_access(start_ms, effective_end)
+
         ms = interval_to_ms(interval)
         rows: list[list[Any]] = []
         cursor = start_ms
@@ -114,6 +120,10 @@ class BinanceFuturesRest:
         self, symbol: str, start_ms: int, end_ms: int | None = None, limit: int = 1000
     ) -> list[dict[str, Any]]:
         """Fetch funding rate history from GET /fapi/v1/fundingRate."""
+        # Cycle 2 research temporal access guard
+        effective_end = end_ms if end_ms is not None else (1 << 63) - 1
+        validate_temporal_access(start_ms, effective_end)
+
         url = f"{self._base}/fapi/v1/fundingRate"
         params: dict[str, str | int] = {
             "symbol": symbol,

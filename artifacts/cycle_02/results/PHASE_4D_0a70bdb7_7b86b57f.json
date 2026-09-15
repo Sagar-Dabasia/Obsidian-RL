@@ -1,0 +1,23 @@
+{
+  "phase": "4D",
+  "markets": {
+    "BTCUSDT": {
+      "manifest_digest": "0a70bdb71bcafeb5837485037c663a775b625263d8df2b1c8000e807c87b3bd3",
+      "runtime_digest": "0a70bdb71bcafeb5837485037c663a775b625263d8df2b1c8000e807c87b3bd3",
+      "net_return": 3.8946,
+      "annualized_sharpe": 0.77,
+      "max_drawdown": 0.0821,
+      "always_long_sharpe": 0.66
+    },
+    "ETHUSDT": {
+      "manifest_digest": "7b86b57f2e34fc0b1b17f3f83561e5ecdb976460433acf951b5f05bb4ca42652",
+      "runtime_digest": "7b86b57f2e34fc0b1b17f3f83561e5ecdb976460433acf951b5f05bb4ca42652",
+      "net_return": 3.9564,
+      "annualized_sharpe": 0.63,
+      "max_drawdown": 0.4903,
+      "always_long_sharpe": 0.85
+    }
+  },
+  "classification": "CRYPTO TREND DEVELOPMENT SCREEN FAILS",
+  "reason": "Median maximum drawdown (28.62%) > 20% limit."
+}

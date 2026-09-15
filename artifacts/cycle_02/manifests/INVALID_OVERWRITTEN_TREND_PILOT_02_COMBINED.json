@@ -1,0 +1,48 @@
+{
+  "dataset_id": "TREND_PILOT_02_COMBINED",
+  "created_at_utc": 1784903683563,
+  "start_ms": 1546300800000,
+  "end_ms": 1704067200000,
+  "components": [
+    {
+      "symbol": "BTCUSDT",
+      "asset_class": "CRYPTO",
+      "venue": "BINANCE_SPOT",
+      "timeframe": "4h",
+      "start_timestamp_utc": 1565856000000,
+      "end_timestamp_utc": 1704067200000,
+      "row_count": 9597,
+      "digest": "0a70bdb71bcafeb5837485037c663a775b625263d8df2b1c8000e807c87b3bd3"
+    },
+    {
+      "symbol": "ETHUSDT",
+      "asset_class": "CRYPTO",
+      "venue": "BINANCE_SPOT",
+      "timeframe": "4h",
+      "start_timestamp_utc": 1565856000000,
+      "end_timestamp_utc": 1704067200000,
+      "row_count": 9597,
+      "digest": "7b86b57f2e34fc0b1b17f3f83561e5ecdb976460433acf951b5f05bb4ca42652"
+    },
+    {
+      "symbol": "EUR_USD",
+      "asset_class": "FOREX",
+      "venue": "OANDA_PRACTICE",
+      "timeframe": "4h",
+      "start_timestamp_utc": 1546380000000,
+      "end_timestamp_utc": 1703887200000,
+      "row_count": 7783,
+      "digest": "9522d53921727c85057d88761f1e78f75d2d5b376f8a5601c75fa99b36751c48"
+    },
+    {
+      "symbol": "GBP_USD",
+      "asset_class": "FOREX",
+      "venue": "OANDA_PRACTICE",
+      "timeframe": "4h",
+      "start_timestamp_utc": 1546380000000,
+      "end_timestamp_utc": 1703887200000,
+      "row_count": 7787,
+      "digest": "93519bab8c2ec1fff8412905b0ec74085f25c40dc99e7779bba1618f0524b542"
+    }
+  ]
+}

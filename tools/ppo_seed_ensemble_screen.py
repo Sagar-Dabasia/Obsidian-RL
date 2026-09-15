@@ -8,7 +8,6 @@ or access the reserved holdout.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -30,7 +29,6 @@ from obsidian_rl.portfolio.costs import CostModel
 from obsidian_rl.strategies.ppo_policy import PpoPolicyStrategy
 from obsidian_rl.training.registry import load_record
 
-
 SEEDS: list[int] = [42, 7, 23, 101, 202]
 FOLDS: list[int] = [0, 1, 2]
 PENALTIES: list[float] = [0.0, 2.5, 5.0]
@@ -46,9 +44,7 @@ class PpoSeedEnsembleStrategy:
         allowed_targets: tuple[float, ...] = DEFAULT_TARGETS,
     ) -> None:
         if len(members) != 5:
-            raise ValueError(
-                f"Ensemble requires exactly 5 members, got {len(members)}"
-            )
+            raise ValueError(f"Ensemble requires exactly 5 members, got {len(members)}")
         self.members = members
         self.strategy_id = strategy_id
         self.allowed_targets = allowed_targets
@@ -62,9 +58,7 @@ class PpoSeedEnsembleStrategy:
         for m in self.members:
             t = m.propose(market_row, portfolio)
             if not math.isfinite(t):
-                raise ValueError(
-                    f"Non-finite target {t} from member {m.strategy_id}"
-                )
+                raise ValueError(f"Non-finite target {t} from member {m.strategy_id}")
             targets.append(t)
         med = float(np.median(targets))
         # With 5 members and targets from allowed_targets, the median is
@@ -94,12 +88,13 @@ def resolve_model(
         m_pen = reward.get("turnover_penalty_bps", 0.0)
         m_seeds = rec.metadata.get("seeds", [])
         m_id = rec.model_id
-        if m_pen == penalty and seed in m_seeds:
-            if f"-f{fold_id}-" in m_id or m_id.endswith(f"-f{fold_id}"):
-                return child, m_id
-    raise FileNotFoundError(
-        f"Model not found for penalty={penalty}, fold={fold_id}, seed={seed}"
-    )
+        if (
+            m_pen == penalty
+            and seed in m_seeds
+            and (f"-f{fold_id}-" in m_id or m_id.endswith(f"-f{fold_id}"))
+        ):
+            return child, m_id
+    raise FileNotFoundError(f"Model not found for penalty={penalty}, fold={fold_id}, seed={seed}")
 
 
 @dataclass
@@ -129,14 +124,10 @@ def evaluate_ensemble_on_fold(
     """Build and evaluate a 5-seed ensemble on one fold's outer validation."""
     val_slice = slice_candles(candles, val_start_ms, val_end_ms)
     members = [
-        PpoPolicyStrategy.from_dir(
-            resolve_model(models_dir, penalty, fold_id, s)[0], device="cpu"
-        )
+        PpoPolicyStrategy.from_dir(resolve_model(models_dir, penalty, fold_id, s)[0], device="cpu")
         for s in SEEDS
     ]
-    ensemble = PpoSeedEnsembleStrategy(
-        members, strategy_id=f"ppo-ensemble-p{penalty}"
-    )
+    ensemble = PpoSeedEnsembleStrategy(members, strategy_id=f"ppo-ensemble-p{penalty}")
     rows = evaluate_strategies_on_slice(
         val_slice,
         [(ensemble.strategy_id, ensemble, None)],
@@ -185,8 +176,6 @@ def check_eligibility(
 
 
 if __name__ == "__main__":
-    import sys
-
     from obsidian_rl.config import get_settings
     from obsidian_rl.data.store import CandleStore
 
@@ -242,8 +231,13 @@ if __name__ == "__main__":
         fold_results = []
         for fold in folds:
             r = evaluate_ensemble_on_fold(
-                candles, models_dir, penalty, fold.fold_id,
-                fold.val_start_ms, fold.val_end_ms, cm,
+                candles,
+                models_dir,
+                penalty,
+                fold.fold_id,
+                fold.val_start_ms,
+                fold.val_end_ms,
+                cm,
             )
             fold_results.append(r)
         all_results[penalty] = fold_results
@@ -260,6 +254,7 @@ if __name__ == "__main__":
     # Select best
     selected = None
     if eligible_penalties:
+
         def sort_key(p: float) -> tuple[float, float, float]:
             fr = all_results[p]
             worst = min(r.base_net_return for r in fr)
@@ -281,9 +276,7 @@ if __name__ == "__main__":
         print(f"\nConfirmation SHA-256: {conf_sha}")
 
         members = [
-            PpoPolicyStrategy.from_dir(
-                resolve_model(models_dir, selected, 2, s)[0], device="cpu"
-            )
+            PpoPolicyStrategy.from_dir(resolve_model(models_dir, selected, 2, s)[0], device="cpu")
             for s in SEEDS
         ]
         ens = PpoSeedEnsembleStrategy(members, strategy_id="ppo-ensemble-confirmation")
@@ -294,8 +287,8 @@ if __name__ == "__main__":
             cost_model=cm,
             sensitivity=True,
         )
-        for r in rows:
-            d = r.to_dict()
+        for row in rows:
+            d = row.to_dict()
             print(f"  {d['scenario']}: ret={d['net_return']:+.6f}, dd={d['max_drawdown']:.4f}")
     else:
         print("\nNo penalty eligible, skipping confirmation.")

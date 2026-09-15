@@ -1,0 +1,53 @@
+Loaded 9597 bars from local storage.
+Digest matched successfully.
+Backtest completed.
+
+
+
+--- AUDIT DATA ---
+Manifest Digest: 0a70bdb71bcafeb5837485037c663a775b625263d8df2b1c8000e807c87b3bd3
+Computed Digest: 0a70bdb71bcafeb5837485037c663a775b625263d8df2b1c8000e807c87b3bd3
+Digest Match: True
+Queried Row Count: 9597
+Warm-up Row Count: 832
+Evaluation Row Count: 8765
+First Loaded TS: 1565856000000
+Last Loaded TS: 1704052800000
+First Eval TS: 1577836800000
+First Nonzero Signal TS: 1577836800000
+Turnover: 11872092.9302
+Weekend Gaps Accepted: 0
+Outages Accepted: 1
+--- Strategy ---
+Identity: 2aba8e56
+Return (net): 389.46%
+Return (gross): 466.63%
+Max Drawdown: 8.21%
+Sharpe (Ann.): 0.77
+Hit Rate: 61.69%
+Trades: 1278
+Total Costs: 7716.86
+Exposure: 55.06%
+
+--- Baseline Flat ---
+Identity: 907678f1
+Return (net): 0.00%
+Return (gross): 0.00%
+Max Drawdown: 0.00%
+Sharpe (Ann.): 0.00
+Hit Rate: 0.00%
+Trades: 0
+Total Costs: 0.00
+Exposure: 0.00%
+
+--- Baseline Long ---
+Identity: 52a852e0
+Return (net): 487.21%
+Return (gross): 487.66%
+Max Drawdown: 38.31%
+Sharpe (Ann.): 0.66
+Hit Rate: 0.00%
+Trades: 2
+Total Costs: 44.70
+Exposure: 100.02%
+

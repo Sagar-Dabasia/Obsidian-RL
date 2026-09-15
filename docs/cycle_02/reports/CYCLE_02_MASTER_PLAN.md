@@ -107,20 +107,24 @@ This plan enforces strict segregation between quantitative calculation (owned by
 ---
 
 ### Phase 6: TradingView Pine Signal Layer
-- **Objective**: Construct visual representation and alert generation layers in TradingView Pine Script aligned strictly with Python engine calculations, utilizing JSON webhooks to transmit visual alerts.
+- **Objective**: Construct visual representation and alert generation layers in TradingView Pine Script aligned strictly with Python engine calculations, utilizing JSON webhooks to transmit visual alerts. **Authentication model: production uses trusted reverse proxy with TradingView HTTPS client certificate verification only.**
 - **Files / Modules**:
-  - `pine/ObsidianMultiAssetTrend.pine` (TradingView Pine Script for charting and visual signals)
-  - `src/obsidian_rl/interop/webhook_receiver.py` (FastAPI/AIOHTTP webhook endpoint validating and parsing incoming TradingView JSON alerts)
-- **Dependencies**: Phase 1 (`contracts.py`), Phase 5 (`risk.py`), `pydantic`, HMAC signing/validation.
+  - `pine/ObsidianMultiAssetTrend.pine` (TradingView Pine Script for charting and visual signals — `indicator()` only, no `strategy()`)
+  - `src/obsidian_rl/interop/webhook_receiver.py` (Secure webhook receiver: trusted ingress auth, replay protection, strict schema validation, zero execution routes)
+  - `src/obsidian_rl/interop/__init__.py` (Interop package)
+  - `tests/interop/test_webhook_receiver.py` (Comprehensive security tests: trusted ingress authentication, replay, payload validation, no execution routes, no portfolio mutation, no secret logging)
+  - `tests/interop/test_pine_parity.py` (Pine/Python mathematical parity: flat/long/short/transition/insufficient-warmup, timeframe validation, determinism, point-in-time, data quality, edge cases; static Pine assertions)
+  - `docs/cycle_02/reports/PHASE_06_TRADINGVIEW_SIGNAL_LAYER.md` (Phase 6 report)
+- **Dependencies**: Phase 1 (`contracts.py`), Phase 5 (`portfolio.py`, `risk.py` for context only — receiver does not call them). No new HTTP framework dependencies (uses stdlib `json`, `hashlib`, `asyncio`).
 - **Tests**:
-  - `tests/interop/test_webhook_receiver.py` (tests HMAC signature verification, timestamp replay protection, malformed JSON handling, and payload parsing)
-  - `tests/interop/test_pine_parity.py` (verifies Pine Script mathematical parity against Python engine outputs over identical candle sequences)
-- **Security Risks**: Unauthenticated or spoofed webhook requests attempting to inject unauthorized trading signals; replay attacks using captured valid payloads.
+  - `tests/interop/test_webhook_receiver.py` (tests trusted ingress authentication, timestamp replay protection, event_id deduplication, malformed JSON, oversized payload, schema validation, non-finite numerics, signal-specific bounds, no execution imports, no portfolio mutation, no secret logging, exception hierarchy, cache management)
+  - `tests/interop/test_pine_parity.py` (verifies Pine Script mathematical parity against Python TrendEngineV1 over deterministic fixtures: flat, long, short, transition, insufficient warmup; validates timeframe restrictions, deterministic output, config identity, point-in-time filtering, data quality rejections, edge cases; static assertions on Pine: indicator only, no strategy orders, confirmed-bar alerts, no lookahead, no secrets, deterministic event_id, alert payload structure)
+- **Security Risks**: Unauthenticated/spoofed webhook origin; replay attacks; malformed/non-finite payloads; Pine/Python signal disagreement; intrabar repaint; future leakage; execution bypass; portfolio state mutation; risk engine bypass; secret leakage.
 - **Pass / Fail Rules**:
-  - **Pass**: Webhook endpoint requires valid HMAC signature and nonce/event ID; rejected requests logged immediately; TradingView signals treated strictly as informational proposals subject to Python `RiskEngine` verification.
-  - **Fail**: Acceptance of unsigned webhooks, acceptance of expired timestamps (>60 seconds skew), or TradingView signals bypassing internal calculation verification.
+  - **Pass**: Webhook endpoint requires valid trusted ingress identity (production); rejects stale/future timestamps (>60s skew); rejects duplicate event_id; rejects malformed/incomplete/non-finite payloads; rejects unexpected fields; TradingView signals treated strictly as informational proposals (ValidatedSignal) with zero execution capability; no secrets in logs.
+  - **Fail**: Acceptance of unsigned/unauthenticated webhooks; acceptance of expired/future timestamps beyond skew; acceptance of duplicate event_id; TradingView signals bypassing internal calculation verification; any execution route or portfolio mutation in receiver; secret material in logs.
 - **Estimated Duration**: 1.5 weeks.
-- **Outputs Required Before Continuing**: Verified Pine Script files, secure webhook receiver service with replay protection, and end-to-end signal transmission logs.
+- **Outputs Required Before Continuing**: Verified Pine Script files, secure webhook receiver with ingress auth + replay protection, Pine/Python parity test suite passing, PINE_RUNTIME_VALIDATION=NOT_AVAILABLE_LOCAL documented, Phase 6 report complete.
 
 ---
 

@@ -1,8 +1,6 @@
 """Tests for PpoSeedEnsembleStrategy: median aggregation, reset, validation,
 non-finite rejection, and confirmation data gating."""
 
-import math
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -17,9 +15,7 @@ from tools.ppo_seed_ensemble_screen import (
 )
 
 
-def _make_fake_member(
-    fixed_target: float, strategy_id: str = "fake"
-) -> MagicMock:
+def _make_fake_member(fixed_target: float, strategy_id: str = "fake") -> MagicMock:
     m = MagicMock()
     m.strategy_id = strategy_id
     m.propose = MagicMock(return_value=fixed_target)
@@ -76,8 +72,7 @@ class TestMedianAggregation:
         """With 5 targets drawn from DEFAULT_TARGETS, median is always valid."""
         for _ in range(20):
             targets = [
-                DEFAULT_TARGETS[np.random.randint(0, len(DEFAULT_TARGETS))]
-                for _ in range(5)
+                DEFAULT_TARGETS[np.random.randint(0, len(DEFAULT_TARGETS))] for _ in range(5)
             ]
             members = [_make_fake_member(t, f"m{i}") for i, t in enumerate(targets)]
             ens = PpoSeedEnsembleStrategy(members)
@@ -185,25 +180,19 @@ class TestEligibility:
         assert checks["mean_base_positive"] is False
 
     def test_negative_c2x(self) -> None:
-        fr = self._make_fold_results(
-            [0.10, 0.05, 0.02], c2x_rets=[-0.01, -0.01, -0.01]
-        )
+        fr = self._make_fold_results([0.10, 0.05, 0.02], c2x_rets=[-0.01, -0.01, -0.01])
         ok, checks = check_eligibility(fr, 200.0)
         assert ok is False
         assert checks["mean_c2x_positive"] is False
 
     def test_drawdown_too_high(self) -> None:
-        fr = self._make_fold_results(
-            [0.10, 0.05, 0.02], dds=[0.20, 0.10, 0.16]
-        )
+        fr = self._make_fold_results([0.10, 0.05, 0.02], dds=[0.20, 0.10, 0.16])
         ok, checks = check_eligibility(fr, 200.0)
         assert ok is False
         assert checks["mean_dd_le_15pct"] is False
 
     def test_turnover_exceeds_individual(self) -> None:
-        fr = self._make_fold_results(
-            [0.10, 0.05, 0.02], turnovers=[300.0, 300.0, 300.0]
-        )
+        fr = self._make_fold_results([0.10, 0.05, 0.02], turnovers=[300.0, 300.0, 300.0])
         ok, checks = check_eligibility(fr, 200.0)
         assert ok is False
         assert checks["turnover_le_indiv"] is False
